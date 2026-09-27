@@ -1,6 +1,6 @@
 ---
 name: workflow-batcher
-description: Command runner (no model) that splits a map stage's items into batch files and merges batch outputs. Used only by compiled workflow scripts.
+description: Command runner (no model) that splits a map stage's items into batch files, merges batch outputs, and runs a stage's program and its gate. Used only by compiled workflow scripts.
 runner:
   type: external-cli
   command: python3

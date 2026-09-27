@@ -21,6 +21,16 @@ def ws(compiled_json_path: Path) -> str:
     return Path(data["call"]["workflowScriptPath"]).read_text(encoding="utf-8")
 
 
+def wave(compiled_json_path: Path) -> dict:
+    """The wave data a compiled script starts with (`const W = {...};`, before the runner)."""
+    return json.loads(ws(compiled_json_path).split("const W = ", 1)[1].split(";\n\n", 1)[0])
+
+
+def items(compiled_json_path: Path) -> dict:
+    """The wave's single-child items by key."""
+    return {it["key"]: it for step in wave(compiled_json_path)["steps"] for it in step.get("layer", [])}
+
+
 @pytest.fixture(scope="module")
 def env(tmp_path_factory, run_py):
     """Shared, mutable state for the whole scenario. `env.b` is the scaffolded
@@ -376,7 +386,32 @@ def test_approved_w2_compiles_and_reuses_the_runs_mission(env):
 
 
 def test_gated_stages_compile_to_explicit_acceptance(env):
-    assert 'acceptance: {"level": "verified", "preserveStagedIndex": true, "review": {"required": false}, "verify": [{"id": "gate"' in ws(env.w1)
+    acceptance = items(env.w1)["extract"]["acceptance"]
+    assert {k: acceptance[k] for k in ("level", "preserveStagedIndex", "review")} == \
+        {"level": "verified", "preserveStagedIndex": True, "review": {"required": False}}
+    assert acceptance["verify"][0]["id"] == "gate"
+
+
+_PI_SUBAGENTS = Path.home() / ".pi" / "agent" / "npm" / "node_modules" / "pi-subagents" / "src" / "workflows" / "scripted-workflow.js"
+
+
+@pytest.mark.skipif(not _PI_SUBAGENTS.is_file(), reason="needs pi-subagents installed globally (pi install npm:pi-subagents)")
+def test_pi_subagents_accepts_the_compiled_waves(env, run_node):
+    # pi-subagents' own pre-launch check (syntax, no nested async functions, keys)
+    check = env.tmp / "check-script.mjs"
+    check.write_text(f"""import fs from "node:fs";
+import {{ validateWorkflowScript }} from {json.dumps(str(_PI_SUBAGENTS))};
+console.log(JSON.stringify(process.argv.slice(2).map((f) => validateWorkflowScript(fs.readFileSync(f, "utf8")))));
+""", encoding="utf-8")
+    scripts = sorted((env.run_dir / ".compiled").glob("*.js"))
+    r = run_node([check, *scripts])
+    assert scripts and r.data == [{"ok": True, "errors": []}] * len(scripts), r
+
+
+def test_every_wave_runs_the_same_runner(env):
+    # the compiler writes only data; the code is wave_runner.js, appended unchanged
+    runner = (SKILL / "scripts" / "wave_runner.js").read_text(encoding="utf-8")
+    assert ws(env.w1).endswith(runner) and wave(env.w1)["wave"] == "w1"
 
 
 # --- replanning -----------------------------------------------------------------
@@ -483,6 +518,43 @@ def test_second_run_starts_from_merged_main(env):
 
 def test_second_run_reuses_the_merged_program(env):
     assert f"This stage's program is {env.br / 'scripts' / 'extract_invoice_lines.py'}" in ws(env.b / "runs" / env.rid2 / ".compiled" / "w1.json")
+
+
+def test_an_existing_program_runs_as_a_command(env):
+    # no model: workflow-batcher runs `python3 <program> <run: args>` and then the gate
+    extract = items(env.b / "runs" / env.rid2 / ".compiled" / "w1.json")["extract"]
+    request = json.loads(extract["task"].split("BATCH_TOOL_REQUEST ", 1)[1])
+    assert extract["agent"] == "workflow-batcher"
+    assert request["command"].startswith(f"python3 {env.br / 'scripts' / 'extract_invoice_lines.py'} ")
+    assert request["command"].endswith("invoice-index.json invoice-lines.csv unparsed.json")
+    assert "check_lines.py" in request["gate"] and request["gate_json"] is True
+    assert extract["fix"]["key"] == "extract-fix" and extract["fix"]["agent"] == "worker"
+
+
+def test_the_command_runs_the_program_without_a_model(env, run_node):
+    # a program that does its job (writes its outputs from its arguments) instead of the
+    # merged stub, put back afterwards so the workflow's repo stays clean
+    program = env.b / "scripts" / "extract_invoice_lines.py"
+    merged = program.read_text(encoding="utf-8")
+    program.write_text("import pathlib, sys\n_, mail, index, lines, unparsed = sys.argv\n"
+                       "pathlib.Path(lines).write_text('invoice,po\\n')\npathlib.Path(unparsed).write_text('[]')\n",
+                       encoding="utf-8")
+    try:
+        r = run_node([HERE / "mock-subagents.mjs", env.b / "runs" / env.rid2 / ".compiled" / "w1.json"])
+    finally:
+        program.write_text(merged, encoding="utf-8")
+    assert r.data and r.data["result"]["status"] == "done", r
+    ran = {e["key"]: e["agent"] for e in r.data["log"]}
+    assert ran["extract"] == "workflow-batcher" and "extract-fix" not in ran
+    assert (env.b / "runs" / env.rid2 / "work" / "invoice-lines.csv").read_text(encoding="utf-8") == "invoice,po\n"
+
+
+def test_a_failing_program_gets_a_fix_child(env, run_node):
+    r = run_node([HERE / "mock-subagents.mjs", env.b / "runs" / env.rid2 / ".compiled" / "w1.json", "--fail", "extract"])
+    assert r.data and r.data["result"]["status"] == "done", r
+    fix = next(e for e in r.data["log"] if e["key"] == "extract-fix")
+    assert fix["agent"] == "worker" and "mock failure" in fix["task"] and fix["acceptance"]["verify"]
+    assert r.data["result"]["children"]["extract"]["status"] == "failed"
 
 
 def test_check_reports_the_last_run(env):
@@ -730,6 +802,8 @@ def test_workflow_extension_registers_commands_and_tools(env, ext):
         {"toolCall": {"toolName": "bash", "input": {"command": "source .venv/bin/activate && ls"}}},
         {"env": "MAIL_DIR"},
         {"cmd": "workflow-run", "args": ""},
+        {"tool": "workflow_merge", "params": {"action": "keep"}},
+        {"tool": "workflow_record_decision", "params": {"stage": "no-such-stage", "answer": {"a": 1}}},
     ]
     report = drive(ext, ext.tmp / ".ext" / "workflow.ts", env.b, steps)
     env.workflow_ext_report = report
@@ -769,6 +843,14 @@ def test_workflow_run_activates_subagent(env):
     steps = env.workflow_ext_report["steps"]
     assert "subagent" not in steps[0]["activeTools"]  # /workflow-status launches nothing
     assert "subagent" in steps[12]["activeTools"] and steps[12]["out"][0]["kind"] == "prompt"
+
+
+@skip_extensions
+def test_script_tools_pass_their_arguments(env):
+    # refusals that show each tool's parameters reached its script as arguments
+    merge, decision = env.workflow_ext_report["steps"][13:15]
+    assert merge["schemaOk"] and "nothing to review" in merge["result"]["error"]
+    assert decision["schemaOk"] and "no-such-stage" in json.dumps(decision["result"])
 
 
 @skip_extensions

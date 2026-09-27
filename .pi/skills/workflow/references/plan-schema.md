@@ -128,10 +128,10 @@ agents:
     - worker                       # plain name = source: builtin
     - name: plan-critic
       source: project               # builtin | package | project | user
-    - name: gpt-pro
-      source: package
-      runner: external-job         # native | external-cli | external-job
-    - name: council-sol
+    - name: workflow-batcher
+      source: project
+      runner: external-cli         # native (default) | external-cli: a command, no model
+    - name: invoice-check-classifier
       source: project
       context: fresh               # the profile's defaultContext
 ```
@@ -182,9 +182,10 @@ agents:
   title: Parse invoice lines
   kind: deterministic          # deterministic | judgment | decision | side_effect (classify.md)
   kind_reason: fixed fields, checkable by recount
-  pattern: script              # script | map | map_reduce | scout | worker | reviewer | lanes | council | approval
+  pattern: script              # script | map | map_reduce | scout | worker | reviewer | approval
   agent: worker                # an available agent; omit for decision/approval and resumed stages
   script: extract_lines.py     # the stage's program in the workflow's scripts/ (see Stage programs)
+  run: "${mail_dir} lines.csv" # its arguments; once it exists, runs execute it as a command (no model)
   needs: [find]                # stage keys that must finish first
   consumes: [invoices]         # input ids or out ids of upstream stages
   out:
@@ -254,19 +255,32 @@ A deterministic stage is a program plus a gate. `script: <file>` names the
 program; it lives in the workflow's `scripts/` and is versioned with the
 plan, so every run uses the same reviewed code:
 
-- The first run's child writes it there (inputs and outputs as
-  command-line arguments, usage in its docstring) and runs it. The run
-  commits it on its branch `run/<id>`, and the user sees it in the run's
-  review; after a merge, later runs' children just run it, and change it
-  only if it fails or its output would miss "done when".
+- `run: "<arguments>"` is how the program is called: `python3
+  scripts/<file> <arguments>`, from the run's `work/`. `${params}` are
+  resolved (and shell-quoted); relative paths are the stage's `out` and
+  `consumes` paths in `work/`. Decide the arguments while planning: they are
+  the program's interface.
+- The first run's child writes the program there, taking exactly those
+  arguments (usage in its docstring), and runs it. The run commits it on its
+  branch `run/<id>`, and the user sees it in the run's review.
+- Once the program exists, a run executes it as a command: the
+  `workflow-batcher` command runner (no model) runs it and then the gate, in
+  about a second. Only if either fails does a model child, `<key>-fix`, get
+  the error, repair the program and run it again (the usual acceptance gate
+  checks it); the repaired program is committed and reviewed like a new one.
 - A side-effect stage whose work is mechanical (writing a workbook) may name
   one too.
 
 - **rule** `script` is a file name (no folders), on a deterministic or
   side-effect stage with `pattern: script` (not a map-type stage: every
   batch child would write it), and not shared with another stage.
+- **rule** `run` needs `script`, and every `out` of that stage has a `path`
+  (a command writes files and returns nothing). No stage is called
+  `<key>-fix`.
 - *warning* a deterministic `pattern: script` stage without `script`: every
   run writes its program again.
+- *warning* `script` without `run`: a model child runs the program every
+  run (15–20 s and its cost), instead of a command.
 
 ### Document outputs
 
@@ -282,8 +296,8 @@ children (verify in a following stage).
 
 ### External runners
 
-Agents with `runner: external-cli` or `external-job` have no structured
-output, no forked context, no acceptance gates and no reliable resume.
+Agents with `runner: external-cli` (a command such as `workflow-batcher`, no model) have
+no structured output, no forked context, no acceptance gates and no reliable resume.
 
 ### Workflow keys
 
@@ -291,7 +305,6 @@ output, no forked context, no acceptance gates and no reliable resume.
 |---|---|
 | `map` | `<key>-split`, `<key>-0`, `<key>-1`, … (one per batch), `<key>-merge` |
 | `map_reduce` | `<key>-split`, `<key>-0`, …, `<key>-reduce` |
-| `lanes`, `council` | `<key>-<lane or advisor>` |
 | with `verify.review` | also `<key>-review` |
 | everything else | `<key>` |
 
@@ -306,7 +319,6 @@ approvals are collected before launch. Every child runs with
 `workflow-batcher` command runner (no model), launch one child per batch
 writing `<key>/<n>.<ext>` in the run's `work/`, and merge the batch files into the stage's
 output (`map`) or hand them to a `<key>-reduce` child (`map_reduce`).
-`lanes` and `council` are not compiled; the runner launches them by hand.
 
 A child's returned result only exists inside the run that produced it, so
 later waves can only consume outputs that have a `path`.
@@ -336,7 +348,6 @@ Rules:
     and `items` naming a consumed input or a consumed file output (one with a `path`).
   - **rule** `map` / `map_reduce` stages have no `gate` (verify in a following script stage).
   - **rule** a stage never consumes a returned (path-less) result of a stage in an earlier wave.
-  - *warning* `lanes` / `council` stages are not compiled automatically.
   - **rule** stages that launch a child have an `agent` unless they `resumes`.
   - **rule** `resumes` names a needed, concrete, single-child native stage;
     the resuming stage sets no `agent` and no `gate`.

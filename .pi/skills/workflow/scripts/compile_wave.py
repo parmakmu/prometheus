@@ -31,7 +31,9 @@ Prints one JSON object. When the wave can launch:
    "call": {"async": true, "mission"|"missionId": …, "workflowScriptPath": "…/.compiled/w1.js"},
    "children": [...], "notes": [...]}
 
-The generated script is saved to runs/<id>/.compiled/<wave>.js (read it there to
+The generated script is the wave as data (`const W = {...};`) followed by
+wave_runner.js unchanged, so the compiler writes no code and every wave runs the
+same runner. It is saved to runs/<id>/.compiled/<wave>.js (read it there to
 review it; `--check` and a directly-run Compiler still return it inline as
 `workflowScript`, since neither launches). Pass `call` to the subagent tool
 exactly as given: passing a path, not the script text, is the point. When something must happen
@@ -44,6 +46,7 @@ The compiler never launches anything.
 import importlib.util
 import json
 import re
+import shlex
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from typing import Annotated
@@ -59,6 +62,7 @@ PARAM_RE = re.compile(r"\$\{([^}]*)\}")
 GATES_RE = re.compile(r"(?<![\w./-])\.\./gates/")
 BATCHER = "workflow-batcher"
 SINGLE = {"script", "worker", "scout", "reviewer"}
+RUNNER = HERE / "wave_runner.js"  # appended to every compiled wave
 
 
 def load_validator():
@@ -66,11 +70,6 @@ def load_validator():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
-
-
-def js(value):
-    """A JavaScript literal for a JSON-compatible Python value."""
-    return json.dumps(value, ensure_ascii=False)
 
 
 def expand_schema(s):
@@ -107,7 +106,7 @@ class Compiler:
                 if isinstance(o, dict) and o.get("id"):
                     self.producer[o["id"]] = (key, o)
         agents = (plan.get("agents") or {}).get("available") or []
-        self.external = {a["name"] for a in agents if isinstance(a, dict) and a.get("runner") in ("external-cli", "external-job")}
+        self.external = {a["name"] for a in agents if isinstance(a, dict) and a.get("runner") == "external-cli"}
         self.writers = {"worker"} | self.project_writers()
         self.missing_params = set()
         self.missing_secrets = set()
@@ -147,7 +146,8 @@ class Compiler:
 
     # --- task text -------------------------------------------------------------
     def input_line(self, cid, in_wave_results):
-        """(text, js_expr_or_None) describing one consumed id."""
+        """(text, key) describing one consumed id; key names a stage earlier in this wave whose
+        returned result follows the text, else None."""
         if cid in self.inputs:
             inp = self.inputs[cid]
             loc = self.resolve_text(inp.get("location", "")) if inp.get("location") else "(given in this task)"
@@ -163,8 +163,7 @@ class Compiler:
             fmt = f", {o['format']}" if o.get("format") else ""
             return f"- {cid} (from stage {pkey}{fmt}): {path}", None
         if pkey in in_wave_results:
-            expr = f"JSON.stringify(R[{js(pkey)}].structuredOutput ?? R[{js(pkey)}].output)"
-            return f"- {cid} (result of stage {pkey}): ", expr
+            return f"- {cid} (result of stage {pkey}): ", pkey
         self.errors.append(f"stage consumes '{cid}', a returned result of stage '{pkey}' from an earlier wave; give that output a path")
         return f"- {cid}: (unavailable)", None
 
@@ -184,13 +183,17 @@ class Compiler:
                          + (f"; it is done when: {check}" if check else "") + "\n")
         return lines
 
-    def task_expr(self, key, st, in_wave, extra_lines=()):
-        """A JS expression building the child's task text."""
+    def task(self, key, st, in_wave, extra_lines=()):
+        """The child's task: text, or parts [{text} | {result: key}] when it includes the result
+        of a stage earlier in this wave (wave_runner.js splices it in)."""
         slug = self.workflow.name
-        parts = []  # list of ("lit", str) | ("expr", str)
+        parts = []
 
         def lit(s):
-            parts.append(("lit", s))
+            if parts and "text" in parts[-1]:
+                parts[-1]["text"] += s
+            else:
+                parts.append({"text": s})
 
         lit(f"Workflow \"{slug}\", stage \"{key}\": {st.get('title', key)}.\n")
         for field in ("intent", "notes"):
@@ -200,10 +203,10 @@ class Compiler:
         if consumes:
             lit("\nInputs:\n")
             for cid in consumes:
-                text, expr = self.input_line(cid, in_wave)
+                text, result = self.input_line(cid, in_wave)
                 lit(text)
-                if expr:
-                    parts.append(("expr", expr))
+                if result:
+                    parts.append({"result": result})
                 lit("\n")
         writes = [o for o in st.get("out") or [] if isinstance(o, dict) and o.get("path")]
         if writes:
@@ -217,16 +220,19 @@ class Compiler:
         if used_next:
             lit("\nUsed next by (make the outputs complete for what these stages need):\n" + "".join(used_next))
         for line in extra_lines:
-            lit(line)
+            lit(line) if isinstance(line, str) else parts.append(line)
         kind = st.get("kind")
         script = self.script_path(st)
+        command = self.program_command(st)
+        run_as = f" as `{command}` (from {self.work})" if command else " (its docstring says how)"
         if script and Path(script).is_file():
-            lit(f"\nThis stage's program is {script}, reviewed and kept with the workflow. Run it (its docstring "
-                "says how) to write the outputs; do not rewrite it or process items by hand. Change it only if it "
+            lit(f"\nThis stage's program is {script}, reviewed and kept with the workflow. Run it{run_as} "
+                "to write the outputs; do not rewrite it or process items by hand. Change it only if it "
                 "fails or its output would not meet \"Done when\"; keep the change small and say what you changed and why.\n")
         elif script:
-            lit(f"\nWrite this stage's program at {script}, then run it to write the outputs; do not process items "
-                "by hand. Later runs reuse it: take every input and output location as a command-line argument "
+            lit(f"\nWrite this stage's program at {script}, then run it{run_as} to write the outputs; do not process "
+                "items by hand. Later runs reuse it" + (", running it with exactly these arguments without a model"
+                if command else "") + ": take every input and output location as a command-line argument "
                 "(nothing of this run hard-coded), use only Python's standard library or packages already "
                 "installed, and say how to run it in its docstring.\n")
         elif kind == "deterministic":
@@ -242,48 +248,40 @@ class Compiler:
             + "; do not contact other agents "
             "or spawn subagents. If you cannot continue without a decision, use contact_supervisor with reason "
             "need_decision instead of guessing.")
-        out = []
-        for kind_, val in parts:
-            if kind_ == "lit":
-                if out and out[-1][0] == "lit":
-                    out[-1] = ("lit", out[-1][1] + val)
-                else:
-                    out.append(("lit", val))
-            else:
-                out.append(("expr", val))
-        return " + ".join(js(v) if k == "lit" else f"({v})" for k, v in out) or '""'
+        return parts[0]["text"] if len(parts) == 1 else parts
 
     # --- items -----------------------------------------------------------------
-    def item_fields(self, key, st, in_wave, task_expr, output=None, returned_schema=True):
-        fields = [("key", js(key)), ("label", js(st.get("title", key))), ("cwd", js(str(self.work)))]
+    def item(self, key, st, in_wave, task, output=None):
+        """A pi-subagents child for a single-child stage."""
+        c = {"key": key, "label": st.get("title", key), "cwd": str(self.work)}
         resumes = st.get("resumes")
         if resumes:
             if resumes in in_wave:
-                fields.append(("resume", f"R[{js(resumes)}].runId"))
+                c["resumeFrom"] = resumes  # the runner puts in that child's run id
             else:
                 subagent_run_id = next((r.get("subagent_run_id") for r in reversed(self.launches)
                                if r.get("status") == "done" and resumes in (r.get("children") or {})), None)
                 if not subagent_run_id:
                     self.errors.append(f"stage '{key}' resumes '{resumes}' but run {self.run_id} has no finished launch of stage '{resumes}'")
-                fields.append(("resume", js({"workflowRunId": subagent_run_id, "key": resumes, "latest": True})))
+                c["resume"] = {"workflowRunId": subagent_run_id, "key": resumes, "latest": True}
         else:
-            fields.append(("agent", js(st.get("agent"))))
-        fields.append(("task", task_expr))
+            c["agent"] = st.get("agent")
+        c["task"] = task
         if output:
-            fields.append(("output", js(output)))
+            c["output"] = output
         if st.get("context"):
-            fields.append(("context", js(st["context"])))
+            c["context"] = st["context"]
         agent = st.get("agent")
         returned = [o for o in st.get("out") or [] if isinstance(o, dict) and not o.get("path") and o.get("schema")]
-        if returned and returned_schema:
+        if returned:
             if agent in self.external:
                 self.notes.append(f"{key}: external runner; schema requested as JSON text only")
             else:
-                fields.append(("outputSchema", js(expand_schema(returned[0]["schema"]))))
+                c["outputSchema"] = expand_schema(returned[0]["schema"])
         acceptance = None if resumes else self.acceptance(key, agent, (st.get("verify") or {}).get("gate"))
         if acceptance:
-            fields.append(("acceptance", js(acceptance)))
-        return "{ " + ", ".join(f"{k}: {v}" for k, v in fields) + " }"
+            c["acceptance"] = acceptance
+        return c
 
     def project_writers(self):
         """Project agents whose frontmatter declares acceptanceRole: writer."""
@@ -300,6 +298,45 @@ class Compiler:
     def script_path(self, st):
         """The stage's program in the workflow's scripts/ (kept across runs), or None."""
         return str(self.workflow / "scripts" / st["script"]) if st.get("script") else None
+
+    def program_command(self, st):
+        """The shell command that runs the stage's program with its `run:` arguments, or None."""
+        if not st.get("script") or st.get("run") is None:
+            return None
+        return f"python3 {shlex.quote(self.script_path(st))} {self.resolve_command(st['run'])}".strip()
+
+    def resolve_command(self, text):
+        """resolve_text for a shell command: values are quoted (a path may have spaces); a secret
+        stays "${ENV_NAME}", which the shell expands."""
+        def sub(m):
+            name = m.group(1)
+            resolved = self.resolve_text(m.group(0))
+            spec = self.params.get(name) or {}
+            if resolved == m.group(0) or workflow_params.kind(spec) == "secret":
+                return f'"{resolved}"'
+            return shlex.quote(resolved)
+        return PARAM_RE.sub(sub, str(text))
+
+    def command_item(self, key, st, in_wave, output):
+        """A stage whose program exists and has `run:`: workflow-batcher runs the program and its
+        gate (no model). `fix` is the child the runner launches only if that fails: it is shown the
+        failure, repairs the program and runs it again, checked by the usual acceptance gate."""
+        command = self.program_command(st)
+        req = {"op": "run", "command": command}
+        gate = (st.get("verify") or {}).get("gate")
+        if gate is not None:
+            typed = isinstance(gate, dict)
+            req["gate"] = self.gate_command(gate["command"] if typed else gate)
+            req["gate_json"] = typed
+        fix_task = self.task(key, st, in_wave, extra_lines=(
+            f"\nThe program failed when this wave ran it as a command:\n  {command}\n",
+            {"failure": key},
+            ("\nFind the cause, fix the program (keep the change small; say what you changed and why) and run it "
+             "again the same way. Do not work around the program by writing the outputs yourself.\n")))
+        fix = self.item(key, st, in_wave, fix_task, output=output)
+        fix["key"], fix["label"] = f"{key}-fix", f"{st.get('title', key)} (fix the program)"
+        return {"key": key, "label": st.get("title", key), "agent": BATCHER, "cwd": str(self.work),
+                "task": "BATCH_TOOL_REQUEST " + json.dumps(req), "fix": fix}
 
     def gate_command(self, command):
         """The gate with params resolved and ../gates/ pointing at the workflow's gates/."""
@@ -331,23 +368,14 @@ class Compiler:
             acc["verify"] = verify
         return acc
 
-    # --- script pieces -------------------------------------------------------------
-    def run_layer(self, items_js, keys):
-        lines = [f"items = [\n    {(',' + chr(10) + '    ').join(items_js)}\n  ];",
-                 "for (let i = 0; i < items.length; i += P) {",
-                 "    const part = await runs.all(items.slice(i, i + P));",
-                 "    part.forEach((r, j) => { R[items[i + j].key] = r; });",
-                 "  }",
-                 f"  bad = {js(keys)}.filter(k => failed(R[k]));",
-                 "  if (bad.length) return stop(\"failed\", bad);"]
-        return "\n  ".join(lines)
-
-    def map_block(self, key, st, in_wave):
+    # --- steps (wave_runner.js runs them) ------------------------------------------
+    def map_step(self, key, st, in_wave):
+        """A map / map_reduce stage: split by the command runner, a child per batch, then
+        merge (command runner) or reduce (a child)."""
         pattern = st.get("pattern")
         items_id = st.get("items")
         if items_id in self.inputs:
-            inp = self.inputs[items_id]
-            source = self.resolve_text(inp.get("location", ""))
+            source = self.resolve_text(self.inputs[items_id].get("location", ""))
         else:
             source = self.out_path(self.producer[items_id][1]) if items_id in self.producer else None
         if not source:
@@ -355,58 +383,25 @@ class Compiler:
             source = ""
         final = next((o for o in st.get("out") or [] if isinstance(o, dict) and o.get("path")), None)
         final_path = self.out_path(final) if final else str(self.work / key / "result.json")
-        ext = Path(final_path).suffix or ".json"
-        outdir = str(self.work / key)
-        split_req = {"op": "split", "source": source, "batch": st.get("batch"),
-                     "outdir": str(self.work / "batches" / key)}
+        split_req = {"op": "split", "source": source, "batch": st.get("batch"), "outdir": str(self.work / "batches" / key)}
         if st.get("items_glob"):
             split_req["glob"] = st["items_glob"]
-        base_task = self.task_expr(key, st, in_wave, extra_lines=(
-            ("\nThis is one batch of a larger set. Work only on the items in your batch file; "
-             "the output path above is replaced by your batch output path below.\n"),))
-        batch_task = (f"{base_task} + \"\\n\\nYour batch file (one item per line): \" + b.file + "
-                      f"\"\\nWrite your batch result to: \" + {js(outdir + '/')} + b.index + {js(ext)}")
-        child = {"key": f"{js(key + '-')} + b.index", "label": f"{js(st.get('title', key) + ' — batch ')} + b.index",
-                 "agent": js(st.get("agent")), "cwd": js(str(self.work)), "task": batch_task,
-                 "output": f"{js(outdir + '/')} + b.index + {js(ext)}"}
+        m = {"key": key, "pattern": pattern, "title": st.get("title", key), "agent": st.get("agent"),
+             "cwd": str(self.work), "outdir": str(self.work / key), "ext": Path(final_path).suffix or ".json",
+             "final": final_path,
+             "task": self.task(key, st, in_wave, extra_lines=(
+                 ("\nThis is one batch of a larger set. Work only on the items in your batch file; "
+                  "the output path above is replaced by your batch output path below.\n"),)),
+             "split": {"key": f"{key}-split", "agent": BATCHER, "label": f"Split items: {key}", "cwd": str(self.work),
+                       "task": "BATCH_TOOL_REQUEST " + json.dumps(split_req)}}
         if st.get("context"):
-            child["context"] = js(st["context"])
-        child_js = "{ " + ", ".join(f"{k}: {v}" for k, v in child.items()) + " }"
-        batch_outputs = f"S.batches.map(b => {js(outdir + '/')} + b.index + {js(ext)})"
-        lines = [
-            f"// {pattern} stage {key}",
-            f"R[{js(key + '-split')}] = await runs.run({js(key + '-split')}, {{ agent: {js(BATCHER)}, label: {js('Split items: ' + key)}, cwd: {js(str(self.work))}, task: {js('BATCH_TOOL_REQUEST ' + json.dumps(split_req))} }});",
-            f"if (failed(R[{js(key + '-split')}])) return stop(\"failed\", [{js(key + '-split')}]);",
-            f"S = JSON.parse(R[{js(key + '-split')}].output);",
-            f"items = S.batches.map(b => ({child_js}));",
-            "for (let i = 0; i < items.length; i += P) {",
-            "  const part = await runs.all(items.slice(i, i + P));",
-            "  part.forEach((r, j) => { R[items[i + j].key] = r; });",
-            "}",
-            "bad = items.map(it => it.key).filter(k => failed(R[k]));",
-            "if (bad.length) return stop(\"failed\", bad);",
-        ]
-        if pattern == "map":
-            merge_req_expr = (f"\"BATCH_TOOL_REQUEST \" + JSON.stringify({{ op: \"merge\", inputs: {batch_outputs}, "
-                              f"output: {js(final_path)} }})")
-            lines += [
-                f"R[{js(key + '-merge')}] = await runs.run({js(key + '-merge')}, {{ agent: {js(BATCHER)}, label: {js('Merge batches: ' + key)}, cwd: {js(str(self.work))}, task: {merge_req_expr} }});",
-                f"if (failed(R[{js(key + '-merge')}])) return stop(\"failed\", [{js(key + '-merge')}]);",
-            ]
-        else:  # map_reduce
-            reduce_task = (f"{self.task_expr(key, st, in_wave)} + \"\\n\\nThis is the reduce step. Combine these batch results into the output above: \" + "
-                           f"{batch_outputs}.join(\", \")")
-            reduce_item = {"key": js(key + "-reduce"), "label": js(st.get("title", key) + " — reduce"),
-                           "agent": js(st.get("agent")), "cwd": js(str(self.work)), "task": reduce_task,
-                           "output": js(final_path)}
-            lines += [
-                f"R[{js(key + '-reduce')}] = await runs.run({js(key + '-reduce')}, {{ {', '.join(f'{k}: {v}' for k, v in reduce_item.items())} }});",
-                f"if (failed(R[{js(key + '-reduce')}])) return stop(\"failed\", [{js(key + '-reduce')}]);",
-            ]
-        return "\n  ".join(lines)
+            m["context"] = st["context"]
+        if pattern == "map_reduce":
+            m["reduce_task"] = self.task(key, st, in_wave)
+        return {"map": m}
 
-    def review_block(self, key, st):
-        agent = (st.get("verify") or {}).get("review")
+    def review_step(self, key, st):
+        """A fresh reviewer of a stage's output; a blocking finding stops the wave."""
         outs = [self.out_path(o) for o in st.get("out") or [] if isinstance(o, dict) and o.get("path")]
         check = (st.get("verify") or {}).get("check") or "the output is complete and correct for the stage's purpose"
         used_next = self.used_next_by(key)
@@ -417,13 +412,9 @@ class Compiler:
                 + "Set blocking to true only if the output is wrong or incomplete in a way the next stages would build on.")
         schema = {"type": "object", "required": ["blocking", "findings"],
                   "properties": {"blocking": {"type": "boolean"}, "findings": {"type": "array", "items": {"type": "string"}}}}
-        rk = key + "-review"
-        task_js = js(task) if outs else f"{js(task + chr(10))} + JSON.stringify(R[{js(key)}].structuredOutput ?? R[{js(key)}].output)"
-        return "\n  ".join([
-            f"R[{js(rk)}] = await runs.run({js(rk)}, {{ agent: {js(agent)}, label: {js('Review: ' + key)}, cwd: {js(str(self.work))}, context: \"fresh\", task: {task_js}, outputSchema: {js(schema)} }});",
-            f"if (failed(R[{js(rk)}])) return stop(\"failed\", [{js(rk)}]);",
-            f"if (R[{js(rk)}].structuredOutput && R[{js(rk)}].structuredOutput.blocking) return stop(\"blocked\", [{js(rk)}]);",
-        ])
+        return {"review": {"key": f"{key}-review", "agent": (st.get("verify") or {}).get("review"), "label": f"Review: {key}",
+                           "cwd": str(self.work), "context": "fresh",
+                           "task": task if outs else [{"text": task + "\n"}, {"result": key}], "outputSchema": schema}}
 
     # --- wave ------------------------------------------------------------------------
     def compile(self, wave):
@@ -452,8 +443,6 @@ class Compiler:
                     "done_when": (st.get("verify") or {}).get("check"),
                     "program": self.script_path(st) if st.get("script") else None,
                 })
-            if st.get("pattern") in ("lanes", "council"):
-                self.errors.append(f"stage '{s}': pattern {st.get('pattern')} is not compiled automatically; run it as described in run-protocol.md")
 
         # layers of runnable stages by in-wave needs
         layers = []
@@ -469,26 +458,30 @@ class Compiler:
 
         limits = self.plan.get("limits") or {}
         max_parallel = limits.get("max_parallel") or 4
-        body = []
+        steps = []
         children = []
         in_wave_done = set()
         for layer in layers:
             singles = [s for s in layer if self.stages[s].get("pattern") not in ("map", "map_reduce")]
             maps = [s for s in layer if s not in singles]
             if singles:
-                items_js = []
+                items = []
                 for s in singles:
                     st = self.stages[s]
                     first_path = next((self.out_path(o) for o in st.get("out") or [] if isinstance(o, dict) and o.get("path")), None)
-                    items_js.append(self.item_fields(s, st, in_wave_done, self.task_expr(s, st, in_wave_done), output=first_path))
+                    program = self.script_path(st)
+                    if self.program_command(st) and Path(program).is_file() and not st.get("resumes"):
+                        items.append(self.command_item(s, st, in_wave_done, first_path))
+                    else:
+                        items.append(self.item(s, st, in_wave_done, self.task(s, st, in_wave_done), output=first_path))
                     children.append(s)
-                body.append(f"// layer: {', '.join(singles)}\n  " + self.run_layer(items_js, singles))
+                steps.append({"layer": items})
             for s in maps:
-                body.append(self.map_block(s, self.stages[s], in_wave_done))
+                steps.append(self.map_step(s, self.stages[s], in_wave_done))
                 children += [f"{s}-split", f"{s}-<n>", f"{s}-merge" if self.stages[s].get("pattern") == "map" else f"{s}-reduce"]
             for s in layer:
                 if (self.stages[s].get("verify") or {}).get("review"):
-                    body.append(self.review_block(s, self.stages[s]))
+                    steps.append(self.review_step(s, self.stages[s]))
                     children.append(f"{s}-review")
             in_wave_done |= set(layer)
 
@@ -500,24 +493,10 @@ class Compiler:
 
         wid = wave.get("id")
         revision = self.plan.get("revision", 1)
-        script = "\n".join([
-            f"// Compiled from .pi/plan.yaml revision {revision}, run {self.run_id}, wave {wid}. Do not edit; recompile instead.",
-            f"const P = {int(max_parallel)};",
-            "const R = {};",
-            "let items, bad, S;",
-            # a child result has ok, not a status: runs.all returns failed children as {ok: false},
-            # runs.run throws (caught below); outcome() is pi-subagents' own naming of the result
-            "function failed(r) { return !r || r.ok !== true; }",
-            "function outcome(r) { return r.ok ? \"completed\" : r.stopped ? \"stopped\" : r.detached ? \"paused\" : \"failed\"; }",
-            "function summary() { const o = {}; for (const k of Object.keys(R)) { const r = R[k] || {}; o[k] = { runId: r.runId ?? null, status: outcome(r), outputReference: r.outputReference ?? null, structuredOutput: r.structuredOutput ?? null }; } return o; }",
-            f"function stop(status, keys) {{ return {{ wave: {js(wid)}, revision: {revision}, status: status, at: keys, children: summary() }}; }}",
-            "try {",
-            "  " + "\n  ".join(body),
-            "} catch (e) {",
-            "  return { wave: " + js(wid) + ", revision: " + str(revision) + ", status: \"failed\", error: String((e && e.message) || e), children: summary() };",
-            "}",
-            f"return {{ wave: {js(wid)}, revision: {revision}, status: \"done\", children: summary() }};",
-        ])
+        # the wave as data, then the fixed runner (JSON is a valid JS literal)
+        spec = {"wave": wid, "revision": revision, "max_parallel": int(max_parallel), "steps": steps}
+        script = (f"// Compiled from .pi/plan.yaml revision {revision}, run {self.run_id}, wave {wid}. Do not edit; recompile instead.\n"
+                  f"const W = {json.dumps(spec, indent=1, ensure_ascii=False)};\n\n" + RUNNER.read_text(encoding="utf-8"))
 
         call = {"async": True}
         mission_id = next((r.get("mission_id") for r in reversed(self.launches) if r.get("mission_id")), None)

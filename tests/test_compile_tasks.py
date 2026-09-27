@@ -30,16 +30,16 @@ def compiler(tmp_path):
 
 def test_producer_is_told_what_its_consumers_need(tmp_path):
     c = compiler(tmp_path)
-    task = c.task_expr("discover", c.stages["discover"], set())
+    task = c.task("discover", c.stages["discover"], set())
     assert "Used next by" in task and USED_BY in task
 
 
 def test_reviewer_judges_by_the_same_consumers(tmp_path):
     # the producer and its reviewer get the same lines, so they apply one standard
     c = compiler(tmp_path)
-    assert USED_BY in c.review_block("discover", c.stages["discover"])
+    assert USED_BY in c.review_step("discover", c.stages["discover"])["review"]["task"]
 
 
 def test_a_stage_nobody_consumes_gets_no_such_section(tmp_path):
     c = compiler(tmp_path)
-    assert "Used next by" not in c.task_expr("read-emails", c.stages["read-emails"], set())
+    assert "Used next by" not in c.task("read-emails", c.stages["read-emails"], set())

@@ -39,7 +39,7 @@
  * this file runs them and formats their JSON.
  */
 import { defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { Type, type Static, type TSchema } from "typebox";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { parseEnv } from "node:util";
@@ -397,211 +397,189 @@ export default function workflowAgent(pi: ExtensionAPI) {
 		}),
 	);
 
-	pi.registerTool(
-		defineTool({
-			name: "workflow_new_run",
-			label: "New run",
-			description:
-				"Start a run of this workflow: a folder runs/<id>/ for its state, work files and outputs, which becomes the active run. It starts from main; the run's own plan changes go to a branch run/<id>. Refuses while another run is active or another branch is checked out (review it first with workflow_merge).",
-				promptGuidelines: ["Start a run only when there is no active run and the user wants to run the workflow."],
-				parameters: Type.Object({
-					note: Type.Optional(Type.String({ description: "what this run is for, in the user's words" })),
-				}),
+	/** A tool that runs one script: `args` turns the tool's parameters into the script's arguments. */
+	const scriptTool = <P extends TSchema>(tool: {
+		name: string;
+		label: string;
+		description: string;
+		promptSnippet?: string;
+		promptGuidelines?: string[];
+		parameters: P;
+		script: string;
+		args: (params: Static<P>) => string[];
+	}) => {
+		const { script, args, ...definition } = tool;
+		pi.registerTool(
+			defineTool({
+				...definition,
 				async execute(_id, params, signal, _onUpdate, ctx) {
-					const args = ["new"];
-					if (params.note) args.push("--note", params.note);
-					return toolResult(await runScript(pi, mustRoot(ctx), "run_log.py", args, signal), "run_log.py new");
+					const argv = args(params);
+					const what = argv[0] && !argv[0].startsWith("-") ? `${script} ${argv[0]}` : script;
+					return toolResult(await runScript(pi, mustRoot(ctx), script, argv, signal), what);
 				},
-				}),
-				);
-				
-				pi.registerTool(
-				defineTool({
-					name: "workflow_stop_run",
-					label: "Stop run",
-					description:
-						"Stop the active run (it stays in runs/, marked stopped). Returns its branch, if it changed the plan, for the user's review with workflow_merge, and `mission_close` (pass it to the subagent tool unchanged). Refuses while a wave is running.",
-					promptGuidelines: ["Stop a run only when the user asked to stop it or to start over."],
-					parameters: Type.Object({ note: Type.Optional(Type.String({ description: "why it stopped" })) }),
-					async execute(_id, params, signal, _onUpdate, ctx) {
-						const args = ["stop"];
-						if (params.note) args.push("--note", params.note);
-						return toolResult(await runScript(pi, mustRoot(ctx), "run_log.py", args, signal), "run_log.py stop");
-					},
-				}),
-				);
-				
-				pi.registerTool(
-				defineTool({
-					name: "workflow_merge",
-					label: "Merge branch",
-					description:
-						"Finish the review of the checked-out run or change branch and switch back to main: merge (into main; tags the revision), keep (the branch stays for later) or discard (delete it). Refuses while a run is active.",
-					promptGuidelines: [
-						"Call workflow_merge only with the action the user chose after seeing the branch's changes (git diff main...<branch>).",
-					],
-					parameters: Type.Object({
-						action: Type.Union([Type.Literal("merge"), Type.Literal("keep"), Type.Literal("discard")]),
-					}),
-					async execute(_id, params, signal, _onUpdate, ctx) {
-						return toolResult(await runScript(pi, mustRoot(ctx), "workflow_git.py", ["merge", "--action", params.action], signal), "workflow_git.py merge");
-					},
-				}),
-				);
-	
-	pi.registerTool(
-		defineTool({
-			name: "workflow_compile",
-			label: "Compile wave",
-			description:
-				"Compile the active run's next wave into the exact pi-subagents call. Returns {ok, run, wave, stages, ends_with, call, children} when it can launch, or {ok: false, preflight} listing params to set (missing_params), secrets the user must add to .env (missing_secrets), decisions to collect and approvals to get.",
-			promptSnippet: "Compile the next workflow wave into a subagent call",
-			promptGuidelines: [
-				"Never write a workflowScript by hand; use workflow_compile and pass its `call` to the subagent tool unchanged. `call.workflowScriptPath` is a path (pi-subagents reads it itself): pass it as-is, do not open the file or paste its contents into the tool call.",
-				"Only list a stage in `approve` after the user explicitly approved that stage's side effect in this session.",
-			],
-			parameters: Type.Object({
-				approve: Type.Optional(Type.Array(Type.String(), { description: "side-effect stage keys the user explicitly approved" })),
 			}),
-			async execute(_id, params, signal, _onUpdate, ctx) {
-				const args: string[] = [];
-				if (params.approve?.length) args.push("--approve", params.approve.join(","));
-				return toolResult(await runScript(pi, mustRoot(ctx), "compile_wave.py", args, signal), "compile_wave.py");
-			},
-		}),
-	);
-
-	pi.registerTool(
-		defineTool({
-			name: "workflow_record_decision",
-			label: "Record decision",
-			description: "Record the user's answer for a decision stage, in the file the compiler reads.",
-			promptGuidelines: ["Record only answers the user actually gave; never answer a decision stage yourself."],
-			parameters: Type.Object({
-				stage: Type.String({ description: "the decision stage key" }),
-				answer: Type.Any({ description: "the user's answer as JSON (object, string, list)" }),
-			}),
-			async execute(_id, params, signal, _onUpdate, ctx) {
-				const args = ["decision", "--stage", params.stage, "--answer", JSON.stringify(params.answer)];
-				return toolResult(await runScript(pi, mustRoot(ctx), "run_log.py", args, signal), "run_log.py decision");
-			},
-		}),
-	);
-
-	pi.registerTool(
-		defineTool({
-			name: "workflow_log_start",
-			label: "Log wave start",
-			description: "Record that the active run's next wave was launched: marks its stages running and appends a launch to runs/<id>/run.yaml.",
-			parameters: Type.Object({
-				wave: Type.String({ description: "the wave id workflow_compile returned" }),
-				subagent_run_id: Type.String({ description: "the run id the subagent launch returned" }),
-				mission_id: Type.Optional(Type.String()),
-				approved: Type.Optional(Type.Array(Type.String())),
-				decisions: Type.Optional(Type.Record(Type.String(), Type.Any())),
-			}),
-			async execute(_id, params, signal, _onUpdate, ctx) {
-				const args = ["start", "--wave", params.wave, "--subagent-run-id", params.subagent_run_id];
-				if (params.mission_id) args.push("--mission-id", params.mission_id);
-				if (params.approved?.length) args.push("--approved", params.approved.join(","));
-				if (params.decisions) args.push("--decisions", JSON.stringify(params.decisions));
-				return toolResult(await runScript(pi, mustRoot(ctx), "run_log.py", args, signal), "run_log.py start");
-			},
-		}),
-	);
-
-	pi.registerTool(
-		defineTool({
-			name: "workflow_log_finish",
-			label: "Log wave result",
-			description:
-				"Record a finished wave in the active run. Pass only the wave: the outcome (the workflow script's return value, status, cost) is read from pi-subagents. `done` marks its stages done (and the run done after the last wave); failed, blocked or stopped put them back to pending so the wave can be fixed and relaunched. Commits files the wave wrote into the workflow on the run's branch. Returns the wave's ends_with (what to do next), a summary of its children and, when the run is done, its branch for review, the plan's `done_when` for the final report, and `mission_close` (pass it to the subagent tool unchanged).",
-			promptGuidelines: [
-				"After a wave's completion notice, call workflow_log_finish with just the wave; do not look up the run's status or assemble its result yourself.",
-			],
-			parameters: Type.Object({
-				wave: Type.String(),
-				status: Type.Optional(
-					Type.Union([Type.Literal("done"), Type.Literal("failed"), Type.Literal("blocked"), Type.Literal("stopped")], {
-						description: "only when pi-subagents has no record of the run (it says so); default: what the wave returned",
-					}),
-				),
-				result: Type.Optional(Type.Any({ description: "only with status, when pi-subagents has no record: the workflow script's return value" })),
-				note: Type.Optional(Type.String()),
-			}),
-			async execute(_id, params, signal, _onUpdate, ctx) {
-				const args = ["finish", "--wave", params.wave];
-				if (params.status) args.push("--status", params.status);
-				if (params.result !== undefined) args.push("--result", JSON.stringify(params.result)); // saved in the run's .compiled/
-				if (params.note) args.push("--note", params.note);
-				return toolResult(await runScript(pi, mustRoot(ctx), "run_log.py", args, signal), "run_log.py finish");
-			},
-		}),
-	);
-
-	/** Run a plan_edit.py command with its JSON payload. */
-	const planEdit = async (ctx: ExtensionContext, cmd: "replan" | "critique" | "params", payload: unknown, signal?: AbortSignal) => {
-		const flag = { replan: "--change", critique: "--result", params: "--values" }[cmd];
-		return toolResult(await runScript(pi, mustRoot(ctx), "plan_edit.py", [cmd, flag, JSON.stringify(payload)], signal), `plan_edit.py ${cmd}`);
+		);
 	};
+	/** [flag, value] when the value is given, else nothing. */
+	const opt = (flag: string, value: string | undefined): string[] => (value ? [flag, value] : []);
 
-	pi.registerTool(
-		defineTool({
-			name: "workflow_replan",
-			label: "Replan",
-			description:
-				"Change pending work in .pi/plan.yaml: replace or add stages (full definitions), remove pending stages, record unknowns' findings, add questions or record answers. Waves follow from the stages. Refuses changes to stages that are done or running in the active run, the request, goal, done_when, params, inputs, outputs and agents, and any weakening of a side effect. Commits the workflow (git keeps the previous revision), bumps revision, sets status draft and clears the critique.",
-			promptSnippet: "Change pending stages of the workflow plan",
-			promptGuidelines: [
-				"Use workflow_replan for every plan change after a wave has run; direct edits to .pi/plan.yaml are blocked.",
-				"Give each changed stage in full, as it should read in the plan; omit `provisional` and `resolves_after` to make a provisional stage concrete.",
-			],
-			parameters: Type.Object({
-				stages: Type.Optional(Type.Array(Type.Any(), { description: "full stage definitions (plan-schema.md, Stages)" })),
-				remove: Type.Optional(Type.Array(Type.String(), { description: "keys of pending stages to drop" })),
-				findings: Type.Optional(Type.Record(Type.String(), Type.Any(), { description: "unknown id -> finding" })),
-				questions: Type.Optional(Type.Array(Type.Any(), { description: "new questions" })),
-				answers: Type.Optional(Type.Record(Type.String(), Type.Any(), { description: "question id -> the user's answer" })),
-				note: Type.Optional(Type.String({ description: "one line: why" })),
-			}),
-			async execute(_id, params, signal, _onUpdate, ctx) {
-				return planEdit(ctx, "replan", params, signal);
-			},
+	scriptTool({
+		name: "workflow_new_run",
+		label: "New run",
+		description:
+			"Start a run of this workflow: a folder runs/<id>/ for its state, work files and outputs, which becomes the active run. It starts from main; the run's own plan changes go to a branch run/<id>. Refuses while another run is active or another branch is checked out (review it first with workflow_merge).",
+		promptGuidelines: ["Start a run only when there is no active run and the user wants to run the workflow."],
+		parameters: Type.Object({
+			note: Type.Optional(Type.String({ description: "what this run is for, in the user's words" })),
 		}),
-	);
+		script: "run_log.py",
+		args: (p) => ["new", ...opt("--note", p.note)],
+	});
 
-	pi.registerTool(
-		defineTool({
-			name: "workflow_record_critique",
-			label: "Record critique",
-			description:
-				"Record the plan-critic's result for the current revision, with your disposition of every finding; marks the plan ready if it then validates (needs_answers if questions are open).",
-			parameters: Type.Object({
-				run_id: Type.String({ description: "the critic's run id" }),
-				verdict: Type.Union([Type.Literal("pass"), Type.Literal("revise"), Type.Literal("ask_user")]),
-				passes: Type.Optional(Type.Integer({ minimum: 1, maximum: 2 })),
-				findings: Type.Array(Type.Any(), {
-					description: "{id, severity, category, target, claim, disposition: accepted|rejected|asked, note}",
+	scriptTool({
+		name: "workflow_stop_run",
+		label: "Stop run",
+		description:
+			"Stop the active run (it stays in runs/, marked stopped). Returns its branch, if it changed the plan, for the user's review with workflow_merge, and `mission_close` (pass it to the subagent tool unchanged). Refuses while a wave is running.",
+		promptGuidelines: ["Stop a run only when the user asked to stop it or to start over."],
+		parameters: Type.Object({ note: Type.Optional(Type.String({ description: "why it stopped" })) }),
+		script: "run_log.py",
+		args: (p) => ["stop", ...opt("--note", p.note)],
+	});
+
+	scriptTool({
+		name: "workflow_merge",
+		label: "Merge branch",
+		description:
+			"Finish the review of the checked-out run or change branch and switch back to main: merge (into main; tags the revision), keep (the branch stays for later) or discard (delete it). Refuses while a run is active.",
+		promptGuidelines: [
+			"Call workflow_merge only with the action the user chose after seeing the branch's changes (git diff main...<branch>).",
+		],
+		parameters: Type.Object({
+			action: Type.Union([Type.Literal("merge"), Type.Literal("keep"), Type.Literal("discard")]),
+		}),
+		script: "workflow_git.py",
+		args: (p) => ["merge", "--action", p.action],
+	});
+
+	scriptTool({
+		name: "workflow_compile",
+		label: "Compile wave",
+		description:
+			"Compile the active run's next wave into the exact pi-subagents call. Returns {ok, run, wave, stages, ends_with, call, children} when it can launch, or {ok: false, preflight} listing params to set (missing_params), secrets the user must add to .env (missing_secrets), decisions to collect and approvals to get.",
+		promptSnippet: "Compile the next workflow wave into a subagent call",
+		promptGuidelines: [
+			"Never write a workflowScript by hand; use workflow_compile and pass its `call` to the subagent tool unchanged. `call.workflowScriptPath` is a path (pi-subagents reads it itself): pass it as-is, do not open the file or paste its contents into the tool call.",
+			"Only list a stage in `approve` after the user explicitly approved that stage's side effect in this session.",
+		],
+		parameters: Type.Object({
+			approve: Type.Optional(Type.Array(Type.String(), { description: "side-effect stage keys the user explicitly approved" })),
+		}),
+		script: "compile_wave.py",
+		args: (p) => opt("--approve", p.approve?.join(",")),
+	});
+
+	scriptTool({
+		name: "workflow_record_decision",
+		label: "Record decision",
+		description: "Record the user's answer for a decision stage, in the file the compiler reads.",
+		promptGuidelines: ["Record only answers the user actually gave; never answer a decision stage yourself."],
+		parameters: Type.Object({
+			stage: Type.String({ description: "the decision stage key" }),
+			answer: Type.Any({ description: "the user's answer as JSON (object, string, list)" }),
+		}),
+		script: "run_log.py",
+		args: (p) => ["decision", "--stage", p.stage, "--answer", JSON.stringify(p.answer)],
+	});
+
+	scriptTool({
+		name: "workflow_log_start",
+		label: "Log wave start",
+		description: "Record that the active run's next wave was launched: marks its stages running and appends a launch to runs/<id>/run.yaml.",
+		parameters: Type.Object({
+			wave: Type.String({ description: "the wave id workflow_compile returned" }),
+			subagent_run_id: Type.String({ description: "the run id the subagent launch returned" }),
+			mission_id: Type.Optional(Type.String()),
+			approved: Type.Optional(Type.Array(Type.String())),
+			decisions: Type.Optional(Type.Record(Type.String(), Type.Any())),
+		}),
+		script: "run_log.py",
+		args: (p) => ["start", "--wave", p.wave, "--subagent-run-id", p.subagent_run_id, ...opt("--mission-id", p.mission_id),
+			...opt("--approved", p.approved?.join(",")), ...opt("--decisions", p.decisions && JSON.stringify(p.decisions))],
+	});
+
+	scriptTool({
+		name: "workflow_log_finish",
+		label: "Log wave result",
+		description:
+			"Record a finished wave in the active run. Pass only the wave: the outcome (the workflow script's return value, status, cost) is read from pi-subagents. `done` marks its stages done (and the run done after the last wave); failed, blocked or stopped put them back to pending so the wave can be fixed and relaunched. Commits files the wave wrote into the workflow on the run's branch. Returns the wave's ends_with (what to do next), a summary of its children and, when the run is done, its branch for review, the plan's `done_when` for the final report, and `mission_close` (pass it to the subagent tool unchanged).",
+		promptGuidelines: [
+			"After a wave's completion notice, call workflow_log_finish with just the wave; do not look up the run's status or assemble its result yourself.",
+		],
+		parameters: Type.Object({
+			wave: Type.String(),
+			status: Type.Optional(
+				Type.Union([Type.Literal("done"), Type.Literal("failed"), Type.Literal("blocked"), Type.Literal("stopped")], {
+					description: "only when pi-subagents has no record of the run (it says so); default: what the wave returned",
 				}),
-			}),
-			async execute(_id, params, signal, _onUpdate, ctx) {
-				return planEdit(ctx, "critique", params, signal);
-			},
+			),
+			result: Type.Optional(Type.Any({ description: "only with status, when pi-subagents has no record: the workflow script's return value" })),
+			note: Type.Optional(Type.String()),
 		}),
-	);
+		script: "run_log.py",
+		// a given result is saved in the run's .compiled/
+		args: (p) => ["finish", "--wave", p.wave, ...opt("--status", p.status),
+			...opt("--result", p.result === undefined ? undefined : JSON.stringify(p.result)), ...opt("--note", p.note)],
+	});
 
-	pi.registerTool(
-		defineTool({
-			name: "workflow_set_params",
-			label: "Set params",
-			description:
-				"Set values for the plan's params in .env (per machine). Refuses secrets: the user adds those to .env themselves. Returns validation, including input paths that are relative or do not exist.",
-			parameters: Type.Object({
-				values: Type.Record(Type.String(), Type.String(), { description: "param name -> value; absolute paths for files and folders" }),
-			}),
-			async execute(_id, params, signal, _onUpdate, ctx) {
-				return planEdit(ctx, "params", params.values, signal);
-			},
+	scriptTool({
+		name: "workflow_replan",
+		label: "Replan",
+		description:
+			"Change pending work in .pi/plan.yaml: replace or add stages (full definitions), remove pending stages, record unknowns' findings, add questions or record answers. Waves follow from the stages. Refuses changes to stages that are done or running in the active run, the request, goal, done_when, params, inputs, outputs and agents, and any weakening of a side effect. Commits the workflow (git keeps the previous revision), bumps revision, sets status draft and clears the critique.",
+		promptSnippet: "Change pending stages of the workflow plan",
+		promptGuidelines: [
+			"Use workflow_replan for every plan change after a wave has run; direct edits to .pi/plan.yaml are blocked.",
+			"Give each changed stage in full, as it should read in the plan; omit `provisional` and `resolves_after` to make a provisional stage concrete.",
+		],
+		parameters: Type.Object({
+			stages: Type.Optional(Type.Array(Type.Any(), { description: "full stage definitions (plan-schema.md, Stages)" })),
+			remove: Type.Optional(Type.Array(Type.String(), { description: "keys of pending stages to drop" })),
+			findings: Type.Optional(Type.Record(Type.String(), Type.Any(), { description: "unknown id -> finding" })),
+			questions: Type.Optional(Type.Array(Type.Any(), { description: "new questions" })),
+			answers: Type.Optional(Type.Record(Type.String(), Type.Any(), { description: "question id -> the user's answer" })),
+			note: Type.Optional(Type.String({ description: "one line: why" })),
 		}),
-	);
+		script: "plan_edit.py",
+		args: (p) => ["replan", "--change", JSON.stringify(p)],
+	});
+
+	scriptTool({
+		name: "workflow_record_critique",
+		label: "Record critique",
+		description:
+			"Record the plan-critic's result for the current revision, with your disposition of every finding; marks the plan ready if it then validates (needs_answers if questions are open).",
+		parameters: Type.Object({
+			run_id: Type.String({ description: "the critic's run id" }),
+			verdict: Type.Union([Type.Literal("pass"), Type.Literal("revise"), Type.Literal("ask_user")]),
+			passes: Type.Optional(Type.Integer({ minimum: 1, maximum: 2 })),
+			findings: Type.Array(Type.Any(), {
+				description: "{id, severity, category, target, claim, disposition: accepted|rejected|asked, note}",
+			}),
+		}),
+		script: "plan_edit.py",
+		args: (p) => ["critique", "--result", JSON.stringify(p)],
+	});
+
+	scriptTool({
+		name: "workflow_set_params",
+		label: "Set params",
+		description:
+			"Set values for the plan's params in .env (per machine). Refuses secrets: the user adds those to .env themselves. Returns validation, including input paths that are relative or do not exist.",
+		parameters: Type.Object({
+			values: Type.Record(Type.String(), Type.String(), { description: "param name -> value; absolute paths for files and folders" }),
+		}),
+		script: "plan_edit.py",
+		args: (p) => ["params", "--values", JSON.stringify(p.values)],
+	});
 }

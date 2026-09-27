@@ -54,9 +54,6 @@ agents:
     - oracle
     - name: plan-critic
       source: project
-    - name: gpt-pro
-      source: package
-      runner: external-job
 
 outputs:
   - id: variance_report
@@ -106,6 +103,7 @@ stages:
     pattern: script
     agent: worker
     script: extract_invoice_lines.py
+    run: "${mail_dir} invoice-index.json invoice-lines.csv unparsed.json"
     needs: [find]
     consumes: [mail, invoice_index]
     out:
@@ -145,6 +143,7 @@ stages:
     pattern: script
     agent: worker
     script: compare_to_budget.py
+    run: "${budget_file} invoice-lines.csv rest-lines.json ${report_dir}/Q3-invoice-variance.xlsx"
     needs: [extract-rest]
     consumes: [invoice_lines, rest_lines, budget]
     out:

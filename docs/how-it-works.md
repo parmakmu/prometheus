@@ -52,7 +52,7 @@ The stage kind determines the safety and correctness strategy:
 
 - **`side_effect`** changes something outside the current run—for example, sending a message or writing to a real service. It requires explicit user approval before launch.
 - **`decision`** represents a choice that belongs to the user. It is collected before the relevant wave starts, not delegated to a child.
-- **`deterministic`** work has correctness rules a program can decide. It uses a program plus a verification gate. The stage names its program (`script:`), which lives in the workflow's `scripts/`: the first run writes it, the user reviews it with that run's changes, and later runs reuse it.
+- **`deterministic`** work has correctness rules a program can decide. It uses a program plus a verification gate. The stage names its program (`script:`) and its arguments (`run:`). The program lives in the workflow's `scripts/`: the first run writes it, and the user reviews it with that run's changes. Later runs execute it as a plain command, with no model involved, which takes about a second. A model child is only brought in if the program or its gate fails; it gets the error and fixes the program.
 - **`judgment`** work needs interpretation by a reader or model. Its output should have a defined shape and be reviewed when appropriate.
 
 When mechanical processing has a plausible messy tail, the plan can split it: a deterministic stage handles regular cases and records leftovers, then a judgment stage handles those exceptions. See [`classify.md`](../.pi/skills/workflow/references/classify.md) for the decision test and examples.

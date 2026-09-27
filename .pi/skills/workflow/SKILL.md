@@ -163,10 +163,11 @@ has run, a change to its plan is `/workflow-revise` inside the workflow
 - The first wave is concrete and small; later waves are provisional where
   the details really depend on what the first wave finds.
 - Every stage's `kind` follows the four-question test, with a `kind_reason`.
-- Deterministic work is a `script` stage with a `verify` gate and a named
+- Deterministic work is a `script` stage with a `verify` gate, a named
   program (`script: <file>`, kept in the workflow's `scripts/`: the first run
-  writes it, later runs reuse it); messy tails go to a leftovers file and a
-  small judgment stage.
+  writes it) and its arguments (`run: "<args>"`: later runs execute it as a
+  command, with no model); messy tails go to a leftovers file and a small
+  judgment stage.
 - Judgment work is batched (`map` / `map_reduce`) with an output schema and
   an `items` source (a folder input or a file an earlier stage writes).
 - Anything a later wave reads is a file (`out` with `path`), never a returned

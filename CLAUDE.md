@@ -58,10 +58,11 @@ without Pi. Extensions run them with `$PI_WORKFLOW_PYTHON`, else the nearest `.v
 upwards (a workflow inside Prometheus uses Prometheus's), else `python3`; a script's
 `No module named …` becomes "ask the user to run `uv sync`". `templates/workflow/` is copied
 into each workflow by `scaffold_workflow.py`, together with a copy of the whole skill, so a
-workflow runs without Prometheus. `batch_tool.py` stays stdlib-only: the batcher runs it with
-plain `python3`. Libraries: typer, pydantic (plan shape, in `validate_plan.py`; cross-reference
-rules run after on a well-formed plan), pydantic-settings + python-dotenv (param values),
-ruamel.yaml (round-trip), graphlib (cycles, wave layering).
+workflow runs without Prometheus. `wave_runner.js` is the one piece of JS: the compiler appends
+it to every wave. `batch_tool.py` stays stdlib-only: the batcher runs it with plain `python3`.
+Libraries: typer, pydantic (plan shape, in `validate_plan.py`; the cross-reference rules, one
+`Checker` method per group, run after on a well-formed plan), pydantic-settings + python-dotenv
+(param values), ruamel.yaml (round-trip), graphlib (cycles, wave layering).
 
 ## Key design decisions (and why)
 
@@ -129,6 +130,19 @@ ruamel.yaml (round-trip), graphlib (cycles, wave layering).
 - **The compiled call carries `workflowScriptPath`**, the script saved at
   `runs/<id>/.compiled/<wave>.js`, not the script text. Why: retyping it was ~half the
   orchestrator's output tokens. `--check` and a directly built `Compiler` keep it inline.
+- **The compiler writes data, not code**: a compiled script is `const W = {wave as JSON};` plus
+  `scripts/wave_runner.js` unchanged (layers via `runs.all`, map split/batches/merge|reduce,
+  reviews, failure/block stops). Why: Python assembling JS strings caused two bugs (list commas,
+  the `status` field) and was hard to read. Not via pi-subagents' `args`: it caps them at 16 KiB,
+  16 fields per object and 64 items per array; the example plan's w1 is 19.6 KB. A test runs
+  pi-subagents' own `validateWorkflowScript` on compiled waves.
+- **Stage programs run as commands**: a stage with `script:` and `run: "<args>"` whose program
+  exists compiles to a `workflow-batcher` item (`batch_tool.py` op `run`: `python3 scripts/<file>
+  <args>` from `work/`, then the gate, through the shell). It carries a `fix` item, a worker child
+  the runner launches only if that fails, shown the error (`{failure: key}` task part), with the
+  usual acceptance gate. Values in `run:` are shell-quoted; secrets stay `"${ENV}"`. Why: run 7
+  spent 35 s on two model children that only ran reviewed programs (~1 s as commands).
+  `runs.host` is not open to raw workflow scripts, so the batcher (external-cli) does it.
 - **The orchestrator does no bookkeeping**: `workflow_log_finish {wave}` reads the outcome and
   cost from pi-subagents' `status.json`, returns a children summary (not outputs), the
   `mission_close` call and, when the run is done, the plan's `done_when` for the final report;
@@ -180,7 +194,9 @@ pi-subagents 0.73.1 (source in `~/.pi/agent/npm/node_modules/pi-subagents`):
 - `preserveStagedIndex`: `git write-tree` in the child's cwd at launch and end, compared;
   failing to capture (not a repo) fails the child.
 - Command-runner agents (`runner.type: external-cli`): stdin = instructions + task, stdout =
-  output; async only; no schema/gate/resume/fork.
+  output; a non-zero exit fails the child with stderr as its `error`; async only; no
+  schema/gate/resume/fork. `runs.host` commands are only for extension-owned named workflows,
+  not raw `workflowScript`/`workflowScriptPath`.
 - Tool activation (Pi >= 0.86.1): a fresh session has `subagents_enable` active and `subagent`
   registered but inactive. pi-subagents re-applies the recorded selection only on `session_start`
   and `session_tree`; its `before_agent_start` hook only keeps the loader active, so another
@@ -196,7 +212,7 @@ pi-subagents 0.73.1 (source in `~/.pi/agent/npm/node_modules/pi-subagents`):
 
 ## Status
 
-`uv run pytest`: 165 tests, all green, including 51 validator cases, 16 param tests, compiled
+`uv run pytest`: 179 tests, all green, including 51 validator cases, 16 param tests, compiled
 waves run in a mock of `runs.run/runs.all` (real batch tool and gates, fake children), and both
 extensions type-checked and driven with Pi's real types.
 
@@ -205,9 +221,14 @@ critic and questions; discovery + replan; explicit acceptance; derived waves and
 side-effect approval; `.env` loading; `workflow_log_finish` reading `status.json` and returning
 `mission_close`; stage programs written and committed at finish; the end-of-run review (keep);
 `/workflow-revise` with the critic and a merge; `workflowScriptPath`; a run reusing merged programs
-unchanged (run 4: nothing committed, children $0.0105, orchestrator $0.0135).
+unchanged (run 4: nothing committed, children $0.0105, orchestrator $0.0135); the question tool for
+every choice and `subagent` active from the command (run 6); "Used next by" (run 6: `discover`
+covered `Cc`, review passed); the data + `wave_runner.js` compiled waves and `done_when` in the
+finish result (run 7); stage programs run as commands via `run:` (run 8: `read-emails` and
+`build-workbook` 0.1 s each at $0 on `workflow-batcher`, vs 20 s and 15 s as model children; the
+run took about 1 min, down from 2 min 22 s).
 
-Not yet verified live: `/workflow-run` activating `subagent`; the
+Not yet verified live: the `<key>-fix` fallback for a failing program; the
 `workflow-batcher` command runner (no map stage has run); the replan tools since they were added;
 cross-wave resume; secret params; refresh refusing during a wave.
 
@@ -215,8 +236,7 @@ cross-wave resume; secret params; refresh refusing during a wave.
 
 1. A new plan with a map stage, to exercise `workflow-batcher`.
 2. Check that side-effect stages' agents have the connector tools they need (a validator rule).
-3. `lanes`/`council` patterns are validated but not compiled (validator warns).
-4. Retry relaunches the whole wave; per-key resume of failed children would be cheaper.
+3. Retry relaunches the whole wave; per-key resume of failed children would be cheaper.
 
 ## How to test
 

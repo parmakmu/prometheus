@@ -325,8 +325,9 @@ run active (`<python> <skill>/scripts/workflow_git.py review` shows it).
    `git diff main...<branch>` (read-only git is fine) and summarise it in
    words — which stages were filled in or changed and how, new or changed
    gate scripts, stage programs in `scripts/` (a run writes a stage's
-   program the first time; after a merge later runs reuse it, so it is
-   worth a look) and agents, the revision — plus the commit list from
+   program the first time, and a `<key>-fix` child repairs one that failed;
+   after a merge later runs execute it as a command, so it is worth a
+   look) and agents, the revision — plus the commit list from
    `review`. For a run branch, say what the run found that led to the
    change. Do not paste the diff.
 2. Ask what to do with the question tool (**Asking the user**), with these

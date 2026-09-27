@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Deterministic batching for map stages, run as the `workflow-batcher`
-command-runner agent inside a compiled workflowScript.
+"""The `workflow-batcher` command-runner agent (no model) inside a compiled
+wave: batching for map stages, and running a stage's program with its gate.
 
 pi-subagents passes the agent instructions plus the task on stdin. The task
 contains one line:
@@ -21,12 +21,20 @@ merge  {"op":"merge","inputs":[PATH,...],"output":PATH}
        objects appended), .jsonl / .txt (lines), .csv (header once).
        Missing inputs are an error. Prints {"output":PATH,"count":N}.
 
+run    {"op":"run","command":CMD,"gate":CMD?,"gate_json":BOOL?}
+       Runs a stage's program, then its gate, each through the shell (so
+       ${SECRET} variables expand, as in gates). Prints {"program": {...},
+       "gate": {...}}; the gate's JSON when gate_json. A failing program or
+       gate exits 1 with the reason on stderr: pi-subagents fails the child
+       with it, and the wave hands the reason to the stage's fix child.
+
 Can also be run directly: batch_tool.py '<json request>'.
 """
 import csv
 import fnmatch
 import io
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -35,7 +43,13 @@ MARKER = "BATCH_TOOL_REQUEST "
 
 def fail(message):
     print(json.dumps({"error": message}))
+    print(message, file=sys.stderr)  # pi-subagents' error for a command runner that exits non-zero
     sys.exit(1)
+
+
+def tail(text, limit=2000):
+    text = (text or "").strip()
+    return text if len(text) <= limit else "…" + text[-limit:]
 
 
 def read_request(argv):
@@ -142,6 +156,28 @@ def merge(req):
     return {"output": str(output.resolve()), "count": count}
 
 
+def run(req):
+    command, gate = req.get("command"), req.get("gate")
+    if not command:
+        fail("run needs command")
+    p = subprocess.run(command, shell=True, capture_output=True, text=True, check=False)
+    if p.returncode != 0:
+        fail(f"the program exited with code {p.returncode}: {tail(p.stderr or p.stdout)}")
+    result = {"program": {"exit": 0, "stdout": tail(p.stdout)}}
+    if gate:
+        g = subprocess.run(gate, shell=True, capture_output=True, text=True, check=False)
+        if g.returncode != 0:
+            fail(f"the program ran, but its gate failed (exit code {g.returncode}): {tail(g.stderr or g.stdout)}")
+        if req.get("gate_json"):
+            try:
+                result["gate"] = json.loads(g.stdout)
+            except ValueError:
+                fail(f"the program ran, but its gate did not print JSON: {tail(g.stdout)}")
+        else:
+            result["gate"] = {"exit": 0}
+    return result
+
+
 def main(argv):
     try:
         req = read_request(argv)
@@ -152,6 +188,8 @@ def main(argv):
         result = split(req)
     elif op == "merge":
         result = merge(req)
+    elif op == "run":
+        result = run(req)
     else:
         fail(f"unknown op {op!r}")
     print(json.dumps(result))
