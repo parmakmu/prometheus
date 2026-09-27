@@ -1,24 +1,20 @@
-#!/usr/bin/env python3
 """Validator regression: both examples must pass; each broken variant must
 report an error (or warning) containing the expected text.
-
-Run: python3 tests/test_validator.py
 """
 import copy
-import os
 import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SKILL = os.path.join(ROOT, ".pi", "skills", "workflow")
-sys.path.insert(0, os.path.join(SKILL, "scripts"))
+import pytest
+from conftest import SKILL
+
+sys.path.insert(0, str(SKILL / "scripts"))
 import validate_plan
 
-EX = os.path.join(SKILL, "examples")
+EX = SKILL / "examples"
 
 
 def example(name):
-    with open(os.path.join(EX, name), encoding="utf-8") as fh:
-        return fh.read()
+    return (EX / name).read_text(encoding="utf-8")
 
 
 INV = validate_plan.load_yaml(example("invoice-check.yaml"))
@@ -37,8 +33,7 @@ def ran(p, **stages):
 def check(base, mutate):
     p = copy.deepcopy(base)
     mutate(p)
-    errors, warnings, summary = validate_plan.validate(p, run_state=p.pop("__run__", None))
-    return errors, warnings, summary
+    return validate_plan.validate(p, run_state=p.pop("__run__", None))
 
 
 # (name, base plan, mutation, expected substring, "error" | "warning")
@@ -101,39 +96,30 @@ WAVES = [
 ]
 
 
-def main():
-    failures = 0
-    for name, base in (("invoice-check", INV), ("competitor-memo", COMP)):
-        errors, _warnings, _summary = validate_plan.validate(copy.deepcopy(base))
-        ok = not errors
-        failures += not ok
-        print(f"{'ok  ' if ok else 'FAIL'} example {name} is valid" + ("" if ok else f": {errors}"))
-    for name, base, mutate, expected, level in CASES:
-        errors, warnings, _summary = check(base, mutate)
-        pool = errors if level == "error" else warnings
-        ok = any(expected in m for m in pool)
-        failures += not ok
-        print(f"{'ok  ' if ok else 'FAIL'} {name}" + ("" if ok else f": expected {level} containing '{expected}', got errors={errors} warnings={warnings}"))
-    for name, base, mutate, expected in WAVES:
-        errors, _warnings, summary = check(base, mutate)
-        got = [(w["stages"], w["ends_with"]) for w in summary.get("waves") or []]
-        ok = not errors and got == expected
-        failures += not ok
-        print(f"{'ok  ' if ok else 'FAIL'} waves: {name}" + ("" if ok else f": got {got}, errors={errors}"))
+@pytest.mark.parametrize("name,base", [("invoice-check", INV), ("competitor-memo", COMP)])
+def test_example_is_valid(name, base):
+    errors, _warnings, _summary = validate_plan.validate(copy.deepcopy(base))
+    assert not errors
+
+
+@pytest.mark.parametrize("name,base,mutate,expected,level", CASES, ids=[c[0] for c in CASES])
+def test_broken_plan_reports(name, base, mutate, expected, level):
+    errors, warnings, _summary = check(base, mutate)
+    pool = errors if level == "error" else warnings
+    assert any(expected in m for m in pool), f"expected {level} containing {expected!r}, got errors={errors} warnings={warnings}"
+
+
+@pytest.mark.parametrize("name,base,mutate,expected", WAVES, ids=[w[0] for w in WAVES])
+def test_derived_waves(name, base, mutate, expected):
+    errors, _warnings, summary = check(base, mutate)
+    got = [(w["stages"], w["ends_with"]) for w in summary.get("waves") or []]
+    assert not errors
+    assert got == expected
+
+
+def test_repeated_key_after_a_dropped_list_item():
     # Text-level case: an edit that drops a `- id:` line merges two list items;
     # a plain YAML loader would silently keep the second item's values.
     text = example("invoice-check.yaml").replace("  - id: q2\n", "", 1)
-    try:
+    with pytest.raises(validate_plan.YAMLError, match="duplicate key"):
         validate_plan.load_yaml(text)
-        ok, got = False, "loaded without error"
-    except validate_plan.YAMLError as exc:
-        ok, got = "duplicate key" in str(exc), str(exc)
-    failures += not ok
-    print(f"{'ok  ' if ok else 'FAIL'} repeated key after a dropped list item" + ("" if ok else f": {got}"))
-    total = len(CASES) + len(WAVES) + 3
-    print(f"\n{total - failures}/{total} passed")
-    return 1 if failures else 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

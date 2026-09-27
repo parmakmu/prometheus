@@ -54,8 +54,10 @@ wave, whichever the plan needs.
 Use the workflow tools for every mechanical step: \`workflow_check\`,
 \`workflow_new_run\`, \`workflow_compile\`, \`workflow_record_decision\`,
 \`workflow_log_start\`, \`workflow_log_finish\`, \`workflow_replan\`,
-\`workflow_stop_run\` and \`workflow_merge\`. Pass the \`call\` that \`workflow_compile\` returns to the
-subagent tool unchanged.
+\`workflow_stop_run\` and \`workflow_merge\`. The subagent tool is already active: pass
+the \`call\` that \`workflow_compile\` returns to it unchanged, without calling
+subagents_enable or listing agents first. Ask every question that has a fixed set of
+answers with the question tool (run-protocol.md, "Asking the user").
 
 Note from the user for this run (may be empty): ${note}`;
 
@@ -102,6 +104,16 @@ function pythonFor(start: string): string {
 		if (fs.existsSync(path.join(dir, ".venv", bin))) return path.join(dir, ".venv", bin);
 		if (path.dirname(dir) === dir) return "python3";
 	}
+}
+
+/** Make pi-subagents' `subagent` tool active before a command's prompt goes out. The command is the
+ * user's authorization to delegate; left to the model, subagents_enable changes the tool list mid-turn,
+ * which costs two turns and drops the prompt cache (about a fifth of run 4's orchestrator cost).
+ * pi-subagents records the selection, so it holds on resume. No-op when pi-subagents is missing. */
+function activateSubagent(pi: ExtensionAPI) {
+	if (!pi.getAllTools().some((tool) => tool.name === "subagent")) return;
+	const active = pi.getActiveTools();
+	if (!active.includes("subagent")) pi.setActiveTools([...active, "subagent"]);
 }
 
 interface ScriptResult {
@@ -288,6 +300,7 @@ export default function workflowAgent(pi: ExtensionAPI) {
 			ctx.ui.notify("The agent is busy; wait for it to finish, then run the command again.", "warning");
 			return;
 		}
+		activateSubagent(pi);
 		pi.sendUserMessage(text);
 	};
 
@@ -314,6 +327,7 @@ export default function workflowAgent(pi: ExtensionAPI) {
 				ctx.ui.notify(r.data?.error ?? `workflow_git.py begin-change failed: ${(r.stderr || r.stdout).trim().slice(0, 500)}`, "error");
 				return;
 			}
+			activateSubagent(pi); // the critic
 			pi.sendUserMessage(REVISE_PROMPT(args.trim(), r.data.branch ?? "main", r.data.mode));
 		},
 	});
@@ -443,7 +457,7 @@ export default function workflowAgent(pi: ExtensionAPI) {
 				"Compile the active run's next wave into the exact pi-subagents call. Returns {ok, run, wave, stages, ends_with, call, children} when it can launch, or {ok: false, preflight} listing params to set (missing_params), secrets the user must add to .env (missing_secrets), decisions to collect and approvals to get.",
 			promptSnippet: "Compile the next workflow wave into a subagent call",
 			promptGuidelines: [
-				"Never write a workflowScript by hand; use workflow_compile and pass its `call` to the subagent tool unchanged.",
+				"Never write a workflowScript by hand; use workflow_compile and pass its `call` to the subagent tool unchanged. `call.workflowScriptPath` is a path (pi-subagents reads it itself): pass it as-is, do not open the file or paste its contents into the tool call.",
 				"Only list a stage in `approve` after the user explicitly approved that stage's side effect in this session.",
 			],
 			parameters: Type.Object({
@@ -501,7 +515,7 @@ export default function workflowAgent(pi: ExtensionAPI) {
 			name: "workflow_log_finish",
 			label: "Log wave result",
 			description:
-				"Record a finished wave in the active run. Pass only the wave: the outcome (the workflow script's return value, status, cost) is read from pi-subagents. `done` marks its stages done (and the run done after the last wave); failed, blocked or stopped put them back to pending so the wave can be fixed and relaunched. Commits files the wave wrote into the workflow on the run's branch. Returns the wave's ends_with (what to do next), a summary of its children and, when the run is done, its branch for review and `mission_close` (pass it to the subagent tool unchanged).",
+				"Record a finished wave in the active run. Pass only the wave: the outcome (the workflow script's return value, status, cost) is read from pi-subagents. `done` marks its stages done (and the run done after the last wave); failed, blocked or stopped put them back to pending so the wave can be fixed and relaunched. Commits files the wave wrote into the workflow on the run's branch. Returns the wave's ends_with (what to do next), a summary of its children and, when the run is done, its branch for review, the plan's `done_when` for the final report, and `mission_close` (pass it to the subagent tool unchanged).",
 			promptGuidelines: [
 				"After a wave's completion notice, call workflow_log_finish with just the wave; do not look up the run's status or assemble its result yourself.",
 			],

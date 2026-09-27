@@ -27,8 +27,8 @@ import csv
 import fnmatch
 import io
 import json
-import os
 import sys
+from pathlib import Path
 
 MARKER = "BATCH_TOOL_REQUEST "
 
@@ -49,15 +49,14 @@ def read_request(argv):
 
 
 def items_from(source, glob):
-    if os.path.isdir(source):
-        names = sorted(n for n in os.listdir(source)
-                       if os.path.isfile(os.path.join(source, n)) and fnmatch.fnmatch(n, glob or "*"))
-        return [os.path.abspath(os.path.join(source, n)) for n in names], None
-    if not os.path.isfile(source):
+    source = Path(source)
+    if source.is_dir():
+        names = sorted(p.name for p in source.iterdir() if p.is_file() and fnmatch.fnmatch(p.name, glob or "*"))
+        return [str((source / n).resolve()) for n in names], None
+    if not source.is_file():
         fail(f"source not found: {source}")
-    ext = os.path.splitext(source)[1].lower()
-    with open(source, encoding="utf-8") as fh:
-        text = fh.read()
+    ext = source.suffix.lower()
+    text = source.read_text(encoding="utf-8")
     if ext == ".json":
         data = json.loads(text) if text.strip() else []
         if not isinstance(data, list):
@@ -79,21 +78,21 @@ def split(req):
     if not source or not outdir:
         fail("split needs source and outdir")
     items, header = items_from(source, req.get("glob"))
-    os.makedirs(outdir, exist_ok=True)
+    outdir = Path(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
     batches = []
     for index, start in enumerate(range(0, len(items), batch)):
         chunk = items[start:start + batch]
         if header is not None:
-            path = os.path.abspath(os.path.join(outdir, f"{index}.csv"))
-            with open(path, "w", encoding="utf-8", newline="") as fh:
+            path = (outdir / f"{index}.csv").resolve()
+            with path.open("w", encoding="utf-8", newline="") as fh:
                 w = csv.writer(fh)
                 w.writerow(header)
                 w.writerows(chunk)
         else:
-            path = os.path.abspath(os.path.join(outdir, f"{index}.txt"))
-            with open(path, "w", encoding="utf-8") as fh:
-                fh.write("\n".join(chunk) + "\n")
-        batches.append({"index": index, "file": path, "count": len(chunk)})
+            path = (outdir / f"{index}.txt").resolve()
+            path.write_text("\n".join(chunk) + "\n", encoding="utf-8")
+        batches.append({"index": index, "file": str(path), "count": len(chunk)})
     return {"total": len(items), "batches": batches}
 
 
@@ -101,26 +100,25 @@ def merge(req):
     inputs, output = req.get("inputs"), req.get("output")
     if not isinstance(inputs, list) or not output:
         fail("merge needs inputs (list) and output")
-    missing = [p for p in inputs if not os.path.isfile(p)]
+    missing = [p for p in inputs if not Path(p).is_file()]
     if missing:
         fail(f"missing batch outputs: {missing}")
-    ext = os.path.splitext(output)[1].lower()
-    os.makedirs(os.path.dirname(os.path.abspath(output)) or ".", exist_ok=True)
+    output = Path(output)
+    ext = output.suffix.lower()
+    output.parent.mkdir(parents=True, exist_ok=True)
     count = 0
     if ext == ".json":
         merged = []
         for p in inputs:
-            with open(p, encoding="utf-8") as fh:
-                text = fh.read()
+            text = Path(p).read_text(encoding="utf-8")
             data = json.loads(text) if text.strip() else []
             merged.extend(data if isinstance(data, list) else [data])
-        with open(output, "w", encoding="utf-8") as fh:
-            json.dump(merged, fh, ensure_ascii=False, indent=1)
+        output.write_text(json.dumps(merged, ensure_ascii=False, indent=1), encoding="utf-8")
         count = len(merged)
     elif ext == ".csv":
         header, rows = None, []
         for p in inputs:
-            with open(p, encoding="utf-8", newline="") as fh:
+            with Path(p).open(encoding="utf-8", newline="") as fh:
                 data = list(csv.reader(fh))
             if not data:
                 continue
@@ -129,7 +127,7 @@ def merge(req):
             elif data[0] != header:
                 fail(f"{p} has a different CSV header")
             rows.extend(data[1:])
-        with open(output, "w", encoding="utf-8", newline="") as fh:
+        with output.open("w", encoding="utf-8", newline="") as fh:
             w = csv.writer(fh)
             if header is not None:
                 w.writerow(header)
@@ -138,12 +136,10 @@ def merge(req):
     else:
         lines = []
         for p in inputs:
-            with open(p, encoding="utf-8") as fh:
-                lines.extend(l for l in fh.read().splitlines() if l.strip())
-        with open(output, "w", encoding="utf-8") as fh:
-            fh.write("\n".join(lines) + ("\n" if lines else ""))
+            lines.extend(l for l in Path(p).read_text(encoding="utf-8").splitlines() if l.strip())
+        output.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
         count = len(lines)
-    return {"output": os.path.abspath(output), "count": count}
+    return {"output": str(output.resolve()), "count": count}
 
 
 def main(argv):

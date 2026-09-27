@@ -51,6 +51,21 @@ branch reaches `main` only when the user merges it after seeing the diff
 (**Reviewing a branch**). The scripts commit; never run git commands that
 change the repo.
 
+## Asking the user
+
+If a structured question tool is available (`ask_user_question` or
+similar), every question with a fixed set of answers goes through it:
+- whether to start a new run, and whether an input changed;
+- decisions and approvals;
+- what to do after a failed or blocked wave;
+- merge / keep / discard.
+
+Put the questions you have at one point into one call. Write what the user
+needs in order to answer (what a side effect will do, what failed and why)
+in chat first. Plain chat is only for values: param values, paths, what to
+change in the plan. Without a question tool, ask in plain chat and end the
+turn.
+
 ## Every start
 
 1. Validate: `<python> <skill>/scripts/validate_plan.py .pi/plan.yaml`.
@@ -96,10 +111,12 @@ Before the first run, the plan is written on `main` by following
   for this run (from `/workflow-run <note>`) if there is one.
 - Earlier runs exist, all `done` or `stopped`: say when the last one ran
   and how it ended (the check's `summary.last_run` has it; no need to look
-  in `runs/`), and ask whether to start a new run (it starts from
-  `main` at the first wave with an empty `work/`; the previous runs stay in
-  `runs/`). Params keep their values; ask whether any input changed (say,
-  another folder) and set it with `workflow_set_params`.
+  in `runs/`), and ask, in one question-tool call (**Asking the user**),
+  whether to start a new run (it starts from `main` at the first wave with
+  an empty `work/`; the previous runs stay in `runs/`) and whether any
+  input changed (say, another folder). Params keep their values; if an
+  input changed, ask for the new value in chat and set it with
+  `workflow_set_params`.
 - The user wants to start over while a run is active: say what the active
   run has done, and only after they agree call `workflow_stop_run`, review
   its branch if it has one (**Reviewing a branch**), then start the new run.
@@ -138,10 +155,9 @@ It compiles the active run's next wave (and saves it to
 ### 2. Collect what needs a human
 
 A workflow script cannot pause, so everything that needs the user happens
-before launch. If a structured question tool is available
-(`ask_user_question` or similar), put this wave's decisions and approvals
-in one call (params are values, asked in chat as above); otherwise ask in
-plain chat and end the turn.
+before launch. Put this wave's decisions and approvals in one
+question-tool call (**Asking the user**; params are values, asked in chat
+as above).
 
 - **decisions**: for each entry, show the user what `show_user` lists (short
   summaries of those files, not dumps) and ask for the decision. Record the
@@ -170,9 +186,13 @@ and report what is waiting.
 ### 3. Launch
 
 Call the subagent tool with the compiled `call` object exactly as given:
-`async`, `mission` or `missionId`, and `workflowScript`. Do not edit the
-script; if something in it is wrong, fix the plan and recompile. If the
-subagent tool is not loaded yet, enable it and launch; you do not need
+`async`, `mission` or `missionId`, and `workflowScriptPath` (a path to the
+generated script, saved at `runs/<id>/.compiled/<wave>.js`; pi-subagents reads
+it itself). Pass the path through as-is: do not open the file, and do not
+paste its contents into the tool call. If something about the wave is wrong,
+fix the plan and recompile; do not edit the script. `/workflow-run` makes the
+subagent tool active; only if it is missing (a session continued without the
+command) enable it. Either way, launch directly: you do not need
 `subagent({ action: "list" })` or a guide, since the compiled call names
 its agents.
 
@@ -234,7 +254,8 @@ yourself. Only if the tool says pi-subagents has no record of the run, pass
 - `failed` or `blocked` → the wave's stages go back to pending. Report what
   failed (the keys in `at`, the gate or review findings; or `error` and
   `failure_kind` when the workflow ended before returning, such as a
-  `timeout` or a `validation` error) and offer: relaunch
+  `timeout` or a `validation` error), then ask with the question tool
+  (**Asking the user**): relaunch
   the wave (recompile and launch; the whole wave runs again, at most
   `limits.max_retries` times), change the plan (the user says what;
   **Replanning**), or stop (`workflow_stop_run`, then **Reviewing a
@@ -283,7 +304,8 @@ kind may change. You do not need the compiler's source or the examples.
 ## Finish
 
 When `workflow_log_finish` returns `run_status: done` (every stage done):
-report each `done_when` criterion as met or not, with file paths, from what
+report each criterion in its `done_when` (no need to read the plan) as met
+or not, with file paths, from what
 the gates and reviews checked (read an output only for a criterion none of
 them covers, and only what you need). Close the run's mission by passing
 the returned `mission_close` to the subagent tool unchanged. Outputs the
@@ -307,7 +329,8 @@ run active (`<python> <skill>/scripts/workflow_git.py review` shows it).
    worth a look) and agents, the revision — plus the commit list from
    `review`. For a run branch, say what the run found that led to the
    change. Do not paste the diff.
-2. Ask what to do, with these options: **merge** (future runs use this
+2. Ask what to do with the question tool (**Asking the user**), with these
+   options: **merge** (future runs use this
    plan), **keep** (switch back to `main`; the branch stays for
    later), **discard** (delete the branch). Only a ready, valid plan can be
    merged; if the plan on the branch is still a draft (a run stopped

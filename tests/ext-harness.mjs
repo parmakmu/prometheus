@@ -8,7 +8,12 @@ import { Value } from "typebox/value";
 const [, , entry, cwd, stepsFile] = process.argv;
 const commands = {}, tools = {};
 const handlers = {};
+// pi-subagents in a fresh session: subagent registered but inactive, its loader active
+let active = ["read", "bash", "subagents_enable"];
 const pi = {
+  getAllTools() { return [...Object.keys(tools), "subagent", "subagents_enable"].map((name) => ({ name })); },
+  getActiveTools() { return [...active]; },
+  setActiveTools(names) { active = [...names]; },
   on(ev, h) { (handlers[ev] ??= []).push(h); return () => {}; },
   registerCommand(name, def) { commands[name] = def; },
   registerTool(tool) { tools[tool.name] = tool; },
@@ -52,6 +57,7 @@ for (const step of steps) {
     rec.error = String(e.message ?? e);
   }
   rec.out = out;
+  rec.activeTools = [...active];
   report.steps.push(rec);
 }
 console.log(JSON.stringify(report, null, 1));

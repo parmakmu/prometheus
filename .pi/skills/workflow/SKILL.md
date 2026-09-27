@@ -1,6 +1,7 @@
 ---
 name: workflow
 description: Turn a user's natural-language request for multi-step work into a portable workflow (workflows/<slug>/) holding a validated, critic-reviewed YAML plan that a Pi session started in that folder can run with pi-subagents. Use when the user asks for work that spans several steps, files, apps or agents, or asks to "plan", "break down", "turn this into a workflow" or "make a workflow". Plans in stages when details can only be discovered by running, and asks only the questions that would change the plan.
+disable-model-invocation: true
 ---
 
 # Request to Plan

@@ -12,7 +12,7 @@ validate_plan (waves are derived; status lives in runs/<id>/run.yaml).
 Nothing is changed.
 """
 import json
-import os
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -24,23 +24,22 @@ from validate_plan import list_runs, read_run, validate
 
 def load(path, default):
     try:
-        with open(path, encoding="utf-8") as fh:
-            data = YAML(typ="safe").load(fh)
+        data = YAML(typ="safe").load(Path(path).read_text(encoding="utf-8"))
         return default if data is None else data
     except (OSError, YAMLError):
         return default
 
 
 def summarise(root, slug):
-    pi = os.path.join(root, slug, ".pi")
-    plan = load(os.path.join(pi, "plan.yaml"), {})
+    pi = Path(root) / slug / ".pi"
+    plan = load(pi / "plan.yaml", {})
     if not isinstance(plan, dict):
         return {"slug": slug, "error": "plan.yaml is not a mapping"}
     stages = [s for s in plan.get("stages") or [] if isinstance(s, dict)]
-    summary = validate(plan, None, None, os.path.join(root, slug))[2]
+    summary = validate(plan, None, None, Path(root) / slug)[2]
     active = (summary.get("run") or {}).get("id")
     questions = [q for q in plan.get("questions") or [] if isinstance(q, dict)]
-    runs = list_runs(os.path.join(root, slug))
+    runs = list_runs(Path(root) / slug)
     last = None
     if runs:
         try:
@@ -50,8 +49,8 @@ def summarise(root, slug):
         launch = (state.get("launches") or [None])[-1]
         last = {"id": runs[-1][0], **{k: state.get(k) for k in ("status", "started_at", "finished_at")},
                 "last_wave": {k: launch.get(k) for k in ("wave", "status")} if isinstance(launch, dict) else None}
-    agents_dir = os.path.join(pi, "agents")
-    custom = sorted(f[:-3] for f in os.listdir(agents_dir) if f.endswith(".md")) if os.path.isdir(agents_dir) else []
+    agents_dir = pi / "agents"
+    custom = sorted(p.stem for p in agents_dir.iterdir() if p.suffix == ".md") if agents_dir.is_dir() else []
     goal = plan.get("goal") or ""
     return {
         "slug": slug,
@@ -67,8 +66,8 @@ def summarise(root, slug):
         "open_questions": [q.get("id") for q in questions if q.get("answer") in (None, "")],
         "last_run": last,
         "custom_agents": [a for a in custom if a not in ("plan-critic", "workflow-batcher")],
-        "branch": workflow_git.branch(os.path.join(root, slug)),
-        "unmerged": workflow_git.unmerged_branches(os.path.join(root, slug)),
+        "branch": workflow_git.branch(Path(root) / slug),
+        "unmerged": workflow_git.unmerged_branches(Path(root) / slug),
     }
 
 
@@ -78,16 +77,17 @@ def main(
 ):
     """List workflows."""
     if workflow:
-        b = os.path.abspath(workflow)
-        if not os.path.isfile(os.path.join(b, ".pi", "plan.yaml")):
+        b = Path(workflow).resolve()
+        if not (b / ".pi" / "plan.yaml").is_file():
             print(json.dumps({"error": f"{b} is not a workflow"}))
             raise typer.Exit(1)
-        print(json.dumps(summarise(os.path.dirname(b), os.path.basename(b)), indent=2, default=str))
+        print(json.dumps(summarise(b.parent, b.name), indent=2, default=str))
         return
+    root_path = Path(root)
     workflows = [
-        summarise(root, slug)
-        for slug in (sorted(os.listdir(root)) if os.path.isdir(root) else [])
-        if os.path.isfile(os.path.join(root, slug, ".pi", "plan.yaml"))
+        summarise(root, entry.name)
+        for entry in (sorted(root_path.iterdir()) if root_path.is_dir() else [])
+        if (entry / ".pi" / "plan.yaml").is_file()
     ]
     print(json.dumps(workflows, indent=2, default=str))
 

@@ -8,7 +8,7 @@
  *   /workflow-refresh <slug | --all>              update workflows to this skill version (no model)
  *
  * Tools for the model
- *   workflow_scaffold  create a workflow
+ *   workflow_scaffold  create a workflow (only after /workflow-new in this session)
  *   workflow_check     validate a workflow's plan and compile-check its waves
  *
  * Changing a workflow happens inside it: cd workflows/<slug>, pi, /workflow-revise.
@@ -53,6 +53,16 @@ function pythonFor(start: string): string {
 		if (fs.existsSync(path.join(dir, ".venv", bin))) return path.join(dir, ".venv", bin);
 		if (path.dirname(dir) === dir) return "python3";
 	}
+}
+
+/** Make pi-subagents' `subagent` tool active before a command's prompt goes out. The command is the
+ * user's authorization to delegate; left to the model, subagents_enable changes the tool list mid-turn,
+ * which costs two turns and drops the prompt cache (about a fifth of run 4's orchestrator cost).
+ * pi-subagents records the selection, so it holds on resume. No-op when pi-subagents is missing. */
+function activateSubagent(pi: ExtensionAPI) {
+	if (!pi.getAllTools().some((tool) => tool.name === "subagent")) return;
+	const active = pi.getActiveTools();
+	if (!active.includes("subagent")) pi.setActiveTools([...active, "subagent"]);
 }
 
 interface ScriptResult {
@@ -129,8 +139,11 @@ async function check(pi: ExtensionAPI, root: string, slug: string, signal?: Abor
 export default function prometheus(pi: ExtensionAPI) {
 	// Completion callbacks get no context, so remember the session's cwd.
 	let sessionCwd = process.cwd();
+	// Set by /workflow-new, used up by the scaffold it leads to: a plain message never creates a workflow.
+	let newRequested = false;
 	pi.on("session_start", async (_event, ctx) => {
 		sessionCwd = ctx.cwd;
+		newRequested = false;
 		const root = findRoot(ctx.cwd);
 		if (!root) return;
 		const py = pythonFor(root);
@@ -162,6 +175,14 @@ export default function prometheus(pi: ExtensionAPI) {
 		pi.sendUserMessage(text);
 	};
 
+	// the scaffold script is reachable only through workflow_scaffold, which checks for /workflow-new
+	pi.on("tool_call", (event, ctx) => {
+		if (!findRoot(ctx.cwd)) return;
+		const command = (event.input as { command?: string }).command ?? "";
+		if ((event.toolName === "bash" || event.toolName === "powershell") && /scaffold_workflow\.py/.test(command))
+			return { block: true, reason: "Create workflows with workflow_scaffold, and only after the user ran /workflow-new." };
+	});
+
 	// --- commands ---------------------------------------------------------------
 	pi.registerCommand("workflow-new", {
 		description: "Plan a new workflow from a request",
@@ -171,6 +192,8 @@ export default function prometheus(pi: ExtensionAPI) {
 				ctx.ui.notify("Usage: /workflow-new <what you want done>", "warning");
 				return;
 			}
+			newRequested = true;
+			activateSubagent(pi); // probes and the critic
 			ask(ctx, NEW_PROMPT(args.trim()));
 		},
 	});
@@ -289,7 +312,7 @@ export default function prometheus(pi: ExtensionAPI) {
 			name: "workflow_scaffold",
 			label: "Create workflow",
 			description:
-				"Create a new workflow at workflows/<slug>/ with the plan skeleton, agents, commands and a copy of the planning skill.",
+				"Create a new workflow at workflows/<slug>/ with the plan skeleton, agents, commands and a copy of the planning skill. Only after the user ran /workflow-new.",
 			promptSnippet: "Create a workflow",
 			promptGuidelines: ["Use workflow_scaffold to create a workflow instead of running scaffold_workflow.py yourself."],
 			parameters: Type.Object({
@@ -299,8 +322,13 @@ export default function prometheus(pi: ExtensionAPI) {
 			async execute(_id, params, signal, _onUpdate, ctx) {
 				const root = findRoot(ctx.cwd);
 				if (!root) throw new Error("not inside the Prometheus folder");
+				if (!newRequested)
+					throw new Error(
+						"workflows are created only through /workflow-new. Do not plan this request; answer it normally, and if it is multi-step work, tell the user they can run `/workflow-new <request>`.",
+					);
 				const res = await runScript(pi, root, "scaffold_workflow.py", [params.slug, "--root", WORKFLOWS, "--request", params.request], signal);
 				if (res.data === undefined) throw new Error(`scaffold_workflow.py failed: ${(res.stderr || res.stdout).trim().slice(0, 2000)}`);
+				if (res.data.ok) newRequested = false;
 				return { content: [{ type: "text" as const, text: JSON.stringify(res.data, null, 2) }], details: res.data };
 			},
 		}),

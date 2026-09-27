@@ -36,6 +36,7 @@ import os
 import re
 import shutil
 import subprocess
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -57,7 +58,7 @@ def git(workflow, *args, check=True):
 
 
 def is_repo(workflow):
-    return os.path.isdir(os.path.join(workflow, ".git"))
+    return (Path(workflow) / ".git").is_dir()
 
 
 def ensure_repo(workflow):
@@ -99,8 +100,7 @@ def identity(workflow):
 def plan_revision(workflow):
     from validate_plan import load_yaml
     try:
-        with open(os.path.join(workflow, ".pi", "plan.yaml"), encoding="utf-8") as fh:
-            plan = load_yaml(fh) or {}
+        plan = load_yaml((Path(workflow) / ".pi" / "plan.yaml").read_text(encoding="utf-8")) or {}
     except OSError:
         return None, None
     return plan.get("revision", 1), plan.get("status")
@@ -166,8 +166,8 @@ def out(obj, code=0):
 @app.callback()
 def main(workflow: Annotated[str, typer.Option(help="workflow root")] = "."):
     os.chdir(workflow)
-    if not os.path.isfile(os.path.join(".pi", "plan.yaml")):
-        out({"ok": False, "error": f"{os.path.abspath(workflow)} is not a workflow (no .pi/plan.yaml)"}, 2)
+    if not (Path(".pi") / "plan.yaml").is_file():
+        out({"ok": False, "error": f"{Path(workflow).resolve()} is not a workflow (no .pi/plan.yaml)"}, 2)
     if not available():
         out({"ok": False, "error": "git is required; ask the user to install it"}, 2)
 
@@ -176,7 +176,7 @@ def main(workflow: Annotated[str, typer.Option(help="workflow root")] = "."):
 def begin_change():
     """Start (or continue) a branch for changing the plan with /workflow-revise."""
     from validate_plan import list_runs, rt_yaml
-    workflow = os.getcwd()
+    workflow = Path.cwd()
     act = active_run(workflow)
     if act:
         out({"ok": False, "error": f"run {act[0]} is active: tell the run what to change (it replans on its branch), or stop it first"}, 1)
@@ -195,16 +195,14 @@ def begin_change():
     git(workflow, "switch", "-q", "-c", new)
     # a new revision, drafted; the critic's recorded result marks it ready again
     y = rt_yaml()
-    path = os.path.join(".pi", "plan.yaml")
-    with open(path, encoding="utf-8") as fh:
-        plan = y.load(fh)
+    path = Path(".pi") / "plan.yaml"
+    plan = y.load(path.read_text(encoding="utf-8"))
     plan["revision"] = plan.get("revision", 1) + 1
     plan["status"] = "draft"
     plan.pop("critique", None)
     buf = io.StringIO()
     y.dump(plan, buf)
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write(buf.getvalue())
+    path.write_text(buf.getvalue(), encoding="utf-8")
     sha, _ = commit(workflow, f"r{plan['revision']} draft: change started")
     out({"ok": True, "branch": new, "mode": "change", "revision": plan["revision"], "commit": sha})
 
@@ -212,14 +210,14 @@ def begin_change():
 @app.command()
 def review():
     """Show the checked-out branch against main."""
-    info = review_info(os.getcwd())
-    out({"ok": True, "review": info, "unmerged": unmerged_branches(os.getcwd())})
+    info = review_info(Path.cwd())
+    out({"ok": True, "review": info, "unmerged": unmerged_branches(Path.cwd())})
 
 
 @app.command()
 def merge(action: Annotated[str, typer.Option(help="merge | keep | discard")]):
     """Finish the review of the checked-out branch and switch back to main."""
-    workflow = os.getcwd()
+    workflow = Path.cwd()
     if action not in ("merge", "keep", "discard"):
         out({"ok": False, "error": "action must be merge, keep or discard"}, 1)
     act = active_run(workflow)
@@ -230,8 +228,7 @@ def merge(action: Annotated[str, typer.Option(help="merge | keep | discard")]):
         out({"ok": False, "error": f"run {act[0]} is still active: let it finish, or stop it (workflow_stop_run), then review"}, 1)
     if action == "merge":
         from validate_plan import load_yaml, validate
-        with open(os.path.join(".pi", "plan.yaml"), encoding="utf-8") as fh:
-            plan = load_yaml(fh) or {}
+        plan = load_yaml((Path(".pi") / "plan.yaml").read_text(encoding="utf-8")) or {}
         errors = validate(plan, None, None, workflow)[0]
         if errors or plan.get("status") != "ready":
             out({"ok": False, "error": f"the plan on {b} is {plan.get('status')}" + (f" with errors {errors[:3]}" if errors else "")

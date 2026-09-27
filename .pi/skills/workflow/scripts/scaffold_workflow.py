@@ -13,23 +13,24 @@ Creates <root>/<slug>/ from templates/workflow/ (everything in it, with
   .pi/skills/workflow/           a copy of this skill (rules, validator, compiler, run protocol)
 
 The template holds AGENTS.md, pyproject.toml (Python deps for `uv sync`),
-.pi/APPEND_SYSTEM.md (the workflow agent's role), .pi/settings.json, .pi/extensions/workflow/index.ts (commands and
-tools), .pi/agents/ (plan-critic, workflow-batcher) and the plan skeleton.
+.pi/APPEND_SYSTEM.md (the workflow agent's role), .pi/settings.json,
+.pi/extensions/workflow/index.ts (commands and tools), .pi/agents/ (plan-critic,
+workflow-batcher) and the plan skeleton.
 
 --refresh rewrites the template files and the skill copy in an existing
 workflow. It never touches .pi/plan.yaml, .env, runs/, gates/, scripts/ or agents
 the plan added. Values an older workflow kept in .pi/params.yaml move to .env.
 
-The workflow is its own git repo (workflow_git.py); both modes commit the result
-(a refresh not while a wave is running).
+The workflow is its own git repo (workflow_git.py); both modes commit the result.
+A refresh refuses while a wave of the workflow's active run is running.
 
 Prints one JSON object (with `today`, the date for the plan's agents.checked).
 """
 import datetime
 import json
-import os
 import re
 import shutil
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -37,48 +38,48 @@ import workflow_git
 import workflow_params
 from ruamel.yaml import YAML
 
-SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TEMPLATE_DIR = os.path.join(SKILL_DIR, "templates", "workflow")
+SCRIPT_DIR = Path(__file__).resolve().parent
+SKILL_DIR = SCRIPT_DIR.parent
+TEMPLATE_DIR = SKILL_DIR / "templates" / "workflow"
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store")
-PLAN = os.path.join(".pi", "plan.yaml")
-STATE_FILES = {workflow_params.ENV_FILE: workflow_params.ENV_HEADER}
-OLD_PARAMS = os.path.join(".pi", "params.yaml")  # where values lived before .env
+PLAN = Path(".pi") / "plan.yaml"
+STATE_FILES = {Path(workflow_params.ENV_FILE): workflow_params.ENV_HEADER}
+OLD_PARAMS = Path(".pi") / "params.yaml"  # where values lived before .env
 # Files and folders earlier versions wrote that are no longer part of a workflow.
-LEGACY_FILES = [os.path.join(".pi", "prompts", n)
-                for n in ("start.md", "workflow-run.md", "workflow-status.md", "workflow-replan.md")]
-LEGACY_DIRS = [os.path.join(".pi", "skills", "request-to-plan")]  # the skill's old name
+LEGACY_FILES = [Path(".pi") / "prompts" / name
+                for name in ("start.md", "workflow-run.md", "workflow-status.md", "workflow-replan.md")]
+LEGACY_DIRS = [Path(".pi") / "skills" / "request-to-plan"]  # the skill's old name
 
 
-def template_files():
-    for dirpath, _, files in os.walk(TEMPLATE_DIR):
-        for f in sorted(files):
-            if f.endswith((".pyc", ".DS_Store")):
-                continue
-            yield os.path.relpath(os.path.join(dirpath, f), TEMPLATE_DIR)
+def template_files() -> list[Path]:
+    """Return sorted template file paths relative to TEMPLATE_DIR."""
+    return sorted(
+        (path.relative_to(TEMPLATE_DIR) for path in TEMPLATE_DIR.rglob("*")
+         if path.is_file() and path.suffix != ".pyc" and path.name != ".DS_Store"),
+        key=lambda path: path.as_posix(),
+    )
 
 
-def move_old_params(workflow):
+def move_old_params(workflow: Path):
     """Move values from .pi/params.yaml into .env (names already in .env win); the moved names, or None."""
-    old = os.path.join(workflow, OLD_PARAMS)
-    if not os.path.exists(old):
+    old = workflow / OLD_PARAMS
+    if not old.exists():
         return None
-    with open(old, encoding="utf-8") as fh:
-        values = YAML(typ="safe").load(fh) or {}
-    with open(os.path.join(workflow, PLAN), encoding="utf-8") as fh:
-        specs = (YAML(typ="safe").load(fh) or {}).get("params") or {}
-    env = os.path.join(workflow, workflow_params.ENV_FILE)
-    if not os.path.exists(env):
-        with open(env, "w", encoding="utf-8") as fh:
-            fh.write(workflow_params.ENV_HEADER)
-    present = workflow_params.file_keys(workflow)
+    values = YAML(typ="safe").load(old.read_text(encoding="utf-8")) or {}
+    plan = YAML(typ="safe").load((workflow / PLAN).read_text(encoding="utf-8")) or {}
+    specs = plan.get("params") or {}
+    env = workflow / workflow_params.ENV_FILE
+    if not env.exists():
+        env.write_text(workflow_params.ENV_HEADER, encoding="utf-8")
+    present = workflow_params.file_keys(str(workflow))
     moved = []
     for name, value in values.items() if isinstance(values, dict) else []:
         key = workflow_params.env_name(name, specs.get(name))
         if value not in (None, "") and key not in present:
-            workflow_params.set_key(env, key, str(value), quote_mode="auto")
+            workflow_params.set_key(str(env), key, str(value), quote_mode="auto")
             moved.append(f"{name} -> {key}")
-    os.remove(old)
+    old.unlink()
     return moved
 
 
@@ -93,78 +94,81 @@ def main(
     if not SLUG_RE.match(slug):
         print(json.dumps({"ok": False, "error": f"slug must match {SLUG_RE.pattern}"}))
         raise typer.Exit(2)
-    workflow = os.path.join(root, slug)
-    exists = os.path.exists(os.path.join(workflow, PLAN))
+    workflow = Path(root) / slug
+    exists = (workflow / PLAN).exists()
     if exists and not refresh:
         print(json.dumps({"ok": False, "error": f"{workflow} already has a plan; use --refresh to update it or pick another slug"}))
         raise typer.Exit(1)
     if refresh and not exists:
         print(json.dumps({"ok": False, "error": f"{workflow} has no .pi/plan.yaml to refresh"}))
         raise typer.Exit(1)
+    if refresh and workflow_git.wave_running(workflow.resolve()):
+        # the refresh rewrites the skill copy, including the batch tool a running map stage uses
+        print(json.dumps({"ok": False, "error": f"{workflow} has a wave running; refresh it once the wave has finished"}))
+        raise typer.Exit(1)
 
     written, kept, removed = [], [], []
     for rel in LEGACY_FILES:
-        path = os.path.join(workflow, rel)
-        if os.path.exists(path):
-            os.remove(path)
-            removed.append(rel)
+        path = workflow / rel
+        if path.exists():
+            path.unlink()
+            removed.append(str(rel))
     for rel in LEGACY_DIRS:
-        path = os.path.join(workflow, rel)
-        if os.path.isdir(path):
+        path = workflow / rel
+        if path.is_dir():
             shutil.rmtree(path)
-            removed.append(rel + os.sep)
-    for d in ("runs", "gates", "scripts"):
-        os.makedirs(os.path.join(workflow, d), exist_ok=True)
+            removed.append(str(rel) + "/")
+    for directory in ("runs", "gates", "scripts"):
+        (workflow / directory).mkdir(parents=True, exist_ok=True)
 
     for rel in template_files():
-        dst = os.path.join(workflow, rel)
+        dst = workflow / rel
         if rel == PLAN and exists:
-            kept.append(rel)
+            kept.append(str(rel))
             continue
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
-        with open(os.path.join(TEMPLATE_DIR, rel), encoding="utf-8") as fh:
-            text = fh.read()
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        text = (TEMPLATE_DIR / rel).read_text(encoding="utf-8")
         text = text.replace("{{slug}}", slug).replace("{{request}}", json.dumps(request))
-        with open(dst, "w", encoding="utf-8") as fh:
-            fh.write(text)
-        written.append(rel)
+        dst.write_text(text, encoding="utf-8")
+        written.append(str(rel))
 
-    skill_dst = os.path.join(workflow, ".pi", "skills", "workflow")
-    if os.path.abspath(skill_dst) != SKILL_DIR:  # not when refreshing from the workflow's own copy
-        if os.path.exists(skill_dst):
+    skill_dst = workflow / ".pi" / "skills" / "workflow"
+    if skill_dst.resolve() != SKILL_DIR.resolve():  # not when refreshing from the workflow's own copy
+        if skill_dst.exists():
             shutil.rmtree(skill_dst)
         shutil.copytree(SKILL_DIR, skill_dst, ignore=IGNORE)
-        written.append(os.path.join(".pi", "skills", "workflow") + os.sep)
+        written.append(str(Path(".pi") / "skills" / "workflow") + "/")
 
     moved = move_old_params(workflow)
     if moved is not None:
-        removed.append(OLD_PARAMS)
+        removed.append(str(OLD_PARAMS))
         written.append(f"{workflow_params.ENV_FILE} (values from {OLD_PARAMS}: {', '.join(moved) or 'none set'})")
 
     for rel, content in STATE_FILES.items():
-        path = os.path.join(workflow, rel)
-        if os.path.exists(path):
-            kept.append(rel)
+        path = workflow / rel
+        if path.exists():
+            kept.append(str(rel))
         else:
-            with open(path, "w", encoding="utf-8") as fh:
-                fh.write(content)
-            written.append(rel)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+            written.append(str(rel))
 
+    workflow_abs = workflow.resolve()
     note = None
     try:
-        commit, note = workflow_git.commit(os.path.abspath(workflow), "Refresh from Prometheus" if refresh else f"Create workflow {slug}")
+        commit, note = workflow_git.commit(str(workflow_abs), "Refresh from Prometheus" if refresh else f"Create workflow {slug}")
     except RuntimeError as exc:
         commit, note = None, str(exc)
     print(json.dumps({
         "ok": True,
-        "workflow": os.path.abspath(workflow),
+        "workflow": str(workflow_abs),
         "commit": commit,
         "git_note": note,
         "mode": "refresh" if refresh else "create",
         "written": written,
         "kept": kept,
         "removed": removed,
-        "plan": os.path.join(os.path.abspath(workflow), PLAN),
+        "plan": str(workflow_abs / PLAN),
         "today": datetime.datetime.now().astimezone().date().isoformat(),  # local date
     }, indent=2))
 

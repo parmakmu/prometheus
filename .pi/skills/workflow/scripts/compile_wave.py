@@ -28,10 +28,13 @@ a user review, a replan).
 Prints one JSON object. When the wave can launch:
 
   {"ok": true, "wave": "w1", "stages": [...], "ends_with": "review",
-   "call": {"async": true, "mission"|"missionId": …, "workflowScript": "…"},
+   "call": {"async": true, "mission"|"missionId": …, "workflowScriptPath": "…/.compiled/w1.js"},
    "children": [...], "notes": [...]}
 
-Pass `call` to the subagent tool exactly as given. When something must happen
+The generated script is saved to runs/<id>/.compiled/<wave>.js (read it there to
+review it; `--check` and a directly-run Compiler still return it inline as
+`workflowScript`, since neither launches). Pass `call` to the subagent tool
+exactly as given: passing a path, not the script text, is the point. When something must happen
 first, "ok" is false and "preflight" lists it: decisions to collect (with the
 file to write each answer to), approvals to get, params to set (missing_params),
 environment variables the user must set for secrets (missing_secrets), or plan errors.
@@ -40,9 +43,9 @@ The compiler never launches anything.
 """
 import importlib.util
 import json
-import os
 import re
 from graphlib import CycleError, TopologicalSorter
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -51,7 +54,7 @@ import workflow_params
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = Path(__file__).resolve().parent
 PARAM_RE = re.compile(r"\$\{([^}]*)\}")
 GATES_RE = re.compile(r"(?<![\w./-])\.\./gates/")
 BATCHER = "workflow-batcher"
@@ -59,7 +62,7 @@ SINGLE = {"script", "worker", "scout", "reviewer"}
 
 
 def load_validator():
-    spec = importlib.util.spec_from_file_location("validate_plan", os.path.join(HERE, "validate_plan.py"))
+    spec = importlib.util.spec_from_file_location("validate_plan", HERE / "validate_plan.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -86,10 +89,10 @@ def expand_schema(s):
 class Compiler:
     def __init__(self, workflow, plan, params_values, run_dir, run_state, approvals):
         """`params_values`: {name: value} from workflow_params.load."""
-        self.workflow = workflow
-        self.run_dir = run_dir
-        self.run_id = os.path.basename(run_dir)
-        self.work = os.path.join(run_dir, "work")
+        self.workflow = Path(workflow)
+        self.run_dir = Path(run_dir)
+        self.run_id = self.run_dir.name
+        self.work = self.run_dir / "work"
         self.plan = plan
         self.values = params_values if isinstance(params_values, dict) else {}
         launches = run_state.get("launches") if isinstance(run_state, dict) else None
@@ -132,16 +135,15 @@ class Compiler:
         raw = o.get("path")
         if not raw:
             return None
-        text = self.resolve_text(raw)
-        text = os.path.expanduser(text)
-        return text if os.path.isabs(text) else os.path.normpath(os.path.join(self.work, text))
+        path = Path(self.resolve_text(raw)).expanduser()
+        return str(path if path.is_absolute() else self.work / path)
 
     def decision_path(self, key):
         st = self.stages[key]
         for o in st.get("out") or []:
             if isinstance(o, dict) and o.get("path"):
                 return self.out_path(o)
-        return os.path.join(self.work, "decisions", f"{key}.json")
+        return str(self.work / "decisions" / f"{key}.json")
 
     # --- task text -------------------------------------------------------------
     def input_line(self, cid, in_wave_results):
@@ -166,9 +168,25 @@ class Compiler:
         self.errors.append(f"stage consumes '{cid}', a returned result of stage '{pkey}' from an earlier wave; give that output a path")
         return f"- {cid}: (unavailable)", None
 
+    def used_next_by(self, key):
+        """Lines naming the stages that consume `key`'s outputs, with what they must achieve.
+        The producer and its reviewer both get them, so they judge the output by the same
+        standard: a report told only "list the available fields" once left out the one field
+        (Cc) a later stage extracts, and its reviewer, reading the plan, blocked it."""
+        outs = {o["id"] for o in self.stages[key].get("out") or [] if isinstance(o, dict) and o.get("id")}
+        lines = []
+        for ckey, cst in self.stages.items():
+            used = [c for c in cst.get("consumes") or [] if c in outs]
+            if ckey == key or not used:
+                continue
+            check = (cst.get("verify") or {}).get("check")
+            lines.append(f"- {ckey} ({cst.get('title', ckey)}) reads {', '.join(used)}"
+                         + (f"; it is done when: {check}" if check else "") + "\n")
+        return lines
+
     def task_expr(self, key, st, in_wave, extra_lines=()):
         """A JS expression building the child's task text."""
-        slug = os.path.basename(self.workflow.rstrip(os.sep))
+        slug = self.workflow.name
         parts = []  # list of ("lit", str) | ("expr", str)
 
         def lit(s):
@@ -195,11 +213,14 @@ class Compiler:
                 schema = f"; each record: {json.dumps(o['schema'])}" if o.get("schema") else ""
                 note = f" — {o['notes']}" if o.get("notes") else ""
                 lit(f"- {o['id']}: {self.out_path(o)}{fmt}{schema}{note}\n")
+        used_next = self.used_next_by(key)
+        if used_next:
+            lit("\nUsed next by (make the outputs complete for what these stages need):\n" + "".join(used_next))
         for line in extra_lines:
             lit(line)
         kind = st.get("kind")
         script = self.script_path(st)
-        if script and os.path.isfile(script):
+        if script and Path(script).is_file():
             lit(f"\nThis stage's program is {script}, reviewed and kept with the workflow. Run it (its docstring "
                 "says how) to write the outputs; do not rewrite it or process items by hand. Change it only if it "
                 "fails or its output would not meet \"Done when\"; keep the change small and say what you changed and why.\n")
@@ -210,7 +231,7 @@ class Compiler:
                 "installed, and say how to run it in its docstring.\n")
         elif kind == "deterministic":
             lit("\nThis is mechanical work: write a program that does it, run it, and keep the program "
-                f"in {os.path.join(self.work, 'scripts')}/. Do not process items by hand.\n")
+                f"in {self.work / 'scripts'}/. Do not process items by hand.\n")
         if kind == "side_effect":
             lit("\nThis stage changes something outside the workflow. The user approved it before launch. "
                 "Do exactly what is described, nothing more, and report what you did (ids, links, counts).\n")
@@ -234,7 +255,7 @@ class Compiler:
 
     # --- items -----------------------------------------------------------------
     def item_fields(self, key, st, in_wave, task_expr, output=None, returned_schema=True):
-        fields = [("key", js(key)), ("label", js(st.get("title", key))), ("cwd", js(self.work))]
+        fields = [("key", js(key)), ("label", js(st.get("title", key))), ("cwd", js(str(self.work)))]
         resumes = st.get("resumes")
         if resumes:
             if resumes in in_wave:
@@ -267,23 +288,22 @@ class Compiler:
     def project_writers(self):
         """Project agents whose frontmatter declares acceptanceRole: writer."""
         names = set()
-        agents_dir = os.path.join(self.workflow, ".pi", "agents")
-        for f in sorted(os.listdir(agents_dir)) if os.path.isdir(agents_dir) else []:
-            with open(os.path.join(agents_dir, f), encoding="utf-8") as fh:
-                text = fh.read()
-            end = text.find("\n---", 3) if f.endswith(".md") and text.startswith("---") else -1
+        agents_dir = self.workflow / ".pi" / "agents"
+        for path in sorted(agents_dir.iterdir()) if agents_dir.is_dir() else []:
+            text = path.read_text(encoding="utf-8")
+            end = text.find("\n---", 3) if path.suffix == ".md" and text.startswith("---") else -1
             meta = YAML(typ="safe").load(text[3:end]) if end != -1 else None
             if isinstance(meta, dict) and meta.get("acceptanceRole") == "writer":
-                names.add(meta.get("name") or f[:-3])
+                names.add(meta.get("name") or path.stem)
         return names
 
     def script_path(self, st):
         """The stage's program in the workflow's scripts/ (kept across runs), or None."""
-        return os.path.join(self.workflow, "scripts", st["script"]) if st.get("script") else None
+        return str(self.workflow / "scripts" / st["script"]) if st.get("script") else None
 
     def gate_command(self, command):
         """The gate with params resolved and ../gates/ pointing at the workflow's gates/."""
-        return GATES_RE.sub(lambda m: os.path.join(self.workflow, "gates") + os.sep, self.resolve_text(command))
+        return GATES_RE.sub(lambda m: str(self.workflow / "gates") + "/", self.resolve_text(command))
 
     def acceptance(self, key, agent, gate):
         """Explicit acceptance for children that write or have a gate. Left to infer it,
@@ -334,11 +354,11 @@ class Compiler:
             self.errors.append(f"stage '{key}': cannot resolve the items source '{items_id}'")
             source = ""
         final = next((o for o in st.get("out") or [] if isinstance(o, dict) and o.get("path")), None)
-        final_path = self.out_path(final) if final else os.path.join(self.work, key, "result.json")
-        ext = os.path.splitext(final_path)[1] or ".json"
-        outdir = os.path.join(self.work, key)
+        final_path = self.out_path(final) if final else str(self.work / key / "result.json")
+        ext = Path(final_path).suffix or ".json"
+        outdir = str(self.work / key)
         split_req = {"op": "split", "source": source, "batch": st.get("batch"),
-                     "outdir": os.path.join(self.work, "batches", key)}
+                     "outdir": str(self.work / "batches" / key)}
         if st.get("items_glob"):
             split_req["glob"] = st["items_glob"]
         base_task = self.task_expr(key, st, in_wave, extra_lines=(
@@ -347,7 +367,7 @@ class Compiler:
         batch_task = (f"{base_task} + \"\\n\\nYour batch file (one item per line): \" + b.file + "
                       f"\"\\nWrite your batch result to: \" + {js(outdir + '/')} + b.index + {js(ext)}")
         child = {"key": f"{js(key + '-')} + b.index", "label": f"{js(st.get('title', key) + ' — batch ')} + b.index",
-                 "agent": js(st.get("agent")), "cwd": js(self.work), "task": batch_task,
+                 "agent": js(st.get("agent")), "cwd": js(str(self.work)), "task": batch_task,
                  "output": f"{js(outdir + '/')} + b.index + {js(ext)}"}
         if st.get("context"):
             child["context"] = js(st["context"])
@@ -355,7 +375,7 @@ class Compiler:
         batch_outputs = f"S.batches.map(b => {js(outdir + '/')} + b.index + {js(ext)})"
         lines = [
             f"// {pattern} stage {key}",
-            f"R[{js(key + '-split')}] = await runs.run({js(key + '-split')}, {{ agent: {js(BATCHER)}, label: {js('Split items: ' + key)}, cwd: {js(self.work)}, task: {js('BATCH_TOOL_REQUEST ' + json.dumps(split_req))} }});",
+            f"R[{js(key + '-split')}] = await runs.run({js(key + '-split')}, {{ agent: {js(BATCHER)}, label: {js('Split items: ' + key)}, cwd: {js(str(self.work))}, task: {js('BATCH_TOOL_REQUEST ' + json.dumps(split_req))} }});",
             f"if (failed(R[{js(key + '-split')}])) return stop(\"failed\", [{js(key + '-split')}]);",
             f"S = JSON.parse(R[{js(key + '-split')}].output);",
             f"items = S.batches.map(b => ({child_js}));",
@@ -370,14 +390,14 @@ class Compiler:
             merge_req_expr = (f"\"BATCH_TOOL_REQUEST \" + JSON.stringify({{ op: \"merge\", inputs: {batch_outputs}, "
                               f"output: {js(final_path)} }})")
             lines += [
-                f"R[{js(key + '-merge')}] = await runs.run({js(key + '-merge')}, {{ agent: {js(BATCHER)}, label: {js('Merge batches: ' + key)}, cwd: {js(self.work)}, task: {merge_req_expr} }});",
+                f"R[{js(key + '-merge')}] = await runs.run({js(key + '-merge')}, {{ agent: {js(BATCHER)}, label: {js('Merge batches: ' + key)}, cwd: {js(str(self.work))}, task: {merge_req_expr} }});",
                 f"if (failed(R[{js(key + '-merge')}])) return stop(\"failed\", [{js(key + '-merge')}]);",
             ]
         else:  # map_reduce
             reduce_task = (f"{self.task_expr(key, st, in_wave)} + \"\\n\\nThis is the reduce step. Combine these batch results into the output above: \" + "
                            f"{batch_outputs}.join(\", \")")
             reduce_item = {"key": js(key + "-reduce"), "label": js(st.get("title", key) + " — reduce"),
-                           "agent": js(st.get("agent")), "cwd": js(self.work), "task": reduce_task,
+                           "agent": js(st.get("agent")), "cwd": js(str(self.work)), "task": reduce_task,
                            "output": js(final_path)}
             lines += [
                 f"R[{js(key + '-reduce')}] = await runs.run({js(key + '-reduce')}, {{ {', '.join(f'{k}: {v}' for k, v in reduce_item.items())} }});",
@@ -389,16 +409,18 @@ class Compiler:
         agent = (st.get("verify") or {}).get("review")
         outs = [self.out_path(o) for o in st.get("out") or [] if isinstance(o, dict) and o.get("path")]
         check = (st.get("verify") or {}).get("check") or "the output is complete and correct for the stage's purpose"
+        used_next = self.used_next_by(key)
         task = (f"Review the output of workflow stage \"{key}\" ({st.get('title', key)}). Read-only: do not edit anything.\n"
                 f"Outputs: {', '.join(outs) if outs else 'the stage result below'}\n"
                 f"Criterion: {check}\n"
-                "Set blocking to true only if the output is wrong or incomplete in a way the next stages would build on.")
+                + ("Used next by:\n" + "".join(used_next) if used_next else "")
+                + "Set blocking to true only if the output is wrong or incomplete in a way the next stages would build on.")
         schema = {"type": "object", "required": ["blocking", "findings"],
                   "properties": {"blocking": {"type": "boolean"}, "findings": {"type": "array", "items": {"type": "string"}}}}
         rk = key + "-review"
         task_js = js(task) if outs else f"{js(task + chr(10))} + JSON.stringify(R[{js(key)}].structuredOutput ?? R[{js(key)}].output)"
         return "\n  ".join([
-            f"R[{js(rk)}] = await runs.run({js(rk)}, {{ agent: {js(agent)}, label: {js('Review: ' + key)}, cwd: {js(self.work)}, context: \"fresh\", task: {task_js}, outputSchema: {js(schema)} }});",
+            f"R[{js(rk)}] = await runs.run({js(rk)}, {{ agent: {js(agent)}, label: {js('Review: ' + key)}, cwd: {js(str(self.work))}, context: \"fresh\", task: {task_js}, outputSchema: {js(schema)} }});",
             f"if (failed(R[{js(rk)}])) return stop(\"failed\", [{js(rk)}]);",
             f"if (R[{js(rk)}].structuredOutput && R[{js(rk)}].structuredOutput.blocking) return stop(\"blocked\", [{js(rk)}]);",
         ])
@@ -412,7 +434,7 @@ class Compiler:
 
         for d in decisions:
             path = self.decision_path(d)
-            if not os.path.isfile(path):
+            if not Path(path).is_file():
                 st = self.stages[d]
                 preflight["decisions_needed"].append({
                     "stage": d, "title": st.get("title"), "write_answer_to": path,
@@ -483,8 +505,11 @@ class Compiler:
             f"const P = {int(max_parallel)};",
             "const R = {};",
             "let items, bad, S;",
-            "function failed(r) { return !r || r.status === \"failed\" || r.status === \"rejected\" || r.status === \"stopped\" || !!r.error; }",
-            "function summary() { const o = {}; for (const k of Object.keys(R)) { const r = R[k] || {}; o[k] = { runId: r.runId ?? null, status: r.status ?? null, outputReference: r.outputReference ?? null, structuredOutput: r.structuredOutput ?? null }; } return o; }",
+            # a child result has ok, not a status: runs.all returns failed children as {ok: false},
+            # runs.run throws (caught below); outcome() is pi-subagents' own naming of the result
+            "function failed(r) { return !r || r.ok !== true; }",
+            "function outcome(r) { return r.ok ? \"completed\" : r.stopped ? \"stopped\" : r.detached ? \"paused\" : \"failed\"; }",
+            "function summary() { const o = {}; for (const k of Object.keys(R)) { const r = R[k] || {}; o[k] = { runId: r.runId ?? null, status: outcome(r), outputReference: r.outputReference ?? null, structuredOutput: r.structuredOutput ?? null }; } return o; }",
             f"function stop(status, keys) {{ return {{ wave: {js(wid)}, revision: {revision}, status: status, at: keys, children: summary() }}; }}",
             "try {",
             "  " + "\n  ".join(body),
@@ -500,7 +525,7 @@ class Compiler:
             call["missionId"] = mission_id
         else:
             goal = (self.plan.get("goal") or "").strip()
-            title = ((goal[:67] + "...") if len(goal) > 70 else goal) or os.path.basename(self.workflow)
+            title = ((goal[:67] + "...") if len(goal) > 70 else goal) or self.workflow.name
             call["mission"] = {"title": f"{title} (run {self.run_id})", "objective": goal}
         call["workflowScript"] = script
         return {"ok": True, "run": self.run_id, "wave": wid, "stages": members, "ends_with": wave.get("ends_with"),
@@ -516,15 +541,14 @@ def main(
     check: Annotated[bool, typer.Option("--check", help="planning check: compile every concrete pending wave, ignore status and preflight, report errors only")] = False,
 ):
     """Compile the next wave into a pi-subagents call."""
-    workflow = os.path.abspath(workflow)
-    plan_path = os.path.join(workflow, ".pi", "plan.yaml")
-    if not os.path.isfile(plan_path):
+    workflow = Path(workflow).resolve()
+    plan_path = workflow / ".pi" / "plan.yaml"
+    if not plan_path.is_file():
         print(json.dumps({"ok": False, "error": f"{workflow} is not a workflow"}))
         raise typer.Exit(2)
     validator = load_validator()
     try:
-        with open(plan_path, encoding="utf-8") as fh:
-            plan = validator.load_yaml(fh) or {}
+        plan = validator.load_yaml(plan_path.read_text(encoding="utf-8")) or {}
     except YAMLError as exc:
         print(json.dumps({"ok": False, "error": f"cannot read plan: {exc}"}))
         raise typer.Exit(2)
@@ -535,7 +559,7 @@ def main(
     if check:
         results = {}
         provisional = set(summary.get("provisional") or [])
-        run_dir, state = (act[1], act[2]) if act else (os.path.join(workflow, validator.RUNS, "(next)"), {})
+        run_dir, state = (act[1], act[2]) if act else (workflow / validator.RUNS / "(next)", {})
         for w in summary.get("waves") or []:
             if any(s in provisional for s in w["stages"]):
                 continue
@@ -577,11 +601,18 @@ def main(
     compiler = Compiler(workflow, plan, params, act[1], act[2], {a.strip() for a in approve.split(",") if a.strip()})
     result = compiler.compile(wave)
     result["commit"] = commit
+    if result.get("ok") and "workflowScript" in (result.get("call") or {}):
+        # a path, not the text: the model would otherwise have to re-emit the whole script
+        # as output tokens just to pass it back to the subagent tool (pi-subagents reads
+        # workflowScriptPath itself: src/runs/foreground/subagent-executor.js, loadWorkflowScriptPath)
+        script_path = Path(act[1]) / ".compiled" / f"{wave['id']}.js"
+        script_path.parent.mkdir(parents=True, exist_ok=True)
+        script_path.write_text(result["call"].pop("workflowScript"), encoding="utf-8")
+        result["call"]["workflowScriptPath"] = str(script_path)
     text = json.dumps(result, indent=2, ensure_ascii=False)
-    for path in filter(None, (os.path.join(act[1], ".compiled", f"{wave['id']}.json"), out)):
-        os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(text)
+    for out_path in filter(None, (Path(act[1]) / ".compiled" / f"{wave['id']}.json", Path(out) if out else None)):
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(text, encoding="utf-8")
     print(text)
     raise typer.Exit(0 if result.get("ok") else 1)
 

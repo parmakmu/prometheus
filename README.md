@@ -13,6 +13,17 @@ Prometheus plans the work (asking only questions that change the plan,
 sending read-only probes, getting a critic's review) and writes a workflow
 agent to `workflows/<slug>/`. It never does the work itself.
 
+## Documentation
+
+| Page | For |
+|---|---|
+| [How Prometheus works](docs/how-it-works.md) | the lifecycle and architecture |
+| [Worked example](docs/worked-example.md) | one real workflow, from request to reused stage programs |
+| [Command and tool reference](docs/commands.md) | every command and model-facing tool |
+| [Params, `.env` and secrets](docs/params-and-secrets.md) | machine-specific values, and how secrets are kept out of the plan and logs |
+| [Troubleshooting](docs/troubleshooting.md) | refusals you may meet, and what to do |
+| [What the Python scripts do](docs/python-scripts.md) | the implementation, for contributors |
+
 ## Commands in Prometheus
 
 | command | what it does |
@@ -42,7 +53,8 @@ pi                     # trust the folder
 
 Machine-specific values (folders, pages, accounts, tokens) go in the
 workflow's `.env` (not in git) or the environment pi runs in; `/workflow-run`
-asks for missing ones, and for secrets tells you which variable to add.
+asks for missing ones, and for secrets tells you which variable to add. See
+[Params, `.env` and secrets](docs/params-and-secrets.md).
 
 Each run gets a folder `runs/<id>/`. The workflow is its own git repo: `main`
 holds the reviewed plan; changes a run makes to its plan (replans after
@@ -59,7 +71,7 @@ to merge, keep or discard it after seeing the diff.
 .pi/skills/workflow/                 the skill: planning and run rules, scripts, examples
   templates/workflow/                everything a new workflow gets
 workflows/                           the workflows
-tests/                               regression suite (see CLAUDE.md)
+tests/                               pytest suite (`uv run pytest`; see docs/how-it-works.md)
 ```
 
 ## Requirements

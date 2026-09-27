@@ -24,10 +24,10 @@ Prints one JSON object {valid, status, errors, warnings, summary} and exits
 Requires typer, pydantic and ruamel.yaml (`uv sync`).
 """
 import json
-import os
 import re
 import sys
 from graphlib import CycleError, TopologicalSorter
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import typer
@@ -75,17 +75,16 @@ RUNS = "runs"
 RUN_ID_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})-(\d+)$")
 
 
-def list_runs(workflow_root):
+def list_runs(workflow_root: Path):
     """[(id, dir)] of the workflow's runs, oldest first."""
-    base = os.path.join(workflow_root, RUNS)
-    names = [n for n in os.listdir(base) if os.path.isfile(os.path.join(base, n, "run.yaml"))] if os.path.isdir(base) else []
+    base = Path(workflow_root) / RUNS
+    names = [p.name for p in base.iterdir() if (p / "run.yaml").is_file()] if base.is_dir() else []
     key = lambda n: (m.group(1), int(m.group(2))) if (m := RUN_ID_RE.match(n)) else (n, 0)
-    return [(n, os.path.join(base, n)) for n in sorted(names, key=key)]
+    return [(n, base / n) for n in sorted(names, key=key)]
 
 
-def read_run(run_dir):
-    with open(os.path.join(run_dir, "run.yaml"), encoding="utf-8") as fh:
-        state = load_yaml(fh)
+def read_run(run_dir: Path):
+    state = load_yaml((Path(run_dir) / "run.yaml").read_text(encoding="utf-8"))
     return state if isinstance(state, dict) else {}
 
 
@@ -407,10 +406,9 @@ def duplicates(values):
     return dup
 
 
-def read_frontmatter_name(path):
+def read_frontmatter_name(path: Path):
     try:
-        with open(path, encoding="utf-8") as fh:
-            text = fh.read()
+        text = Path(path).read_text(encoding="utf-8")
     except OSError:
         return None
     end = text.find("\n---", 3) if text.startswith("---") else -1
@@ -423,13 +421,8 @@ def read_frontmatter_name(path):
     return meta.get("name") if isinstance(meta, dict) else None
 
 
-def project_agent_names(root):
-    names = set()
-    for dirpath, _, files in os.walk(os.path.join(root, ".pi", "agents")):
-        for f in files:
-            if f.endswith(".md"):
-                names.add(read_frontmatter_name(os.path.join(dirpath, f)) or f[:-3])
-    return names
+def project_agent_names(root: Path):
+    return {read_frontmatter_name(p) or p.stem for p in (Path(root) / ".pi" / "agents").rglob("*.md")}
 
 
 def load_agents(plan, cli_agents, cli_external, warn):
@@ -905,27 +898,28 @@ def validate(raw, cli_agents=None, cli_external=None, workflow_root=None, run_st
     # --- workflow ------------------------------------------------------------
     workflow_info = None
     if workflow_root:
-        workflow_info = {"root": os.path.abspath(workflow_root)}
+        workflow_root = Path(workflow_root)
+        workflow_info = {"root": str(workflow_root.resolve())}
         for rel, what in (
             ("AGENTS.md", "workflow context for Pi"),
-            (os.path.join(".pi", "APPEND_SYSTEM.md"), "the workflow agent's role"),
-            (os.path.join(".pi", "extensions", "workflow", "index.ts"), "the /workflow-* commands and workflow_* tools"),
-            (os.path.join(".pi", "skills", "workflow", "SKILL.md"), "the planning skill used at replan"),
-            (os.path.join(".pi", "settings.json"), "project package declarations"),
-            (os.path.join(".pi", "agents", "workflow-batcher.md"), "the command runner map stages use"),
-            (os.path.join(".pi", "skills", "workflow", "scripts", "compile_wave.py"), "the wave compiler"),
+            (".pi/APPEND_SYSTEM.md", "the workflow agent's role"),
+            (".pi/extensions/workflow/index.ts", "the /workflow-* commands and workflow_* tools"),
+            (".pi/skills/workflow/SKILL.md", "the planning skill used at replan"),
+            (".pi/settings.json", "project package declarations"),
+            (".pi/agents/workflow-batcher.md", "the command runner map stages use"),
+            (".pi/skills/workflow/scripts/compile_wave.py", "the wave compiler"),
         ):
-            if not os.path.exists(os.path.join(workflow_root, rel)):
+            if not (workflow_root / rel).exists():
                 warn(f"workflow: {rel} is missing ({what}); re-run scaffold_workflow.py --refresh")
         for where, script in gate_scripts:
-            if not os.path.exists(os.path.join(workflow_root, "gates", script)):
+            if not (workflow_root / "gates" / script).exists():
                 (err if status == "ready" else warn)(
                     f"{where}: gate script gates/{script} does not exist; write it while planning (never in the stage it checks)")
         on_disk = project_agent_names(workflow_root)
         for name, src in agent_sources.items():
             if src == "project" and name not in on_disk:
                 err(f"workflow: agent '{name}' has source project but no .pi/agents/*.md defines it")
-        if os.path.exists(os.path.join(workflow_root, ".pi", "params.yaml")):
+        if (workflow_root / ".pi" / "params.yaml").exists():
             warn("workflow: .pi/params.yaml is no longer read (values live in .env); /workflow-refresh in Prometheus moves them")
         valid = {n: s for n, s in params.items() if workflow_params.ENV_NAME_RE.match(workflow_params.env_name(n, s))}
         values = workflow_params.load(workflow_root, valid)
@@ -940,10 +934,10 @@ def validate(raw, cli_agents=None, cli_external=None, workflow_root=None, run_st
             if inp.kind not in ("folder", "file") or not refs or any(values.get(r) is None or r not in valid for r in refs):
                 continue  # no param, or not set yet (reported as missing)
             path = PARAM_REF_RE.sub(lambda m: str(values[m.group(1)]), loc)
-            full = os.path.expanduser(path)
-            if not os.path.isabs(full):
+            full = Path(path).expanduser()
+            if not full.is_absolute():
                 err(f"workflow: input '{inp.id}' resolves to '{path}', a relative path; set an absolute path in .env (~/… is fine)")
-            elif not os.path.exists(full):
+            elif not full.exists():
                 err(f"workflow: input '{inp.id}' resolves to '{path}', which does not exist; check the value in .env")
 
     summary = {
@@ -976,17 +970,18 @@ def main(
     workflow: Annotated[str | None, typer.Option(help="workflow root (default: detected from <workflow>/.pi/plan.yaml)")] = None,
 ):
     """Validate a workflow YAML file."""
+    plan_path = Path(plan_path)
     try:
-        with open(plan_path, encoding="utf-8") as fh:
-            plan = load_yaml(fh)
+        plan = load_yaml(plan_path.read_text(encoding="utf-8"))
     except (OSError, YAMLError) as exc:
         print(json.dumps({"valid": False, "errors": [f"cannot read plan: {exc}"], "warnings": []}))
         sys.exit(2)
-    if workflow is None:
-        parent = os.path.dirname(os.path.abspath(plan_path))
-        if os.path.basename(parent) == ".pi":
-            workflow = os.path.dirname(parent)
-    errors, warnings, summary = validate(plan, agents, external, workflow)
+    workflow_root = Path(workflow) if workflow is not None else None
+    if workflow_root is None:
+        parent = plan_path.resolve().parent
+        if parent.name == ".pi":
+            workflow_root = parent.parent
+    errors, warnings, summary = validate(plan, agents, external, workflow_root)
     print(json.dumps({
         "valid": not errors,
         "status": plan.get("status") if isinstance(plan, dict) else None,

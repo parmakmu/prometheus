@@ -14,7 +14,11 @@ const [, , compiledPath, ...flags] = process.argv;
 const failKey = flags.includes("--fail") ? flags[flags.indexOf("--fail") + 1] : null;
 const blockKey = flags.includes("--block") ? flags[flags.indexOf("--block") + 1] : null;
 const compiled = JSON.parse(fs.readFileSync(compiledPath, "utf8"));
-const script = compiled.call.workflowScript;
+// mirrors pi-subagents' own loadWorkflowScriptPath (subagent-executor.js): workflowScriptPath
+// is read from disk before anything else runs, so it behaves exactly like an inline workflowScript
+const script = compiled.call.workflowScriptPath
+  ? fs.readFileSync(compiled.call.workflowScriptPath, "utf8")
+  : compiled.call.workflowScript;
 const log = [];
 let n = 0;
 
@@ -46,11 +50,11 @@ function run(key, opts) {
   if (opts.acceptance && (opts.acceptance.preserveStagedIndex !== true || opts.acceptance.review?.required !== false))
     throw new Error(`${key}: acceptance must set preserveStagedIndex: true and review.required: false`);
   if (verify.some((v) => v.output === "json") && opts.outputSchema) throw new Error(`${key}: typed verify + outputSchema (pi rejects this)`);
-  if (key === failKey) return { key, runId, status: "failed", error: "mock failure" };
+  if (key === failKey) return { key, runId, ok: false, state: "failed", error: "mock failure" };
   if (opts.agent === "workflow-batcher") {
     const r = spawnSync("python3", ["../../../.pi/skills/workflow/scripts/batch_tool.py"], { cwd: opts.cwd, input: "agent text\n" + opts.task, encoding: "utf8" });
-    if (r.status !== 0) return { key, runId, status: "failed", error: r.stdout + r.stderr };
-    return { key, runId, status: "complete", output: r.stdout };
+    if (r.status !== 0) return { key, runId, ok: false, state: "failed", error: r.stdout + r.stderr };
+    return { key, runId, ok: true, state: "complete", output: r.stdout };
   }
   // placeholder outputs named in the task's Write: section
   const writeSection = (opts.task.split("\nWrite:\n")[1] || "").split("\n\n")[0];
@@ -66,14 +70,20 @@ function run(key, opts) {
   for (const v of verify) {
     const g = spawnSync("sh", ["-c", v.command], { cwd: opts.cwd, encoding: "utf8" });
     entry.gateExit = g.status;
-    if (g.status !== 0) return { key, runId, status: "failed", error: `acceptance rejected: ${v.id} failed: ${g.stderr}` };
+    if (g.status !== 0) return { key, runId, ok: false, state: "failed", error: `acceptance rejected: ${v.id} failed: ${g.stderr}` };
     if (v.output === "json") structuredOutput = JSON.parse(g.stdout);
   }
-  return { key, runId, status: "complete", output: "ok", structuredOutput };
+  return { key, runId, ok: true, state: "complete", output: "ok", outputReference: opts.output ?? null, structuredOutput };
 }
 
+// results have pi-subagents' shape ({ok, state, error, output, outputReference, structuredOutput}):
+// runs.run throws on a failed child, runs.all (config objects) returns it as {ok: false}
 const runs = {
-  run: async (key, opts) => run(key, opts),
+  run: async (key, opts) => {
+    const r = run(key, opts);
+    if (!r.ok) throw new Error(`Run '${key}' failed: ${r.error}`);
+    return r;
+  },
   all: async (items) => items.map((it) => run(it.key, it)),
 };
 

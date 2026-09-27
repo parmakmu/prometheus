@@ -49,6 +49,7 @@ import json
 import os
 import tempfile
 from enum import Enum
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -57,8 +58,8 @@ import workflow_params
 from ruamel.yaml.error import YAMLError
 from validate_plan import RUN_ID_RE, RUNS, active_run, list_runs, rt_yaml, validate
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-PLAN = os.path.join(".pi", "plan.yaml")
+HERE = Path(__file__).resolve().parent
+PLAN = Path(".pi") / "plan.yaml"
 HEADER = "# Run state written by the run protocol (run_log.py). Do not edit by hand.\n"
 app = typer.Typer(add_completion=False)
 
@@ -82,8 +83,7 @@ def out(obj, code=0):
 def load(path, default):
     """Round-trip load; a repeated key is an error, since this script writes the file back."""
     try:
-        with open(path, encoding="utf-8") as fh:
-            data = rt_yaml().load(fh)
+        data = rt_yaml().load(Path(path).read_text(encoding="utf-8"))
     except OSError:
         return default
     except YAMLError as exc:
@@ -95,17 +95,17 @@ def save(path, data, header=""):
     buf = io.StringIO()
     rt_yaml().dump(data, buf)
     text = buf.getvalue()
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write(text if text.startswith("#") else header + text)
-    os.replace(tmp, path)
+    path = Path(path)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text if text.startswith("#") else header + text, encoding="utf-8")
+    tmp.replace(path)
 
 
 def open_workflow(need_run=True):
     """(plan, (id, dir, state) of the active run or None)."""
-    if not os.path.isfile(PLAN):
+    if not Path(PLAN).is_file():
         out({"ok": False, "error": "run from the workflow root (no .pi/plan.yaml here)"}, 2)
-    act = active_run(os.getcwd())
+    act = active_run(Path.cwd())
     if need_run and act is None:
         out({"ok": False, "error": "no active run: start one with workflow_new_run (run_log.py new)"}, 1)
     return load(PLAN, {}), act
@@ -116,8 +116,8 @@ def subagents_run_dir(run_id):
     root = os.environ.get("PI_SUBAGENTS_TEMP_ROOT", "").strip()
     if not root:
         scope = f"uid-{os.getuid()}" if hasattr(os, "getuid") else f"user-{os.environ.get('USERNAME', 'shared')}"
-        root = os.path.join(tempfile.gettempdir(), f"pi-subagents-{scope}")
-    return os.path.join(os.path.abspath(root), "async-subagent-runs", run_id)
+        root = Path(tempfile.gettempdir()) / f"pi-subagents-{scope}"
+    return Path(root).resolve() / "async-subagent-runs" / run_id
 
 
 STILL_RUNNING = {"queued", "pending", "scheduled", "started", "running"}
@@ -126,10 +126,9 @@ STILL_RUNNING = {"queued", "pending", "scheduled", "started", "running"}
 def subagents_outcome(run_id):
     """(returned value or None, status.json) of a finished async run; exits if it is
     missing or still running."""
-    path = os.path.join(subagents_run_dir(run_id), "status.json")
+    path = subagents_run_dir(run_id) / "status.json"
     try:
-        with open(path, encoding="utf-8") as fh:
-            st = json.load(fh)
+        st = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         out({"ok": False, "error": f"cannot read pi-subagents' record of run {run_id} ({path}: {exc}); "
              "pass the workflow's return value with --result and --status"}, 1)
@@ -146,7 +145,7 @@ def mission_close(state, rid, status, summary):
 
 
 def state_file(run_dir):
-    return os.path.join(run_dir, "run.yaml")
+    return Path(run_dir) / "run.yaml"
 
 
 def set_status(state, keys, status):
@@ -167,24 +166,24 @@ def new(
     plan, act = open_workflow(need_run=False)
     if act is not None:
         out({"ok": False, "error": f"run {act[0]} is active: continue it, or stop it first (workflow_stop_run)"}, 1)
-    b = workflow_git.branch(os.getcwd())
+    b = workflow_git.branch(Path.cwd())
     if b not in (None, workflow_git.MAIN):
         out({"ok": False, "error": f"branch {b} is checked out and not reviewed: review it first (workflow_merge: merge, keep or discard)"}, 1)
     today = datetime.datetime.now().astimezone().date().isoformat()  # local date
-    taken = [int(m.group(2)) for rid, _ in list_runs(os.getcwd()) if (m := RUN_ID_RE.match(rid)) and m.group(1) == today]
+    taken = [int(m.group(2)) for rid, _ in list_runs(Path.cwd()) if (m := RUN_ID_RE.match(rid)) and m.group(1) == today]
     rid = f"{today}-{max(taken, default=0) + 1}"
-    run_dir = os.path.join(RUNS, rid)
+    run_dir = Path(RUNS) / rid
     try:
-        commit, _note = workflow_git.commit(os.getcwd(), f"r{plan.get('revision', 1)}: plan for run {rid}")
+        commit, _note = workflow_git.commit(Path.cwd(), f"r{plan.get('revision', 1)}: plan for run {rid}")
     except RuntimeError as exc:
         out({"ok": False, "error": f"cannot commit the plan: {exc}"}, 1)
-    os.makedirs(os.path.join(run_dir, "work"))
+    (run_dir / "work").mkdir(parents=True)
     state = {"id": rid, "status": "active", "revision": plan.get("revision", 1), "commit": commit, "started_at": now()}
     if note:
         state["note"] = note
     state.update({"stages": {}, "launches": []})
     save(state_file(run_dir), state, HEADER)
-    out({"ok": True, "run": rid, "path": os.path.abspath(run_dir), "commit": commit})
+    out({"ok": True, "run": rid, "path": str(run_dir.resolve()), "commit": commit})
 
 
 @app.command()
@@ -193,13 +192,13 @@ def stop(note: Annotated[str | None, typer.Option(help="why the run stopped")] =
     _plan, (rid, run_dir, state) = open_workflow()
     if "running" in (state.get("stages") or {}).values():
         out({"ok": False, "error": f"a wave of run {rid} is running: let it finish, or stop it in pi-subagents first, then record it with workflow_log_finish"}, 1)
-    workflow_git.commit(os.getcwd(), f"run {rid}: files its waves left in the workflow")  # on run/<id>, while still active
+    workflow_git.commit(Path.cwd(), f"run {rid}: files its waves left in the workflow")  # on run/<id>, while still active
     state["status"] = "stopped"
     state["finished_at"] = now()
     if note:
         state["note"] = note
     save(state_file(run_dir), state, HEADER)
-    out({"ok": True, "run": rid, "run_status": "stopped", "review": workflow_git.review_info(os.getcwd()),
+    out({"ok": True, "run": rid, "run_status": "stopped", "review": workflow_git.review_info(Path.cwd()),
          "mission_close": mission_close(state, rid, "cancelled", f"Workflow run {rid} stopped" + (f": {note}" if note else ""))})
 
 
@@ -213,7 +212,7 @@ def start(
 ):
     """Record a wave launch."""
     plan, (rid, run_dir, state) = open_workflow()
-    _errors, _warnings, summary = validate(plan, None, None, os.getcwd(), run_state=state)
+    _errors, _warnings, summary = validate(plan, None, None, Path.cwd(), run_state=state)
     if summary.get("running"):
         out({"ok": False, "error": f"a wave is running (stages {summary['running']}); finish it first"}, 1)
     nxt = (summary.get("waves") or [None])[0]
@@ -228,15 +227,15 @@ def start(
         "stages": nxt["stages"],
         "revision": plan.get("revision", 1),
         "ends_with": nxt["ends_with"],
-        "branch": workflow_git.branch(os.getcwd()),
-        "commit": workflow_git.head(os.getcwd()),
+        "branch": workflow_git.branch(Path.cwd()),
+        "commit": workflow_git.head(Path.cwd()),
         "status": "running",
         "subagent_run_id": subagent_run_id,
         "mission_id": mission_id,
         "started_at": now(),
         "approvals": [a.strip() for a in approved.split(",") if a.strip()],
         "decisions": answers,
-        "params": workflow_params.record(plan.get("params"), workflow_params.load(os.getcwd(), plan.get("params"))),
+        "params": workflow_params.record(plan.get("params"), workflow_params.load(Path.cwd(), plan.get("params"))),
     }
     state.setdefault("launches", []).append(entry)
     set_status(state, nxt["stages"], "running")
@@ -260,11 +259,8 @@ def finish(
     returned, record = None, {}
     if result:
         try:
-            if os.path.isfile(result):
-                with open(result, encoding="utf-8") as fh:
-                    returned = json.load(fh)
-            else:
-                returned = json.loads(result)
+            result_path = Path(result)
+            returned = json.loads(result_path.read_text(encoding="utf-8")) if result_path.is_file() else json.loads(result)
         except ValueError as exc:
             out({"ok": False, "error": f"--result is not JSON: {exc}"}, 1)
     elif entry.get("subagent_run_id"):
@@ -282,9 +278,9 @@ def finish(
                  f"returned status {given!r}); pass --status"}, 1)
         status = Status(given)
     if returned is not None:
-        os.makedirs(os.path.join(run_dir, ".compiled"), exist_ok=True)
-        with open(os.path.join(run_dir, ".compiled", f"{wave}-result.json"), "w", encoding="utf-8") as fh:
-            json.dump(returned, fh, indent=2, ensure_ascii=False)
+        result_dir = Path(run_dir) / ".compiled"
+        result_dir.mkdir(parents=True, exist_ok=True)
+        (result_dir / f"{wave}-result.json").write_text(json.dumps(returned, indent=2, ensure_ascii=False), encoding="utf-8")
     cost = record.get("totalCost") or {}
     if cost.get("costUsd") is not None:
         entry["cost_usd"] = round(float(cost["costUsd"]), 6)
@@ -304,7 +300,7 @@ def finish(
     set_status(state, entry.get("stages") or [], wave_status)
     save(state_file(run_dir), state, HEADER)
     # files the wave wrote into the workflow go to run/<id> while the run is still active
-    commit, git_note = workflow_git.commit(os.getcwd(), f"run {rid}, wave {wave}: files the wave wrote")
+    commit, git_note = workflow_git.commit(Path.cwd(), f"run {rid}, wave {wave}: files the wave wrote")
     keys = [s.get("key") for s in plan.get("stages") or []]
     done = bool(keys) and all(state["stages"].get(k) == "done" for k in keys)
     if done:
@@ -318,10 +314,12 @@ def finish(
          "children": {k: {"status": (v or {}).get("status"), "output": (v or {}).get("outputReference")}
                       for k, v in ((returned or {}).get("children") or {}).items()} if isinstance(returned, dict) else None,
          "error": entry.get("error"), "failure_kind": entry.get("failure_kind"),
-         "branch": workflow_git.branch(os.getcwd()), "commit": commit, "git_note": git_note,
-         "review": workflow_git.review_info(os.getcwd()) if done else None,
+         "branch": workflow_git.branch(Path.cwd()), "commit": commit, "git_note": git_note,
+         "review": workflow_git.review_info(Path.cwd()) if done else None,
          "mission_close": mission_close(state, rid, "completed", f"Workflow run {rid} completed ({len(keys)} stages"
                                         + (f", ${total:.4f} in children" if total else "") + ").") if done else None,
+         # the criteria the final report goes through, so the parent need not read the plan for them
+         "done_when": plan.get("done_when") if done else None,
          "entry": entry})
 
 
@@ -341,15 +339,14 @@ def decision(
         value = json.loads(answer)
     except ValueError as exc:
         out({"ok": False, "error": f"--answer is not JSON: {exc}"}, 1)
-    spec = importlib.util.spec_from_file_location("compile_wave", os.path.join(HERE, "compile_wave.py"))
+    spec = importlib.util.spec_from_file_location("compile_wave", HERE / "compile_wave.py")
     cw = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(cw)
-    compiler = cw.Compiler(os.getcwd(), plan, workflow_params.load(os.getcwd(), plan.get("params")), os.path.abspath(run_dir), state, set())
-    path = compiler.decision_path(stage)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as fh:
-        json.dump({"stage": stage, "answer": value, "recorded_at": now()}, fh, indent=2, ensure_ascii=False)
-    out({"ok": True, "run": rid, "stage": stage, "path": path})
+    compiler = cw.Compiler(Path.cwd(), plan, workflow_params.load(Path.cwd(), plan.get("params")), run_dir, state, set())
+    path = Path(compiler.decision_path(stage))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"stage": stage, "answer": value, "recorded_at": now()}, indent=2, ensure_ascii=False), encoding="utf-8")
+    out({"ok": True, "run": rid, "stage": stage, "path": str(path)})
 
 
 if __name__ == "__main__":

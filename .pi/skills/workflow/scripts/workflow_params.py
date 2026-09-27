@@ -13,8 +13,8 @@ first, then `.env` in the workflow root (pydantic-settings), then the plan's
 default. `.env` is per machine and not in git; the workflow extension loads it
 into pi's environment too, so children and gate commands see the same values.
 """
-import os
 import re
+from pathlib import Path
 
 from dotenv import dotenv_values, set_key
 from pydantic import Field, SecretStr, create_model
@@ -57,7 +57,7 @@ def reserved(env):
     return env.upper() in RESERVED or env.startswith(RESERVED_PREFIXES)
 
 
-def load(root, specs):
+def load(root: Path, specs):
     """{name: value} for the declared params: str, SecretStr for secrets, or None when
     unset. The environment wins over `.env`; the plan's default fills the rest."""
     specs = {n: spec_of(s) for n, s in (specs or {}).items()}
@@ -65,7 +65,7 @@ def load(root, specs):
         name: ((SecretStr if kind(s) == "secret" else str) | None, Field(None, validation_alias=env_name(name, s)))
         for name, s in specs.items() if ENV_NAME_RE.match(env_name(name, s))
     }
-    settings = create_model("Params", __base__=_Base, **fields)(_env_file=os.path.join(root, ENV_FILE))
+    settings = create_model("Params", __base__=_Base, **fields)(_env_file=Path(root) / ENV_FILE)
     values = {}
     for name, s in specs.items():
         value = getattr(settings, name, None)
@@ -80,23 +80,23 @@ def missing(specs, values):
     return [n for n, s in (specs or {}).items() if values.get(n) is None and spec_of(s).get("required", True)]
 
 
-def file_keys(root):
+def file_keys(root: Path):
     """The names `.env` sets (for warnings about names no param reads)."""
-    path = os.path.join(root, ENV_FILE)
-    return set(dotenv_values(path)) if os.path.exists(path) else set()
+    path = Path(root) / ENV_FILE
+    return set(dotenv_values(path)) if path.exists() else set()
 
 
-def resolve(name, spec, value, run_dir):
+def resolve(name, spec, value, run_dir: Path):
     """The text a reference ${name} compiles to."""
     if kind(spec) == "secret":
         return "${" + env_name(name, spec) + "}"  # the value stays in the environment
     value = str(value)
     if kind(spec) == "text":
         return value
-    value = os.path.expanduser(value)
-    if not os.path.isabs(value) and not URL_RE.match(value):
-        value = os.path.join(run_dir, value)  # e.g. an `outputs` default: per run
-    return value
+    path = Path(value).expanduser()
+    if not path.is_absolute() and not URL_RE.match(value):
+        path = Path(run_dir) / path  # e.g. an `outputs` default: per run
+    return str(path)
 
 
 def record(specs, values):
@@ -105,7 +105,7 @@ def record(specs, values):
             for n, s in (specs or {}).items()}
 
 
-def set_values(root, specs, new):
+def set_values(root: Path, specs, new):
     """Write {name: value} to `.env` for declared params that are not secrets;
     returns a list of problems (nothing is written when there are any)."""
     specs = {n: spec_of(s) for n, s in (specs or {}).items()}
@@ -114,10 +114,9 @@ def set_values(root, specs, new):
                  "never ask for a secret's value" for n in new if n in specs and kind(specs[n]) == "secret"]
     if problems:
         return problems
-    path = os.path.join(root, ENV_FILE)
-    if not os.path.exists(path):
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(ENV_HEADER)
+    path = Path(root) / ENV_FILE
+    if not path.exists():
+        path.write_text(ENV_HEADER, encoding="utf-8")
     for n, v in new.items():
         set_key(path, env_name(n, specs[n]), str(v), quote_mode="auto")
     return []

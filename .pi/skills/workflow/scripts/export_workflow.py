@@ -21,10 +21,10 @@ workflow stands: runs/, .git and .pi/subagents/.
 Validates the copy and prints one JSON object.
 """
 import json
-import os
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -33,14 +33,13 @@ import workflow_params
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+SCRIPT_DIR = Path(__file__).resolve().parent
 CACHE = shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store")
 
 
 def load(path, default):
     try:
-        with open(path, encoding="utf-8") as fh:
-            data = YAML(typ="safe").load(fh)
+        data = YAML(typ="safe").load(Path(path).read_text(encoding="utf-8"))
         return default if data is None else data
     except (OSError, YAMLError):
         return default
@@ -53,17 +52,17 @@ def main(
     name: Annotated[str | None, typer.Option(help="slug for the copy (default: the workflow's folder name)")] = None,
 ):
     """Copy a workflow elsewhere."""
-    src = os.path.abspath(workflow)
-    plan_path = os.path.join(src, ".pi", "plan.yaml")
-    if not os.path.isfile(plan_path):
+    src = Path(workflow).resolve()
+    plan_path = src / ".pi" / "plan.yaml"
+    if not plan_path.is_file():
         print(json.dumps({"ok": False, "error": f"{src} is not a workflow (no .pi/plan.yaml)"}))
         raise typer.Exit(1)
-    slug = name or os.path.basename(src.rstrip(os.sep))
-    dst = os.path.abspath(os.path.join(dest, slug))
-    if os.path.exists(dst):
+    slug = name or src.name
+    dst = (Path(dest) / slug).resolve()
+    if dst.exists():
         print(json.dumps({"ok": False, "error": f"{dst} already exists"}))
         raise typer.Exit(1)
-    if dst.startswith(src + os.sep):
+    if dst.is_relative_to(src):
         print(json.dumps({"ok": False, "error": "destination is inside the workflow"}))
         raise typer.Exit(1)
 
@@ -71,7 +70,7 @@ def main(
 
     def base_ignore(dirpath, names):
         skip = set(CACHE(dirpath, names))
-        rel = os.path.relpath(dirpath, src)
+        rel = str(Path(dirpath).relative_to(src))
         if rel == ".":
             skip |= {".venv", workflow_params.ENV_FILE} & set(names)  # per machine; `uv sync` recreates .venv
         if rel == ".pi":
@@ -86,7 +85,7 @@ def main(
     else:
         def ignore(dirpath, names):
             skip = base_ignore(dirpath, names)
-            rel = os.path.relpath(dirpath, src)
+            rel = str(Path(dirpath).relative_to(src))
             if rel == "runs":
                 skip |= set(names)            # keep the folder, drop the runs
             if rel == ".":
@@ -103,13 +102,13 @@ def main(
             cleared.append(f"(not committed: {exc})")
 
     specs = plan.get("params") if isinstance(plan, dict) and isinstance(plan.get("params"), dict) else {}
-    with open(os.path.join(dst, workflow_params.ENV_FILE), "w", encoding="utf-8") as fh:
-        fh.write(workflow_params.ENV_HEADER + "".join(f"{workflow_params.env_name(n, s)}=\n" for n, s in specs.items()))
+    (dst / workflow_params.ENV_FILE).write_text(
+        workflow_params.ENV_HEADER + "".join(f"{workflow_params.env_name(n, s)}=\n" for n, s in specs.items()), encoding="utf-8")
     cleared.append(".env values")
 
     check = subprocess.run(
-        [sys.executable, os.path.join(dst, ".pi", "skills", "workflow", "scripts", "validate_plan.py"),
-         os.path.join(dst, ".pi", "plan.yaml")],
+        [sys.executable, str(dst / ".pi" / "skills" / "workflow" / "scripts" / "validate_plan.py"),
+         str(dst / ".pi" / "plan.yaml")],
         capture_output=True, text=True, check=False,
     )
     try:
@@ -120,7 +119,7 @@ def main(
     print(json.dumps({
         "ok": True,
         "mode": "keep-state" if keep_state else "fresh",
-        "workflow": dst,
+        "workflow": str(dst),
         "cleared": cleared,
         "valid": report.get("valid"),
         "errors": report.get("errors", []),

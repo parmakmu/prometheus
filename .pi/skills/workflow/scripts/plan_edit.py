@@ -38,6 +38,7 @@ Prints one JSON object with the validation result.
 import io
 import json
 import os
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -46,7 +47,7 @@ import workflow_params
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from validate_plan import active_run, rt_yaml, validate
 
-PLAN = os.path.join(".pi", "plan.yaml")
+PLAN = Path(".pi") / "plan.yaml"
 LOCKED = ("request", "goal", "done_when", "params", "inputs", "outputs", "agents")
 REPLAN_KEYS = {"stages", "remove", "findings", "questions", "answers", "note"}
 app = typer.Typer(add_completion=False)
@@ -63,10 +64,8 @@ def refuse(errors):
 
 def read_json(arg):
     try:
-        if os.path.isfile(arg):
-            with open(arg, encoding="utf-8") as fh:
-                return json.load(fh)
-        return json.loads(arg)
+        arg_path = Path(arg)
+        return json.loads(arg_path.read_text(encoding="utf-8")) if arg_path.is_file() else json.loads(arg)
     except ValueError as exc:
         refuse(f"not JSON: {exc}")
 
@@ -88,30 +87,29 @@ def styled(value, key=None):
 
 
 def load(path):
-    with open(path, encoding="utf-8") as fh:
-        return rt_yaml().load(fh)
+    return rt_yaml().load(Path(path).read_text(encoding="utf-8"))
 
 
 def save(path, data):
     buf = io.StringIO()
     rt_yaml().dump(data, buf)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write(buf.getvalue())
-    os.replace(tmp, path)
+    path = Path(path)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(buf.getvalue(), encoding="utf-8")
+    tmp.replace(path)
 
 
 def commit(message):
     """Commit the workflow (the cwd; on the active run's branch during a run); (commit, note).
     A git failure is reported, not fatal."""
     try:
-        return workflow_git.commit(os.getcwd(), message)
+        return workflow_git.commit(Path.cwd(), message)
     except RuntimeError as exc:
         return None, str(exc)
 
 
 def report(plan):
-    errors, warnings, summary = validate(plan, None, None, os.getcwd())
+    errors, warnings, summary = validate(plan, None, None, Path.cwd())
     return {
         "valid": not errors, "status": plan.get("status"), "revision": plan.get("revision", 1),
         "errors": errors, "warnings": warnings, "run": summary.get("run"), "next_wave": summary.get("next_wave"),
@@ -125,8 +123,8 @@ def report(plan):
 @app.callback()
 def main(workflow: Annotated[str, typer.Option(help="workflow root")] = "."):
     os.chdir(workflow)
-    if not os.path.isfile(PLAN):
-        refuse(f"{os.path.abspath(workflow)} is not a workflow (no .pi/plan.yaml)")
+    if not PLAN.is_file():
+        refuse(f"{Path(workflow).resolve()} is not a workflow (no .pi/plan.yaml)")
 
 
 @app.command()
@@ -143,7 +141,7 @@ def replan(change: Annotated[str, typer.Option(help="the change as a JSON object
                f"{', '.join(LOCKED)} are locked: change them with /workflow-revise once no run is active")
 
     stages = plan.get("stages") or []
-    act = active_run(os.getcwd())
+    act = active_run(Path.cwd())
     if act is None:
         refuse("no run is active: change the plan with /workflow-revise (a change branch, reviewed before it reaches main)")
     frozen = set(act[2].get("stages") or {})
@@ -177,7 +175,7 @@ def replan(change: Annotated[str, typer.Option(help="the change as a JSON object
         refuse(problems)
 
     rev = plan.get("revision", 1)
-    previous = workflow_git.head(os.getcwd())
+    previous = workflow_git.head(Path.cwd())
 
     for key in c.get("remove") or []:
         stages.remove(by_key.pop(key))
@@ -230,7 +228,7 @@ def params(values: Annotated[str, typer.Option(help="{name: value} as JSON, or a
     plan, v = load(PLAN), read_json(values)
     if not isinstance(v, dict):
         refuse("values must be a JSON object {name: value}")
-    problems = workflow_params.set_values(os.getcwd(), plan.get("params") or {}, v)
+    problems = workflow_params.set_values(Path.cwd(), plan.get("params") or {}, v)
     if problems:
         refuse("; ".join(problems))
     out({"ok": True, **report(plan)})
