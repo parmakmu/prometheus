@@ -1,0 +1,10 @@
+node_modules/
+__pycache__/
+*.pyc
+build/
+scratch/
+# workflows are per-user; keep the folder (the extension looks for it), not its contents
+workflows/*
+!workflows/.gitkeep
+.venv/
+.DS_Store

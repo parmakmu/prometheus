@@ -1,0 +1,11 @@
+# The workflow's repo versions the plan with its gates, agents and skill copy.
+# Runs, per-machine values (.env, which may hold secrets) and installs stay out.
+runs/
+.env
+.env.*
+.pi/npm/
+.pi/subagents/
+.venv/
+__pycache__/
+*.pyc
+.DS_Store

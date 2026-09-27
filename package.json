@@ -1,0 +1,10 @@
+{
+  "name": "prometheus",
+  "private": true,
+  "type": "module",
+  "description": "Dev dependencies for type-checking the extensions (tests/run_all.sh). Pi's own modules come from the global Pi install.",
+  "devDependencies": {
+    "@types/node": "^22",
+    "typescript": "^5"
+  }
+}

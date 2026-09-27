@@ -1,0 +1,27 @@
+# Plan for workflow "{{slug}}". Written by the workflow skill.
+# Schema: .pi/skills/workflow/references/plan-schema.md
+version: 1
+revision: 1
+status: draft
+
+request: {{request}}
+goal: ""
+done_when: []
+
+params: {}
+inputs: []
+outputs: []
+
+agents:
+  checked: null
+  available: []
+
+unknowns: []
+stages: []
+assumptions: []
+questions: []
+
+limits:
+  max_parallel: 4
+  max_retries: 2
+  max_batch: 50

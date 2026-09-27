@@ -1,0 +1,15 @@
+# Python dependencies of the skill scripts. `uv sync` creates .venv/, which the
+# extensions use (override with PI_WORKFLOW_PYTHON).
+[project]
+name = "prometheus"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["typer>=0.12", "pydantic>=2.7", "pydantic-settings>=2.4", "python-dotenv>=1.0", "ruamel.yaml>=0.18"]
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16.9",
+]
