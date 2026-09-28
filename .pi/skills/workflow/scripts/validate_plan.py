@@ -963,6 +963,8 @@ class Checker:
         for name, src in self.agent_sources.items():
             if src == "project" and name not in on_disk:
                 err(f"workflow: agent '{name}' has source project but no .pi/agents/*.md defines it")
+            elif src == "builtin" and name in on_disk:
+                self.warn(f"workflow: agent '{name}' is defined in .pi/agents/ but listed as builtin; list it as {{name: {name}, source: project}}")
         if (root / ".pi" / "params.yaml").exists():
             self.warn("workflow: .pi/params.yaml is no longer read (values live in .env); /workflow-refresh in Prometheus moves them")
         valid = {n: s for n, s in params.items() if workflow_params.ENV_NAME_RE.match(workflow_params.env_name(n, s))}

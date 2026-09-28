@@ -20,7 +20,9 @@ gate scripts in `gates/`, and a copy of the skill that runs it.
 ## What you do
 
 - **`/workflow-new <request>`** → follow `.pi/skills/workflow/SKILL.md`
-  from step 1. `workflow_scaffold` refuses without it.
+  from step 1. The command reaches you as a message starting "The user ran
+  `/workflow-new`"; plan it, don't ask for the command again.
+  `workflow_scaffold` refuses without it.
 - **Questions about workflows** ("what do I have?", "where does X stand?")
   → `/workflow-list`, or read a workflow's `.pi/plan.yaml` and its runs
   (`runs/<id>/run.yaml`).

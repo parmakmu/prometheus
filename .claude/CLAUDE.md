@@ -10,12 +10,12 @@ the settled decisions and the reasons for them, so you don't re-litigate them.
 
 | Page | Covers |
 |---|---|
-| [`docs/how-it-works.md`](docs/how-it-works.md) | lifecycle, stage kinds, waves, runs, git branches, implementation map, glossary |
-| [`docs/commands.md`](docs/commands.md) | every command and model-facing tool |
-| [`docs/python-scripts.md`](docs/python-scripts.md) | what each script does and how they fit together |
-| [`docs/params-and-secrets.md`](docs/params-and-secrets.md) | params, `.env`, secrets, their validator rules |
-| [`docs/troubleshooting.md`](docs/troubleshooting.md) | refusals a user meets, their causes and fixes |
-| [`docs/worked-example.md`](docs/worked-example.md) | emails-to-excel from request to reused stage programs |
+| [`docs/how-it-works.md`](../docs/how-it-works.md) | lifecycle, stage kinds, waves, runs, git branches, implementation map, glossary |
+| [`docs/commands.md`](../docs/commands.md) | every command and model-facing tool |
+| [`docs/python-scripts.md`](../docs/python-scripts.md) | what each script does and how they fit together |
+| [`docs/params-and-secrets.md`](../docs/params-and-secrets.md) | params, `.env`, secrets, their validator rules |
+| [`docs/troubleshooting.md`](../docs/troubleshooting.md) | refusals a user meets, their causes and fixes |
+| [`docs/worked-example.md`](../docs/worked-example.md) | emails-to-excel from request to reused stage programs |
 
 The model-facing rules are in the skill: `SKILL.md` (planning), `references/run-protocol.md`
 (running, replanning, changing, reviewing), `references/plan-schema.md` (the plan format).
@@ -160,6 +160,10 @@ Libraries: typer, pydantic (plan shape, in `validate_plan.py`; the cross-referen
 - **Returned (path-less) results don't cross waves**; later waves read files only.
 - **Roles in `.pi/APPEND_SYSTEM.md`, not `AGENTS.md`**: Pi concatenates `AGENTS.md` from parent
   folders, which would leak Prometheus's role into workflows.
+- **This file is `.claude/CLAUDE.md`, not `CLAUDE.md`**: Pi loads the first of `AGENTS.override.md`,
+  `AGENTS.md`, `CLAUDE.md` from every folder up from its cwd, so a root `CLAUDE.md` put ~5k tokens
+  of contributor notes into every Prometheus and in-repo workflow turn (~20% of a planning
+  session's tokens). Claude Code reads `.claude/CLAUDE.md`; Pi doesn't. Keep the root free of those names.
 - **Agent files**: pi-subagents discovers agents only in `~/.pi/agent/agents/` and a project's
   `.pi/agents/`. The two `plan-critic.md` copies (Prometheus, workflow template) must stay
   identical (tests check).

@@ -25,10 +25,14 @@ const WORKFLOWS = "workflows";
 
 // --- prompts sent to the model ------------------------------------------------
 
-const NEW_PROMPT = (request: string) => `Plan a new workflow for the request below. Follow
+// Says it comes from /workflow-new: the role tells the model to refuse plain planning requests, and
+// a model that can't tell this message from a typed one refused it (it looks the same in the session).
+const NEW_PROMPT = (request: string) => `The user ran \`/workflow-new\`: this is the planning request it authorizes, not a
+plain message. Plan a new workflow for the request below. Follow
 \`.pi/skills/workflow/SKILL.md\` from step 1; workflows go under
 \`workflows/\`. Use the \`workflow_scaffold\` tool to create the workflow and
-\`workflow_check\` to validate and compile-check it.
+\`workflow_check\` to validate and compile-check it. The subagent tool is already
+active: do not call subagents_enable.
 
 Request (copy it verbatim into the plan): ${request}`;
 

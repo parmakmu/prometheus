@@ -128,3 +128,11 @@ def test_repeated_key_after_a_dropped_list_item():
     text = example("invoice-check.yaml").replace("  - id: q2\n", "", 1)
     with pytest.raises(validate_plan.YAMLError, match="duplicate key"):
         validate_plan.load_yaml(text)
+
+
+def test_project_agent_listed_as_builtin(tmp_path):
+    # A plain name means source: builtin; an agent the workflow defines should say source: project.
+    (tmp_path / ".pi" / "agents").mkdir(parents=True)
+    (tmp_path / ".pi" / "agents" / "worker.md").write_text("---\nname: worker\n---\nbody\n", encoding="utf-8")
+    _errors, warnings, _summary = validate_plan.validate(copy.deepcopy(INV), workflow_root=tmp_path)
+    assert any("'worker' is defined in .pi/agents/ but listed as builtin" in w for w in warnings), warnings

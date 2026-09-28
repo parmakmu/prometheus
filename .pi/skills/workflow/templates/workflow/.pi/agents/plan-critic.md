@@ -37,7 +37,9 @@ Check, in this order:
    leftovers output, and judgment stages a cheap mechanical filter could
    shrink.
 5. **Hidden side effects.** Writes, overwrites or messages not marked as
-   side_effect, including in provisional stages.
+   side_effect, including in provisional stages. A new file in the run's
+   folder (a relative `out.path`, or an output at a relative param default
+   with `overwrite: false`) is not a side effect.
 6. **Invented detail.** Concrete schemas, batch sizes, sources or counts that
    nothing in the plan supports (no finding, observed assumption or answer).
    Those belong in provisional stages resolved after a discovery stage.

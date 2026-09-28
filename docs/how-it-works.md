@@ -36,7 +36,7 @@ Exporting a workflow copies it to a chosen location so it can be run independent
 5. **Critique and clarify.** Plans with judgment or side effects, or with more than three stages, receive a separate read-only plan critique. Findings are dispositioned; only then are consequential questions asked. A question is warranted when its answer changes the work, a source or destination, a side effect, or what counts as done.
 6. **Mark ready.** The workflow can be run once the plan validates, required questions are answered, and any required critique is recorded.
 
-The planning rules live in [`SKILL.md`](../.pi/skills/workflow/SKILL.md). The rules for classifying tasks and routing unknowns are in [`classify.md`](../.pi/skills/workflow/references/classify.md) and [`clarify-rules.md`](../.pi/skills/workflow/references/clarify-rules.md).
+The planning rules live in [`SKILL.md`](../.pi/skills/workflow/SKILL.md). The rules for routing unknowns and asking questions are in `SKILL.md` itself; classifying stages is in [`classify.md`](../.pi/skills/workflow/references/classify.md).
 
 ## How a plan becomes work
 
@@ -93,6 +93,8 @@ runs/<id>/
 ```
 
 Each workflow is also its own Git repository. `main` is the reviewed baseline. A replan during a run is made on `run/<id>`; `/workflow-revise` starts a `change/<date>-<n>` branch when no run is active. Plan and script changes reach `main` only after the user reviews and merges them. Run data and `.env` are excluded from Git.
+
+Only the scripts commit, never the model: when the workflow is created or refreshed, when a run starts, when a wave compiles, around a replan or recorded critique, and after a wave for files it wrote. A commit made while the plan is `ready` moves the tag `r<revision>` to it, and runs and launches record their commit, so `git show <commit>:.pi/plan.yaml` (or `r<N>`) shows exactly what ran. Nothing commits while a wave runs: pi-subagents compares the repo's staged index before and after each writer child.
 
 This separation supports repeatable runs while preserving what happened in each one. It also keeps discoveries from silently changing the plan used by future runs. The workflow extension exposes controlled tools for plan edits and run state, and blocks unsafe direct edits once a run exists. The workflow session gathers approval; a child does not approve its own side effects.
 
