@@ -17,17 +17,9 @@ from typing import Annotated
 
 import typer
 import workflow_git
-from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
+from utils import load_yaml_safe as load
 from validate_plan import list_runs, read_run, validate
-
-
-def load(path, default):
-    try:
-        data = YAML(typ="safe").load(Path(path).read_text(encoding="utf-8"))
-        return default if data is None else data
-    except (OSError, YAMLError):
-        return default
 
 
 def summarise(root, slug):

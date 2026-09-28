@@ -30,19 +30,10 @@ from typing import Annotated
 import typer
 import workflow_git
 import workflow_params
-from ruamel.yaml import YAML
-from ruamel.yaml.error import YAMLError
+from utils import load_yaml_safe as load
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 CACHE = shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store")
-
-
-def load(path, default):
-    try:
-        data = YAML(typ="safe").load(Path(path).read_text(encoding="utf-8"))
-        return default if data is None else data
-    except (OSError, YAMLError):
-        return default
 
 
 def main(

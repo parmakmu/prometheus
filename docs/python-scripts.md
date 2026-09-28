@@ -33,6 +33,10 @@ The scripts live in [`.pi/skills/workflow/scripts/`](../.pi/skills/workflow/scri
 - **`workflow_params.py`** — shared parameter logic used by validation, compilation, and plan editing. It loads values from the process environment, `.env`, or a plan default; validates and resolves `path`, `text`, and `secret` parameters; and keeps secrets out of persisted run values. It is a Python module imported by the other scripts, not a user-facing CLI.
 - **`batch_tool.py`** — splits a map stage's file or list input into deterministic batches, merges the batch outputs, and runs a stage's program with its `run:` arguments followed by its gate. It is run by the workflow's `workflow-batcher` command-runner agent, so no model is needed to divide or join files or to run a reviewed program. When the program or its gate fails, it exits with the reason on stderr, and the wave hands that reason to the stage's `<key>-fix` child.
 
+### Shared helpers
+
+- **`utils.py`** — the couple of small helpers with nothing specific to git, params, or plan validation, reused by several of the other scripts' CLIs so they don't copy them: `emit` (print a JSON result and exit with a code) and `load_yaml_safe` (a read-only YAML load that returns a default instead of raising).
+
 ## How they fit together
 
 A typical new workflow calls `scaffold_workflow.py`, then the planning process uses `validate_plan.py` and `compile_wave.py --check` to make sure the proposed plan is valid and concrete waves can compile. `/workflow-run` uses `run_log.py` to start a run; `compile_wave.py` prepares each wave; and the extension passes its returned call to pi-subagents. After a wave completes, `run_log.py` records its result. Discovery may cause `plan_edit.py` to revise pending stages; `workflow_git.py` preserves that proposal on the run branch for later user review. When finished, `export_workflow.py` can copy the workflow elsewhere.

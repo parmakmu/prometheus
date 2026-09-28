@@ -45,6 +45,7 @@ import typer
 import workflow_git
 import workflow_params
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
+from utils import emit
 from validate_plan import active_run, rt_yaml, validate
 
 PLAN = Path("plan.yaml")
@@ -54,13 +55,8 @@ REPLAN_KEYS = {"stages", "remove", "findings", "questions", "answers", "note"}
 app = typer.Typer(add_completion=False)
 
 
-def out(obj, code=0):
-    print(json.dumps(obj, indent=2, default=str))
-    raise typer.Exit(code)
-
-
 def refuse(errors):
-    out({"ok": False, "errors": errors if isinstance(errors, list) else [errors]}, 1)
+    emit({"ok": False, "errors": errors if isinstance(errors, list) else [errors]}, 1)
 
 
 def read_json(arg):
@@ -199,7 +195,7 @@ def replan(change: Annotated[str, typer.Option(help="the change as a JSON object
     plan.pop("critique", None)
     save(PLAN, plan)
     new, git_note = commit(f"r{rev + 1} draft: replan" + (f": {c['note']}" if c.get("note") else ""))
-    out({"ok": True, "previous_commit": previous, "commit": new, "git_note": git_note, "note": c.get("note"), **report(plan)})
+    emit({"ok": True, "previous_commit": previous, "commit": new, "git_note": git_note, "note": c.get("note"), **report(plan)})
 
 
 @app.command()
@@ -240,7 +236,7 @@ def critique(result: Annotated[str, typer.Option(help="the critic's result as JS
         r = report(plan)
     save(PLAN, plan)
     new, git_note = commit(f"r{plan.get('revision', 1)} {plan['status']}: critic {c['verdict']}")
-    out({"ok": True, "ready": plan["status"] == "ready", "commit": new, "git_note": git_note, **r})
+    emit({"ok": True, "ready": plan["status"] == "ready", "commit": new, "git_note": git_note, **r})
 
 
 @app.command()
@@ -252,7 +248,7 @@ def params(values: Annotated[str, typer.Option(help="{name: value} as JSON, or a
     problems = workflow_params.set_values(Path.cwd(), plan.get("params") or {}, v)
     if problems:
         refuse("; ".join(problems))
-    out({"ok": True, **report(plan)})
+    emit({"ok": True, **report(plan)})
 
 
 if __name__ == "__main__":

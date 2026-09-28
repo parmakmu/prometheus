@@ -56,6 +56,7 @@ import typer
 import workflow_git
 import workflow_params
 from ruamel.yaml.error import YAMLError
+from utils import emit
 from validate_plan import RUN_ID_RE, RUNS, active_run, list_runs, rt_yaml, validate
 
 HERE = Path(__file__).resolve().parent
@@ -75,11 +76,6 @@ def now():
     return datetime.datetime.now(datetime.timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
-def out(obj, code=0):
-    print(json.dumps(obj, indent=2, default=str))
-    raise typer.Exit(code)
-
-
 def load(path, default):
     """Round-trip load; a repeated key is an error, since this script writes the file back."""
     try:
@@ -87,7 +83,7 @@ def load(path, default):
     except OSError:
         return default
     except YAMLError as exc:
-        out({"ok": False, "error": f"cannot read {path}: {exc}"}, 2)
+        emit({"ok": False, "error": f"cannot read {path}: {exc}"}, 2)
     return default if data is None else data
 
 
@@ -104,10 +100,10 @@ def save(path, data, header=""):
 def open_workflow(need_run=True):
     """(plan, (id, dir, state) of the active run or None)."""
     if not Path(PLAN).is_file():
-        out({"ok": False, "error": "run from the workflow root (no plan.yaml here)"}, 2)
+        emit({"ok": False, "error": "run from the workflow root (no plan.yaml here)"}, 2)
     act = active_run(Path.cwd())
     if need_run and act is None:
-        out({"ok": False, "error": "no active run: start one with workflow_new_run (run_log.py new)"}, 1)
+        emit({"ok": False, "error": "no active run: start one with workflow_new_run (run_log.py new)"}, 1)
     return load(PLAN, {}), act
 
 
@@ -130,14 +126,14 @@ def subagents_outcome(run_id):
     try:
         st = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        out({"ok": False, "error": f"cannot read pi-subagents' record of run {run_id} ({path}: {exc}); "
+        emit({"ok": False, "error": f"cannot read pi-subagents' record of run {run_id} ({path}: {exc}); "
              "pass the workflow's return value with --result and --status"}, 1)
     if st.get("state") in STILL_RUNNING:
-        out({"ok": False, "error": f"run {run_id} is still {st.get('state')} in pi-subagents: wait for its completion notice"}, 1)
+        emit({"ok": False, "error": f"run {run_id} is still {st.get('state')} in pi-subagents: wait for its completion notice"}, 1)
     return (st.get("workflow") or {}).get("value"), st
 
 
-def mission_close(state, rid, status, summary):
+def close_mission(state, rid, status, summary):
     """The subagent call that closes the run's mission (one mission per run)."""
     mid = next((r.get("mission_id") for r in reversed(state.get("launches") or []) if r.get("mission_id")), None)
     return {"action": "mission.close", "missionId": mid, "missionStatus": status,
@@ -165,10 +161,10 @@ def new(
     """Start a run."""
     plan, act = open_workflow(need_run=False)
     if act is not None:
-        out({"ok": False, "error": f"run {act[0]} is active: continue it, or stop it first (workflow_stop_run)"}, 1)
+        emit({"ok": False, "error": f"run {act[0]} is active: continue it, or stop it first (workflow_stop_run)"}, 1)
     b = workflow_git.branch(Path.cwd())
     if b not in (None, workflow_git.MAIN):
-        out({"ok": False, "error": f"branch {b} is checked out and not reviewed: review it first (workflow_merge: merge, keep or discard)"}, 1)
+        emit({"ok": False, "error": f"branch {b} is checked out and not reviewed: review it first (workflow_merge: merge, keep or discard)"}, 1)
     today = datetime.datetime.now().astimezone().date().isoformat()  # local date
     # a run/<id> branch outlives its folder (runs/ is not in git): skip its id too
     ids = [rid for rid, _ in list_runs(Path.cwd())] + [b.removeprefix("run/") for b in workflow_git.run_branches(Path.cwd())]
@@ -178,14 +174,14 @@ def new(
     try:
         commit, _note = workflow_git.commit(Path.cwd(), f"r{plan.get('revision', 1)}: plan for run {rid}")
     except RuntimeError as exc:
-        out({"ok": False, "error": f"cannot commit the plan: {exc}"}, 1)
+        emit({"ok": False, "error": f"cannot commit the plan: {exc}"}, 1)
     (run_dir / "work").mkdir(parents=True)
     state = {"id": rid, "status": "active", "revision": plan.get("revision", 1), "commit": commit, "started_at": now()}
     if note:
         state["note"] = note
     state.update({"stages": {}, "launches": []})
     save(state_file(run_dir), state, HEADER)
-    out({"ok": True, "run": rid, "path": str(run_dir.resolve()), "commit": commit})
+    emit({"ok": True, "run": rid, "path": str(run_dir.resolve()), "commit": commit})
 
 
 @app.command()
@@ -193,7 +189,7 @@ def stop(note: Annotated[str | None, typer.Option(help="why the run stopped")] =
     """Stop the active run; its branch (if any) waits for review."""
     _plan, (rid, run_dir, state) = open_workflow()
     if "running" in (state.get("stages") or {}).values():
-        out({"ok": False, "error": f"a wave of run {rid} is running: let it finish, or stop it in pi-subagents first, then record it with workflow_log_finish"}, 1)
+        emit({"ok": False, "error": f"a wave of run {rid} is running: let it finish, or stop it in pi-subagents first, then record it with workflow_log_finish"}, 1)
     try:  # on run/<id>, while still active
         _commit, git_note = workflow_git.commit(Path.cwd(), f"run {rid}: files its waves left in the workflow")
     except RuntimeError as exc:
@@ -203,8 +199,8 @@ def stop(note: Annotated[str | None, typer.Option(help="why the run stopped")] =
     if note:
         state["note"] = note
     save(state_file(run_dir), state, HEADER)
-    out({"ok": True, "run": rid, "run_status": "stopped", "git_note": git_note, "review": workflow_git.review_info(Path.cwd()),
-         "mission_close": mission_close(state, rid, "cancelled", f"Workflow run {rid} stopped" + (f": {note}" if note else ""))})
+    emit({"ok": True, "run": rid, "run_status": "stopped", "git_note": git_note, "review": workflow_git.review_info(Path.cwd()),
+         "mission_close": close_mission(state, rid, "cancelled", f"Workflow run {rid} stopped" + (f": {note}" if note else ""))})
 
 
 @app.command()
@@ -219,14 +215,14 @@ def start(
     plan, (rid, run_dir, state) = open_workflow()
     _errors, _warnings, summary = validate(plan, None, None, Path.cwd(), run_state=state)
     if summary.get("running"):
-        out({"ok": False, "error": f"a wave is running (stages {summary['running']}); finish it first"}, 1)
+        emit({"ok": False, "error": f"a wave is running (stages {summary['running']}); finish it first"}, 1)
     nxt = (summary.get("waves") or [None])[0]
     if nxt is None or nxt["id"] != wave:
-        out({"ok": False, "error": f"wave {wave} is not the next wave of run {rid} (next: {nxt['id'] if nxt else 'none'})"}, 1)
+        emit({"ok": False, "error": f"wave {wave} is not the next wave of run {rid} (next: {nxt['id'] if nxt else 'none'})"}, 1)
     try:
         answers = json.loads(decisions)
     except ValueError as exc:
-        out({"ok": False, "error": f"--decisions is not JSON: {exc}"}, 1)
+        emit({"ok": False, "error": f"--decisions is not JSON: {exc}"}, 1)
     entry = {
         "wave": wave,
         "stages": nxt["stages"],
@@ -245,7 +241,7 @@ def start(
     state.setdefault("launches", []).append(entry)
     set_status(state, nxt["stages"], "running")
     save(state_file(run_dir), state, HEADER)
-    out({"ok": True, "run": rid, "entry": entry})
+    emit({"ok": True, "run": rid, "entry": entry})
 
 
 @app.command()
@@ -260,14 +256,14 @@ def finish(
     entry = next((r for r in reversed(state.get("launches") or [])
                   if r.get("wave") == wave and r.get("status") == "running"), None)
     if entry is None:
-        out({"ok": False, "error": f"run {rid} has no running launch of wave {wave}"}, 1)
+        emit({"ok": False, "error": f"run {rid} has no running launch of wave {wave}"}, 1)
     returned, record = None, {}
     if result:
         try:
             result_path = Path(result)
             returned = json.loads(result_path.read_text(encoding="utf-8")) if result_path.is_file() else json.loads(result)
         except ValueError as exc:
-            out({"ok": False, "error": f"--result is not JSON: {exc}"}, 1)
+            emit({"ok": False, "error": f"--result is not JSON: {exc}"}, 1)
     elif entry.get("subagent_run_id"):
         returned, record = subagents_outcome(entry["subagent_run_id"])
     if status is None and returned is None and record.get("state") in ("failed", "stopped", "paused"):
@@ -279,7 +275,7 @@ def finish(
     if status is None:
         given = returned.get("status") if isinstance(returned, dict) else None
         if given not in {s.value for s in Status}:
-            out({"ok": False, "error": f"cannot tell how wave {wave} ended (pi-subagents state {record.get('state')!r}, "
+            emit({"ok": False, "error": f"cannot tell how wave {wave} ended (pi-subagents state {record.get('state')!r}, "
                  f"returned status {given!r}); pass --status"}, 1)
         status = Status(given)
     if returned is not None:
@@ -316,7 +312,7 @@ def finish(
         state["finished_at"] = now()
         save(state_file(run_dir), state, HEADER)
     total = sum(r.get("cost_usd") or 0 for r in state.get("launches") or [])
-    out({"ok": True, "run": rid, "run_status": state["status"], "wave_status": wave_status,
+    emit({"ok": True, "run": rid, "run_status": state["status"], "wave_status": wave_status,
          "ends_with": entry.get("ends_with") if status is Status.done else None,
          # a summary only: outputs are files the gates checked; read one only when something needs a look
          "children": {k: {"status": (v or {}).get("status"), "output": (v or {}).get("outputReference")}
@@ -324,7 +320,7 @@ def finish(
          "error": entry.get("error"), "failure_kind": entry.get("failure_kind"),
          "branch": workflow_git.branch(Path.cwd()), "commit": commit, "git_note": git_note,
          "review": workflow_git.review_info(Path.cwd()) if done else None,
-         "mission_close": mission_close(state, rid, "completed", f"Workflow run {rid} completed ({len(keys)} stages"
+         "mission_close": close_mission(state, rid, "completed", f"Workflow run {rid} completed ({len(keys)} stages"
                                         + (f", ${total:.4f} in children" if total else "") + ").") if done else None,
          # the criteria the final report goes through, so the parent need not read the plan for them
          "done_when": plan.get("done_when") if done else None,
@@ -340,13 +336,13 @@ def decision(
     plan, (rid, run_dir, state) = open_workflow()
     st = next((s for s in plan.get("stages") or [] if isinstance(s, dict) and s.get("key") == stage), None)
     if st is None:
-        out({"ok": False, "error": f"no stage {stage}"}, 1)
+        emit({"ok": False, "error": f"no stage {stage}"}, 1)
     if st.get("kind") != "decision" and st.get("pattern") != "approval":
-        out({"ok": False, "error": f"stage {stage} is not a decision stage"}, 1)
+        emit({"ok": False, "error": f"stage {stage} is not a decision stage"}, 1)
     try:
         value = json.loads(answer)
     except ValueError as exc:
-        out({"ok": False, "error": f"--answer is not JSON: {exc}"}, 1)
+        emit({"ok": False, "error": f"--answer is not JSON: {exc}"}, 1)
     spec = importlib.util.spec_from_file_location("compile_wave", HERE / "compile_wave.py")
     cw = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(cw)
@@ -354,7 +350,7 @@ def decision(
     path = Path(compiler.decision_path(stage))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"stage": stage, "answer": value, "recorded_at": now()}, indent=2, ensure_ascii=False), encoding="utf-8")
-    out({"ok": True, "run": rid, "stage": stage, "path": str(path)})
+    emit({"ok": True, "run": rid, "stage": stage, "path": str(path)})
 
 
 if __name__ == "__main__":

@@ -31,7 +31,6 @@ Usage (from the workflow root, or --workflow DIR):
 """
 import datetime
 import io
-import json
 import os
 import re
 import shutil
@@ -40,6 +39,7 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from utils import emit
 
 MAIN = "main"
 FALLBACK_IDENTITY = ["-c", "user.name=Prometheus", "-c", "user.email=prometheus@localhost"]
@@ -180,18 +180,13 @@ def unmerged_branches(workflow):
 
 # --- commands -----------------------------------------------------------------
 
-def out(obj, code=0):
-    print(json.dumps(obj, indent=2, default=str))
-    raise typer.Exit(code)
-
-
 @app.callback()
 def main(workflow: Annotated[str, typer.Option(help="workflow root")] = "."):
     os.chdir(workflow)
     if not Path("plan.yaml").is_file():
-        out({"ok": False, "error": f"{Path(workflow).resolve()} is not a workflow (no plan.yaml)"}, 2)
+        emit({"ok": False, "error": f"{Path(workflow).resolve()} is not a workflow (no plan.yaml)"}, 2)
     if not available():
-        out({"ok": False, "error": "git is required; ask the user to install it"}, 2)
+        emit({"ok": False, "error": "git is required; ask the user to install it"}, 2)
 
 
 @app.command("begin-change")
@@ -201,14 +196,14 @@ def begin_change():
     workflow = Path.cwd()
     act = active_run(workflow)
     if act:
-        out({"ok": False, "error": f"run {act[0]} is active: tell the run what to change (it replans on its branch), or stop it first"}, 1)
+        emit({"ok": False, "error": f"run {act[0]} is active: tell the run what to change (it replans on its branch), or stop it first"}, 1)
     if not list_runs(workflow):
-        out({"ok": True, "branch": branch(workflow), "mode": "planning", "note": "no run yet: planning edits the plan directly"})
+        emit({"ok": True, "branch": branch(workflow), "mode": "planning", "note": "no run yet: planning edits the plan directly"})
     b = branch(workflow)
     if b and b.startswith("change/"):
-        out({"ok": True, "branch": b, "mode": "change", "continued": True})
+        emit({"ok": True, "branch": b, "mode": "change", "continued": True})
     if b != MAIN:
-        out({"ok": False, "error": f"branch {b} is checked out and not reviewed: review it first (workflow_merge: merge, keep or discard)"}, 1)
+        emit({"ok": False, "error": f"branch {b} is checked out and not reviewed: review it first (workflow_merge: merge, keep or discard)"}, 1)
     commit(workflow, "Uncommitted changes before a change")
     today = datetime.datetime.now().astimezone().date().isoformat()  # local date
     taken = [int(m.group(1)) for x in git(workflow, "branch", "--list", f"change/{today}-*", "--format=%(refname:short)").stdout.split()
@@ -226,14 +221,14 @@ def begin_change():
     y.dump(plan, buf)
     path.write_text(buf.getvalue(), encoding="utf-8")
     sha, _ = commit(workflow, f"r{plan['revision']} draft: change started")
-    out({"ok": True, "branch": new, "mode": "change", "revision": plan["revision"], "commit": sha})
+    emit({"ok": True, "branch": new, "mode": "change", "revision": plan["revision"], "commit": sha})
 
 
 @app.command()
 def review():
     """Show the checked-out branch against main."""
     info = review_info(Path.cwd())
-    out({"ok": True, "review": info, "unmerged": unmerged_branches(Path.cwd())})
+    emit({"ok": True, "review": info, "unmerged": unmerged_branches(Path.cwd())})
 
 
 @app.command()
@@ -241,19 +236,19 @@ def merge(action: Annotated[str, typer.Option(help="merge | keep | discard")]):
     """Finish the review of the checked-out branch and switch back to main."""
     workflow = Path.cwd()
     if action not in ("merge", "keep", "discard"):
-        out({"ok": False, "error": "action must be merge, keep or discard"}, 1)
+        emit({"ok": False, "error": "action must be merge, keep or discard"}, 1)
     act = active_run(workflow)
     b = branch(workflow)
     if b in (None, MAIN):
-        out({"ok": False, "error": "main is checked out: nothing to review"}, 1)
+        emit({"ok": False, "error": "main is checked out: nothing to review"}, 1)
     if act:
-        out({"ok": False, "error": f"run {act[0]} is still active: let it finish, or stop it (workflow_stop_run), then review"}, 1)
+        emit({"ok": False, "error": f"run {act[0]} is still active: let it finish, or stop it (workflow_stop_run), then review"}, 1)
     if action == "merge":
         from validate_plan import load_yaml, validate
         plan = load_yaml(Path("plan.yaml").read_text(encoding="utf-8")) or {}
         errors = validate(plan, None, None, workflow)[0]
         if errors or plan.get("status") != "ready":
-            out({"ok": False, "error": f"the plan on {b} is {plan.get('status')}" + (f" with errors {errors[:3]}" if errors else "")
+            emit({"ok": False, "error": f"the plan on {b} is {plan.get('status')}" + (f" with errors {errors[:3]}" if errors else "")
                  + ": only a ready, valid plan can reach main. Finish the change (critic, workflow_record_critique), or keep or discard the branch."}, 1)
     commit(workflow, "Uncommitted changes at review")  # leftovers belong to the branch
     git(workflow, "switch", "-q", MAIN)
@@ -265,7 +260,7 @@ def merge(action: Annotated[str, typer.Option(help="merge | keep | discard")]):
             if r.returncode != 0:
                 git(workflow, "rebase", "--abort", check=False)
                 git(workflow, "switch", "-q", b)
-                out({"ok": False, "error": f"main has moved and {b} conflicts with it; the branch is checked out again. Resolve by hand, or discard it."}, 1)
+                emit({"ok": False, "error": f"main has moved and {b} conflicts with it; the branch is checked out again. Resolve by hand, or discard it."}, 1)
             git(workflow, "switch", "-q", MAIN)
             git(workflow, "merge", "-q", "--ff-only", b)
             note = f"main had moved: {b} was rebased onto it"
@@ -274,7 +269,7 @@ def merge(action: Annotated[str, typer.Option(help="merge | keep | discard")]):
     elif action == "discard":
         git(workflow, "branch", "-q", "-D", b)
     rev, status = plan_revision(workflow)
-    out({"ok": True, "action": action, "branch": b, "main": head(workflow), "revision": rev, "status": status,
+    emit({"ok": True, "action": action, "branch": b, "main": head(workflow), "revision": rev, "status": status,
          "note": note, "unmerged": unmerged_branches(workflow)})
 
 
