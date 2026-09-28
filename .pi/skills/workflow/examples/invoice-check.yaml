@@ -1,5 +1,5 @@
 # Example: a plan that is concrete from the start. In a workflow this file is
-# workflows/invoice-check/.pi/plan.yaml, with gates/check_lines.py and
+# workflows/invoice-check/plan.yaml, with gates/check_lines.py and
 # gates/check_report.py written during planning.
 version: 1
 revision: 1

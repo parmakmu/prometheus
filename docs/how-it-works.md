@@ -21,7 +21,7 @@ Prometheus does not carry out the user's requested task. It creates, lists, expo
 
 ### The workflow agent
 
-A generated workflow is a self-contained Pi project. It has its own `.pi/plan.yaml`, extension, agents, skill copy, and Git repository. Start Pi in that workflow's directory and use `/workflow-run` to execute it. pi-subagents launches the plan's children; the workflow session remains the orchestrator that talks to the user and decides what happens next.
+A generated workflow is a self-contained Pi project. It has its own `plan.yaml`, extension, agents, skill copy, and Git repository. Start Pi in that workflow's directory and use `/workflow-run` to execute it. pi-subagents launches the plan's children; the workflow session remains the orchestrator that talks to the user and decides what happens next.
 
 Exporting a workflow copies it to a chosen location so it can be run independently of the Prometheus repository. The destination machine still needs Pi, pi-subagents, and the workflow's Python dependencies, and the user must trust the project in Pi.
 
@@ -94,7 +94,7 @@ runs/<id>/
 
 Each workflow is also its own Git repository. `main` is the reviewed baseline. A replan during a run is made on `run/<id>`; `/workflow-revise` starts a `change/<date>-<n>` branch when no run is active. Plan and script changes reach `main` only after the user reviews and merges them. Run data and `.env` are excluded from Git.
 
-Only the scripts commit, never the model: when the workflow is created or refreshed, when a run starts, when a wave compiles, around a replan or recorded critique, and after a wave for files it wrote. A commit made while the plan is `ready` moves the tag `r<revision>` to it, and runs and launches record their commit, so `git show <commit>:.pi/plan.yaml` (or `r<N>`) shows exactly what ran. Nothing commits while a wave runs: pi-subagents compares the repo's staged index before and after each writer child.
+Only the scripts commit, never the model: when the workflow is created or refreshed, when a run starts, when a wave compiles, around a replan or recorded critique, and after a wave for files it wrote. A commit made while the plan is `ready` moves the tag `r<revision>` to it, and runs and launches record their commit, so `git show <commit>:plan.yaml` (or `r<N>`) shows exactly what ran. Nothing commits while a wave runs: pi-subagents compares the repo's staged index before and after each writer child.
 
 This separation supports repeatable runs while preserving what happened in each one. It also keeps discoveries from silently changing the plan used by future runs. The workflow extension exposes controlled tools for plan edits and run state, and blocks unsafe direct edits once a run exists. The workflow session gathers approval; a child does not approve its own side effects.
 
@@ -130,7 +130,7 @@ The pytest suite covers plan validation and derived waves, typed parameters, map
 ## Glossary
 
 - **Workflow:** a portable folder containing a Pi agent and reusable plan.
-- **Plan:** `.pi/plan.yaml`, describing goals, inputs, outputs, stages, dependencies, and policies.
+- **Plan:** `plan.yaml`, describing goals, inputs, outputs, stages, dependencies, and policies.
 - **Stage:** one unit of work in a plan.
 - **Wave:** a group of stages the compiler can launch together, derived from dependencies and pause points.
 - **Run:** one execution of a plan, stored in `runs/<id>/`.

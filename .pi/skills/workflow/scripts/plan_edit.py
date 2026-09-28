@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Change a workflow's plan and params through checked operations.
 
-While a run is active, the run protocol changes .pi/plan.yaml only through
+While a run is active, the run protocol changes plan.yaml only through
 `replan` and `critique`, and the workflow extension blocks direct edits. Commits
 go to the run's branch run/<id> (workflow_git.py), which the user reviews and
 merges (or not) when the run ends. With no run active, the plan changes
@@ -47,7 +47,8 @@ import workflow_params
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from validate_plan import active_run, rt_yaml, validate
 
-PLAN = Path(".pi") / "plan.yaml"
+PLAN = Path("plan.yaml")
+CRITIC_PASSES = 2  # per replan: a plan fixed after a finding gets a new revision, not a new budget
 LOCKED = ("request", "goal", "done_when", "params", "inputs", "outputs", "agents")
 REPLAN_KEYS = {"stages", "remove", "findings", "questions", "answers", "note"}
 app = typer.Typer(add_completion=False)
@@ -124,7 +125,7 @@ def report(plan):
 def main(workflow: Annotated[str, typer.Option(help="workflow root")] = "."):
     os.chdir(workflow)
     if not PLAN.is_file():
-        refuse(f"{Path(workflow).resolve()} is not a workflow (no .pi/plan.yaml)")
+        refuse(f"{Path(workflow).resolve()} is not a workflow (no plan.yaml)")
 
 
 @app.command()
@@ -143,7 +144,10 @@ def replan(change: Annotated[str, typer.Option(help="the change as a JSON object
     stages = plan.get("stages") or []
     act = active_run(Path.cwd())
     if act is None:
-        refuse("no run is active: change the plan with /workflow-revise (a change branch, reviewed before it reaches main)")
+        refuse("no run is active: the replan tools work only during a run. Before the first run (on main) or on a "
+               "change branch, edit plan.yaml directly; after a run, start a change with /workflow-revise")
+    if conflict := workflow_git.branch_conflict(Path.cwd()):
+        refuse(conflict)
     frozen = set(act[2].get("stages") or {})
     by_key = {s.get("key"): s for s in stages}
     unknowns = {u.get("id"): u for u in plan.get("unknowns") or []}
@@ -204,6 +208,23 @@ def critique(result: Annotated[str, typer.Option(help="the critic's result as JS
     plan, c = load(PLAN), read_json(result)
     if not isinstance(c, dict) or not c.get("run_id") or not c.get("verdict"):
         refuse("the result needs run_id and verdict")
+    if not isinstance(c.get("passes", 1), int) or not 1 <= c.get("passes", 1) <= CRITIC_PASSES:
+        refuse(f"passes is 1 or 2: at most {CRITIC_PASSES} critic passes per revision, and per replan during a run. "
+               "Do not launch another; record the last pass with each remaining finding rejected and a note why")
+    if conflict := workflow_git.branch_conflict(Path.cwd()):
+        refuse(conflict)
+    act = active_run(Path.cwd())
+    if act:  # a replan: count the critic results recorded since the last wave launched
+        _rid, run_dir, state = act
+        waves = len(state.get("launches") or [])
+        seen = [e.get("run_id") for e in state.get("critiques") or [] if e.get("after_waves") == waves]
+        if c["run_id"] not in seen and len(seen) >= CRITIC_PASSES:
+            refuse(f"this replan already had {CRITIC_PASSES} critic passes ({', '.join(seen)}); do not launch another. "
+                   f"Record the last one again (run_id {seen[-1]}) with each remaining finding rejected and a note why, "
+                   "tell the user about any blocking one, and continue")
+        if c["run_id"] not in seen:
+            state.setdefault("critiques", []).append({"run_id": c["run_id"], "after_waves": waves})
+            save(run_dir / "run.yaml", state)
     plan["critique"] = {
         "agent": c.get("agent", "plan-critic"),
         "run_id": c["run_id"],

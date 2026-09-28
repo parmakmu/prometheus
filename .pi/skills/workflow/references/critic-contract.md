@@ -26,6 +26,8 @@ subagent({ async: true, mission: false, workflowScript: `return runs.run("plan-c
 At replan or on a change branch, add to the task which stages changed. Tell
 the user in one line that the critic is reviewing, and end the turn; Pi wakes
 the session when it finishes.
+If the critic fails (for example with no structured output), relaunch it
+once; if that fails too, tell the user and stop.
 
 ## Folding findings in
 
@@ -39,4 +41,6 @@ through `workflow_record_critique`):
 
 If accepted findings changed the stage graph, resume the critic once:
 `runs.run("plan-critic-2", { resume: "<run_id>", task: "The plan changed: <summary>. Check only the changes." })`,
-and set `passes: 2`. A new revision gets a fresh critic, `passes: 1`.
+and set `passes: 2`. A new revision gets a fresh critic, `passes: 1`, except
+during a run: a replan gets two passes in all, even when fixing findings
+bumps the revision.

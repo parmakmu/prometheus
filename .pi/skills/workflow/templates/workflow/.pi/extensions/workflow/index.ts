@@ -31,7 +31,7 @@
  * Param values live in .env (per machine, may hold secrets): this extension loads it into
  * pi's environment, which children and gate commands inherit, and the model may not read or
  * change it directly. Once a run exists, direct edits to runs/<id>/run.yaml are blocked,
- * and .pi/plan.yaml may be edited directly only on a change branch with no run active;
+ * and plan.yaml may be edited directly only on a change branch with no run active;
  * during a run the plan changes through workflow_replan, which refuses to touch what ran,
  * the goal or a side effect's approval.
  *
@@ -64,9 +64,9 @@ Note from the user for this run (may be empty): ${note}`;
 const REVISE_PROMPT = (change: string, branch: string, mode: string) => {
 	const where =
 		mode === "planning"
-			? "No run has started yet: plan (or continue planning) on main, editing .pi/plan.yaml directly."
+			? "No run has started yet: plan (or continue planning) on main, editing plan.yaml directly."
 			: `You are on the change branch "${branch}", created from main with the revision bumped. Edit
-.pi/plan.yaml, gates/ and .pi/agents/ directly; anything in the plan may change. End with the
+plan.yaml, gates/, scripts/ and .pi/agents/ directly (packages: uv add); anything in the plan may change. End with the
 user's review of the branch and workflow_merge (merge, keep or discard).`;
 	return `Change this workflow's plan following the "Changing the plan" section
 of \`.pi/skills/workflow/references/run-protocol.md\`. Launch no work stages.
@@ -78,11 +78,11 @@ Change requested (may be empty: then ask what to change, or continue the change 
 
 // --- helpers --------------------------------------------------------------------
 
-/** The workflow root: the folder whose .pi/ holds plan.yaml, found from `start` upwards. */
+/** The workflow root: the folder holding plan.yaml and .pi/, found from `start` upwards. */
 function findRoot(start: string): string | undefined {
 	let dir = path.resolve(start);
 	for (;;) {
-		if (fs.existsSync(path.join(dir, ".pi", "plan.yaml"))) return dir;
+		if (fs.existsSync(path.join(dir, "plan.yaml")) && fs.existsSync(path.join(dir, ".pi"))) return dir;
 		const parent = path.dirname(dir);
 		if (parent === dir) return undefined;
 		dir = parent;
@@ -91,7 +91,7 @@ function findRoot(start: string): string | undefined {
 
 function mustRoot(ctx: ExtensionContext): string {
 	const root = findRoot(ctx.cwd);
-	if (!root) throw new Error("not inside a workflow folder (no .pi/plan.yaml)");
+	if (!root) throw new Error("not inside a workflow folder (no plan.yaml)");
 	return root;
 }
 
@@ -182,8 +182,27 @@ function toolResult(r: ScriptResult, what: string) {
 /** True for any run's state file, and the plan unless it is open for a change. */
 function isProtected(root: string, file: string, planOpen: boolean): boolean {
 	const rel = path.relative(root, file);
-	if (planOpen && rel === path.join(".pi", "plan.yaml")) return false;
-	return rel === path.join(".pi", "plan.yaml") || /^runs[\\/][^\\/]+[\\/]run\.yaml$/.test(rel);
+	if (planOpen && rel === "plan.yaml") return false;
+	return rel === "plan.yaml" || /^runs[\\/][^\\/]+[\\/]run\.yaml$/.test(rel);
+}
+
+/** What only a reviewed branch changes once a run exists: gates, stage programs, agents, packages. */
+const BRANCH_FILES = /^(gates|scripts|\.pi[\\/]agents)[\\/]|^(pyproject\.toml|uv\.lock)$/;
+const PACKAGE_COMMAND = /\buv\s+(add|remove)\b/;
+
+/** run/… and change/… branches (loose and packed refs): ones waiting for review. */
+function reviewBranches(root: string): string[] {
+	const names = new Set<string>();
+	for (const kind of ["run", "change"]) {
+		try {
+			for (const d of fs.readdirSync(path.join(root, ".git", "refs", "heads", kind))) names.add(`${kind}/${d}`);
+		} catch {}
+	}
+	try {
+		for (const m of fs.readFileSync(path.join(root, ".git", "packed-refs"), "utf8").matchAll(/refs\/heads\/((?:run|change)\/\S+)/g))
+			names.add(m[1]);
+	} catch {}
+	return [...names].sort();
 }
 
 /** .env and its variants (.env.local, …): param values, possibly secrets. */
@@ -227,7 +246,7 @@ function hasRun(root: string): boolean {
 }
 
 async function check(pi: ExtensionAPI, root: string, signal?: AbortSignal) {
-	const v = await runScript(pi, root, "validate_plan.py", [path.join(".pi", "plan.yaml")], signal);
+	const v = await runScript(pi, root, "validate_plan.py", ["plan.yaml"], signal);
 	const c = await runScript(pi, root, "compile_wave.py", ["--check"], signal);
 	return {
 		valid: v.data?.valid ?? false,
@@ -261,6 +280,23 @@ export default function workflowAgent(pi: ExtensionAPI) {
 				reason: ".env holds this machine's param values and may hold secrets: do not read or change it. Values that are not secrets: workflow_set_params. Secrets: ask the user to add the variable to .env themselves (workflow_compile's preflight names it); never ask for a secret's value.",
 			};
 		if (!hasRun(root)) return; // before the first run the plan is still a draft on main
+		// after the first run, main changes only by a reviewed merge: a write here means the work
+		// is on the wrong branch (say, someone switched branches during a change)
+		if (!runActive(root) && currentBranch(root) === "main") {
+			const shell = event.toolName === "bash" || event.toolName === "powershell";
+			const rel = input.path ? path.relative(root, path.resolve(ctx.cwd, input.path)) : "";
+			if (((event.toolName === "write" || event.toolName === "edit") && BRANCH_FILES.test(rel)) || (shell && PACKAGE_COMMAND.test(input.command ?? ""))) {
+				const waiting = reviewBranches(root);
+				return {
+					block: true,
+					reason:
+						"main is checked out and no run is active: gates, scripts, agents and packages change only on a run or change branch, reviewed before it reaches main." +
+						(waiting.length
+							? ` ${waiting.join(", ")} ${waiting.length > 1 ? "are" : "is"} waiting for review; if you were working on one, the checked-out branch was switched: stop and ask the user to \`git switch\` back to it.`
+							: " Ask the user to start a change with /workflow-revise."),
+				};
+			}
+		}
 		// the plan is open for direct edits only on a change branch (/workflow-revise) with no run active
 		const planOpen = !runActive(root) && (currentBranch(root) ?? "").startsWith("change/");
 		const touches =
@@ -293,7 +329,7 @@ export default function workflowAgent(pi: ExtensionAPI) {
 
 	const ask = (ctx: ExtensionContext, text: string) => {
 		if (!findRoot(ctx.cwd)) {
-			ctx.ui.notify("Not inside a workflow folder (no .pi/plan.yaml).", "error");
+			ctx.ui.notify("Not inside a workflow folder (no plan.yaml).", "error");
 			return;
 		}
 		if (!ctx.isIdle()) {
@@ -315,7 +351,7 @@ export default function workflowAgent(pi: ExtensionAPI) {
 		handler: async (args, ctx) => {
 			const root = findRoot(ctx.cwd);
 			if (!root) {
-				ctx.ui.notify("Not inside a workflow folder (no .pi/plan.yaml).", "error");
+				ctx.ui.notify("Not inside a workflow folder (no plan.yaml).", "error");
 				return;
 			}
 			if (!ctx.isIdle()) {
@@ -337,7 +373,7 @@ export default function workflowAgent(pi: ExtensionAPI) {
 		handler: async (_args, ctx) => {
 			const root = findRoot(ctx.cwd);
 			if (!root) {
-				ctx.ui.notify("Not inside a workflow folder (no .pi/plan.yaml).", "error");
+				ctx.ui.notify("Not inside a workflow folder (no plan.yaml).", "error");
 				return;
 			}
 			const [info, chk, next] = await Promise.all([
@@ -386,9 +422,9 @@ export default function workflowAgent(pi: ExtensionAPI) {
 		defineTool({
 			name: "workflow_check",
 			label: "Check workflow",
-			description: "Validate this workflow's .pi/plan.yaml and compile-check every concrete pending wave. The summary lists the waves still to run (derived from the stages).",
+			description: "Validate this workflow's plan.yaml and compile-check every concrete pending wave. The summary lists the waves still to run (derived from the stages).",
 			promptSnippet: "Validate and compile-check this workflow's plan",
-			promptGuidelines: ["Use workflow_check after every change to .pi/plan.yaml."],
+			promptGuidelines: ["Use workflow_check after every change to plan.yaml."],
 			parameters: Type.Object({}),
 			async execute(_id, _params, signal, _onUpdate, ctx) {
 				const res = await check(pi, mustRoot(ctx), signal);
@@ -536,10 +572,10 @@ export default function workflowAgent(pi: ExtensionAPI) {
 		name: "workflow_replan",
 		label: "Replan",
 		description:
-			"Change pending work in .pi/plan.yaml: replace or add stages (full definitions), remove pending stages, record unknowns' findings, add questions or record answers. Waves follow from the stages. Refuses changes to stages that are done or running in the active run, the request, goal, done_when, params, inputs, outputs and agents, and any weakening of a side effect. Commits the workflow (git keeps the previous revision), bumps revision, sets status draft and clears the critique.",
+			"Change pending work in plan.yaml: replace or add stages (full definitions), remove pending stages, record unknowns' findings, add questions or record answers. Waves follow from the stages. Refuses changes to stages that are done or running in the active run, the request, goal, done_when, params, inputs, outputs and agents, and any weakening of a side effect. Commits the workflow (git keeps the previous revision), bumps revision, sets status draft and clears the critique.",
 		promptSnippet: "Change pending stages of the workflow plan",
 		promptGuidelines: [
-			"Use workflow_replan for every plan change after a wave has run; direct edits to .pi/plan.yaml are blocked.",
+			"Use workflow_replan for every plan change after a wave has run; direct edits to plan.yaml are blocked.",
 			"Give each changed stage in full, as it should read in the plan; omit `provisional` and `resolves_after` to make a provisional stage concrete.",
 		],
 		parameters: Type.Object({

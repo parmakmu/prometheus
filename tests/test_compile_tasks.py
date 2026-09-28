@@ -43,3 +43,13 @@ def test_reviewer_judges_by_the_same_consumers(tmp_path):
 def test_a_stage_nobody_consumes_gets_no_such_section(tmp_path):
     c = compiler(tmp_path)
     assert "Used next by" not in c.task("read-emails", c.stages["read-emails"], set())
+
+
+def test_a_program_runs_with_uv_in_the_workflows_environment(tmp_path):
+    # the program uses the workflow's packages (pyproject.toml); `uv run` syncs them first
+    plan = {"stages": [{"key": "export", "title": "Write the workbook", "kind": "deterministic", "pattern": "script",
+                        "agent": "worker", "script": "export.py", "run": "rows.json out.xlsx",
+                        "out": [{"id": "book", "path": "out.xlsx"}], "verify": {"check": "One row per email."}}]}
+    c = cw.Compiler(tmp_path, plan, {}, tmp_path / "runs" / "r1", {}, set())
+    assert c.program_command(c.stages["export"]).startswith(f"uv run {tmp_path / 'scripts' / 'export.py'} ")
+    assert f"uv add --project {tmp_path} <package>" in c.task("export", c.stages["export"], set())

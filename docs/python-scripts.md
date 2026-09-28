@@ -19,7 +19,7 @@ The scripts live in [`.pi/skills/workflow/scripts/`](../.pi/skills/workflow/scri
 
 ### Validate and prepare a run
 
-- **`validate_plan.py`** — loads and validates `.pi/plan.yaml`: field types and required fields, cross-references, stage dependencies, portability and workflow-specific rules. It also derives the waves from stages and run status, and returns a summary that includes open questions, missing params/secrets, approvals, and the next wave. It does not run stages.
+- **`validate_plan.py`** — loads and validates `plan.yaml`: field types and required fields, cross-references, stage dependencies, portability and workflow-specific rules. It also derives the waves from stages and run status, and returns a summary that includes open questions, missing params/secrets, approvals, and the next wave. It does not run stages.
 - **`compile_wave.py`** — turns the active run's next derived wave into the exact pi-subagents call, expanding parameters, gates, schemas, dependencies, and any map batching. The generated script is the wave as data (its layers, children, map batching and reviews) followed by `wave_runner.js` unchanged, so every wave runs the same hand-written runner. It is saved to `runs/<id>/.compiled/<wave>.js`, and the call refers to it by path, so the model passes a short path to pi-subagents instead of retyping the script. It returns preflight requirements when input values, decisions, approvals, or plan fixes are needed. `--check` compile-checks pending concrete waves during planning without starting a run. Even a successful compile only prepares a call; the model must pass that call to pi-subagents to launch it.
 
 ### Track and edit a run

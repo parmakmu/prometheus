@@ -55,6 +55,8 @@ CASES = [
     ("typed gate plus returned schema", INV, lambda p: (st(p, "review")["out"][0].pop("path"), st(p, "review").__setitem__("verify", {"gate": {"command": "x", "output": "json"}})), "typed gate cannot be combined", "error"),
     ("map child key collision", INV, lambda p: p["stages"].append({"key": "find-2", "title": "x", "kind": "deterministic", "pattern": "script", "agent": "worker", "verify": {"check": "x"}}), "collides with child keys", "error"),
     ("absolute out path", INV, lambda p: st(p, "compare")["out"][0].__setitem__("path", "~/report.xlsx"), "path is absolute", "error"),
+    ("path param after path text", INV, lambda p: st(p, "compare")["out"][0].__setitem__("path", "../${report_dir}/r.xlsx"), "compiles to an absolute path", "error"),
+    ("deterministic work in a worker", INV, lambda p: (st(p, "extract").pop("script"), st(p, "extract").pop("run"), st(p, "extract").__setitem__("pattern", "worker")), "deterministic work in a worker child", "warning"),
     ("undefined param", INV, lambda p: st(p, "compare")["out"][0].__setitem__("path", "${nope}/r.xlsx"), "undefined param", "error"),
     ("user-scoped agent", INV, lambda p: (p["agents"]["available"].append({"name": "x-parser", "source": "user"}), st(p, "extract").__setitem__("agent", "x-parser")), "user-scoped", "error"),
     ("asked finding without question", INV, lambda p: p["questions"][2].pop("from_finding"), "marked asked", "error"),
@@ -136,3 +138,28 @@ def test_project_agent_listed_as_builtin(tmp_path):
     (tmp_path / ".pi" / "agents" / "worker.md").write_text("---\nname: worker\n---\nbody\n", encoding="utf-8")
     _errors, warnings, _summary = validate_plan.validate(copy.deepcopy(INV), workflow_root=tmp_path)
     assert any("'worker' is defined in .pi/agents/ but listed as builtin" in w for w in warnings), warnings
+
+
+def test_gate_packages_come_from_the_workflows_pyproject(tmp_path):
+    # one list of packages per workflow; `uv run` syncs it before running a gate
+    (tmp_path / "gates").mkdir()
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "w"\ndependencies = ["openpyxl>=3.1", "PyYAML"]\n',
+                                              encoding="utf-8")
+    (tmp_path / "gates" / "check_lines.py").write_text("import csv\nimport not_listed_pkg\n", encoding="utf-8")
+    (tmp_path / "gates" / "check_report.py").write_text("import openpyxl\nimport yaml\n", encoding="utf-8")
+    plan = copy.deepcopy(INV)
+    st(plan, "compare")["verify"]["gate"] = "uv run ../gates/check_report.py ${report_dir}/Q3-invoice-variance.xlsx"
+    errors, _warnings, _summary = validate_plan.validate(plan, workflow_root=tmp_path)
+    assert any("check_lines.py would fail" in e and "uv add not_listed_pkg" in e for e in errors), errors
+    assert not any("check_report.py would fail" in e for e in errors), errors  # yaml is PyYAML's import name
+
+
+def test_gate_with_packages_must_run_with_uv_and_not_declare_its_own(tmp_path):
+    (tmp_path / "gates").mkdir()
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "w"\ndependencies = ["openpyxl"]\n', encoding="utf-8")
+    (tmp_path / "gates" / "check_lines.py").write_text('# /// script\n# dependencies = ["openpyxl"]\n# ///\nimport openpyxl\n',
+                                                         encoding="utf-8")
+    (tmp_path / "gates" / "check_report.py").write_text("import openpyxl\n", encoding="utf-8")  # run with python3
+    errors, _warnings, _summary = validate_plan.validate(copy.deepcopy(INV), workflow_root=tmp_path)
+    assert any("check_lines.py would fail" in e and "pyproject.toml instead" in e for e in errors), errors
+    assert any("check_report.py would fail" in e and "`uv run`" in e for e in errors), errors

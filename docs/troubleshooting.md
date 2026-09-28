@@ -58,11 +58,26 @@ A child that writes files failed its acceptance check because files were staged 
 
 ## Changing a workflow
 
-**The workflow agent was blocked from editing `.pi/plan.yaml`.**
+**The workflow agent was blocked from editing `plan.yaml`.**
 Once a workflow has a run, its plan changes only through controlled steps. During a run, the workflow agent replans pending stages with its replan tool. Between runs, use `/workflow-revise`.
 
 **"a replan cannot change [<fields>] … locked"**
 A replan during a run can't change the request, goal, done-when criteria, params, inputs, outputs or agents, stages that already ran, or a side effect's approval. Make those changes with `/workflow-revise` after the run has finished or been stopped.
+
+**"gates/<file> would fail before checking anything: it imports …, which the workflow's pyproject.toml does not list"** (or `scripts/<file>` for a stage program)
+Every package a workflow's gates and stage programs use is listed in its `pyproject.toml` (and locked in `uv.lock`), so you can see them in one place and review them with the branch. The workflow agent adds the missing one with `uv add <package>`. The same check reports a script with its own `# /// script` package block (move the packages to `pyproject.toml`) and a gate with packages run with `python3` instead of `uv run`.
+
+**"this wave runs stage programs or gates with `uv run`, but uv is not installed"**
+Install [uv](https://docs.astral.sh/uv/). `uv run` installs the workflow's packages into its `.venv/` before the first gate or program runs; that needs network access the first time.
+
+**"main is checked out and no run is active: gates, scripts, agents and packages change only on a run or change branch"**
+After a workflow's first run, `main` changes only by a reviewed merge, so the workflow agent is blocked from editing these files on `main`. It usually means the checked-out branch was switched while a change was in progress (from a terminal or the editor). Switch back to the branch the message names (`git switch change/…`) and tell the agent to continue; to change something new, use `/workflow-revise`.
+
+**"branch run/<id> already exists from an earlier run with this id"**
+`runs/` isn't in Git, so deleting a run's folder frees its id, but not the branch that run left. New runs skip ids that still have a branch. A run started before that fix may still collide: stop it, then review the old branch (`git switch run/<id>`, then `/workflow-run`) or delete it (`git branch -D run/<id>`).
+
+**"no run is active: the replan tools work only during a run"**
+The workflow agent tried to replan outside a run. Before the first run, or on a change branch, it edits `plan.yaml` directly. After a run, use `/workflow-revise`. You don't need to approve the direct edit.
 
 **"run <id> is active: tell the run what to change … or stop it first"** (from `/workflow-revise`)
 `/workflow-revise` only works with no run active. During a run, ask the run itself for the change: it replans on its own branch, and you review that at the end.
@@ -71,7 +86,7 @@ A replan during a run can't change the request, goal, done-when criteria, params
 You chose merge, but the change isn't finished: the plan critic hasn't passed it, or it doesn't validate. Finish the change, or choose keep (switch back to `main`, keep the branch for later) or discard.
 
 **"main has moved and <branch> conflicts with it"**
-`main` changed after the branch was created, and git can't merge the two automatically. The branch is checked out again. Resolve the conflict by hand, or discard the branch.
+`main` changed after the branch was created, so merging replays the branch's commits on top of `main` (a rebase, keeping history linear), and git couldn't do that automatically. The branch is checked out again, unchanged. Resolve the conflict by hand, or discard the branch.
 
 **You merged a branch with git yourself.**
 That works, but the review step does two things you then have to do by hand: tag the revision (`r<N>`) on `main`, and delete the merged branch. Choosing merge in the review is simpler.

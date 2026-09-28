@@ -37,7 +37,7 @@ The model-facing rules are in the skill: `SKILL.md` (planning), `references/run-
 
 - **workflow**: a folder `workflows/<slug>/`, itself a Pi agent ("workflow agent" only where that
   matters). Not "bundle".
-- **plan**: `.pi/plan.yaml`, reusable across runs; versioned in git with its gates, programs and
+- **plan**: `plan.yaml`, reusable across runs; versioned in git with its gates, programs and
   agents. Not "definition".
 - **stage**: a unit of work in the plan. **wave**: stages launched as one subagent call (derived).
   **launch**: one attempt at a wave (`run.yaml` `launches`). **child**: one subagent item; a stage
@@ -108,7 +108,8 @@ Libraries: typer, pydantic (plan shape, in `validate_plan.py`; the cross-referen
   on `main` with a ready plan moves tag `r<rev>`.
 - **Main changes only by a reviewed merge.** A run's first commit creates `run/<id>` lazily;
   `/workflow-revise` creates `change/<date>-<n>`. At the end the user sees the diff and chooses
-  merge (only a ready, valid plan) / keep / discard. New runs and changes refuse while another
+  merge (only a ready, valid plan; a fast-forward, rebased onto `main` first if it moved, so history
+  stays linear; the branch is deleted) / keep / discard. New runs and changes refuse while another
   branch is checked out, so reviews can't be skipped. Why: a run's discoveries are a proposal,
   not a silent change to every later run; and the workflow owns its plan (Prometheus's old
   outside revise command, with no locks, was removed).
@@ -137,12 +138,22 @@ Libraries: typer, pydantic (plan shape, in `validate_plan.py`; the cross-referen
   16 fields per object and 64 items per array; the example plan's w1 is 19.6 KB. A test runs
   pi-subagents' own `validateWorkflowScript` on compiled waves.
 - **Stage programs run as commands**: a stage with `script:` and `run: "<args>"` whose program
-  exists compiles to a `workflow-batcher` item (`batch_tool.py` op `run`: `python3 scripts/<file>
-  <args>` from `work/`, then the gate, through the shell). It carries a `fix` item, a worker child
+  exists compiles to a `workflow-batcher` item (`batch_tool.py` op `run`: `uv run
+  scripts/<file> <args>` from `work/`, then the gate, through the shell). It carries a `fix` item, a worker child
   the runner launches only if that fails, shown the error (`{failure: key}` task part), with the
   usual acceptance gate. Values in `run:` are shell-quoted; secrets stay `"${ENV}"`. Why: run 7
   spent 35 s on two model children that only ran reviewed programs (~1 s as commands).
   `runs.host` is not open to raw workflow scripts, so the batcher (external-cli) does it.
+- **A workflow's packages are in its `pyproject.toml`** (`uv add`, locked in `uv.lock`), used by
+  the skill scripts, gates and stage programs alike; gates and programs run with `uv run`, which
+  syncs `.venv/` first, so no `uv sync` pause. The validator rejects a third-party import
+  `pyproject.toml` doesn't list, a PEP 723 `# /// script` block, and packages run with `python3`;
+  the compile preflight a missing `uv`; `/workflow-refresh` keeps the workflow's packages. Creating
+  and refreshing a workflow run `uv lock`, so `uv.lock` is committed up front: otherwise the first
+  `uv run` wrote it mid-wave and every run left a branch to review. Why:
+  with "standard library or what is installed" the models hand-wrote XLSX readers and writers
+  (~100 lines each) instead of using openpyxl; per-script headers were tried and rejected by the
+  owner: dependencies must be visible in one place.
 - **The orchestrator does no bookkeeping**: `workflow_log_finish {wave}` reads the outcome and
   cost from pi-subagents' `status.json`, returns a children summary (not outputs), the
   `mission_close` call and, when the run is done, the plan's `done_when` for the final report;
@@ -158,6 +169,8 @@ Libraries: typer, pydantic (plan shape, in `validate_plan.py`; the cross-referen
 - **Map stages** split/merge in the command-runner agent `workflow-batcher` (workflow scripts
   can't read files). Child keys `<key>-split`, `<key>-<n>`, `<key>-merge` / `-reduce`.
 - **Returned (path-less) results don't cross waves**; later waves read files only.
+- **The plan is `plan.yaml` at the workflow root**, beside `gates/` and `scripts/`, not in `.pi/`
+  (Pi's config). `/workflow-refresh` moves an older `.pi/plan.yaml` and commits the move.
 - **Roles in `.pi/APPEND_SYSTEM.md`, not `AGENTS.md`**: Pi concatenates `AGENTS.md` from parent
   folders, which would leak Prometheus's role into workflows.
 - **This file is `.claude/CLAUDE.md`, not `CLAUDE.md`**: Pi loads the first of `AGENTS.override.md`,
@@ -216,9 +229,11 @@ pi-subagents 0.73.1 (source in `~/.pi/agent/npm/node_modules/pi-subagents`):
 
 ## Status
 
-`uv run pytest`: 179 tests, all green, including 51 validator cases, 16 param tests, compiled
+`uv run pytest`: 190 tests, including the validator's broken-variant cases, param tests, compiled
 waves run in a mock of `runs.run/runs.all` (real batch tool and gates, fake children), and both
-extensions type-checked and driven with Pi's real types.
+extensions type-checked and driven with Pi's real types. The 92 outside `tests/test_workflow.py`
+pass without Node or uv; that file's 98 (the scenario and the extensions) need `npm install` and
+uv, and have not run since the plan moved to the workflow root and programs to `uv run`.
 
 Verified in live runs of emails-to-excel (see `docs/worked-example.md`): planning with the
 critic and questions; discovery + replan; explicit acceptance; derived waves and run folders;

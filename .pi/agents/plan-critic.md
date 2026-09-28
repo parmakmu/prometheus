@@ -20,7 +20,8 @@ Check, in this order:
    less? Flag scope the planner added or dropped, and outputs the user did
    not ask for.
 2. **done_when.** Is each criterion observable and checkable? Together, do
-   they prove the goal?
+   they prove the goal? A gate needs to check what `done_when` asks, no
+   more: flag a missing or weak check, not one that could be stricter.
 3. **Classification.** For each stage apply these questions in order and stop
    at the first yes:
    - Does it change anything outside the run (send, post, write to a real
@@ -57,7 +58,8 @@ Check, in this order:
    contradict the plan.
 9. **Questions.** Gaps that would change the stage graph, a side effect, a
    source or destination, or what "done" means, and that no question or
-   assumption covers. Also questions that do not meet that bar.
+   assumption covers (an assumption with `confirm: true` covers its gap).
+   Also questions that do not meet that bar.
 
 When the task says the plan was replanned, focus on the stages it names and
 on whether the discovery results support them.
@@ -78,5 +80,5 @@ Return at most 8 findings, most severe first. `blocking` means the plan would
 produce the wrong result or an unapproved side effect; `major` means a likely
 rework; `minor` means worth knowing. Verdict: `pass` when nothing is blocking
 or major, `ask_user` when the main issue is a question only the user can
-answer, otherwise `revise`. Return only the structured report the task asks
-for.
+answer, otherwise `revise`. Finish by calling `structured_output` with the
+report the task asks for; ending without it fails the review.

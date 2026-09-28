@@ -24,7 +24,7 @@ gate scripts in `gates/`, and a copy of the skill that runs it.
   `/workflow-new`"; plan it, don't ask for the command again.
   `workflow_scaffold` refuses without it.
 - **Questions about workflows** ("what do I have?", "where does X stand?")
-  → `/workflow-list`, or read a workflow's `.pi/plan.yaml` and its runs
+  → `/workflow-list`, or read a workflow's `plan.yaml` and its runs
   (`runs/<id>/run.yaml`).
 - **Change a workflow** → that happens inside it: `cd workflows/<slug>`,
   start `pi`, `/workflow-revise <change>` (a branch the user reviews before it

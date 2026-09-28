@@ -13,7 +13,7 @@ In a workflow, stage status comes from the active run (runs/<id>/run.yaml; see
             plan's `agents.available` list
 --external  names among them whose profile uses an external runner
 --workflow  workflow root; defaults to the folder above `.pi/` when
-            the plan is at <workflow>/.pi/plan.yaml
+            the plan is at <workflow>/plan.yaml
 
 Two passes: the pydantic models below check the plan's shape (types, required
 fields, allowed values); the rules in validate() check how the parts fit
@@ -23,6 +23,7 @@ Prints one JSON object {valid, status, errors, warnings, summary} and exits
 0 when there are no errors, 1 otherwise (2 on usage or read errors).
 Requires typer, pydantic and ruamel.yaml (`uv sync`).
 """
+import ast
 import json
 import re
 import sys
@@ -66,7 +67,9 @@ def load_yaml(src):
 # Each execution of a workflow's plan is a folder runs/<id>/ (id: <date>-<n>):
 #   run.yaml    id, status (active | done | stopped), revision, started_at,
 #               finished_at, note, stages {key: running | done} (absent = pending),
-#               launches [one entry per wave launch]; written by run_log.py
+#               launches [one entry per wave launch]; written by run_log.py;
+#               critiques [{run_id, after_waves}]: critic results a replan recorded
+#               (plan_edit.py caps them per replan)
 #   work/       the children's cwd: stage outputs, decisions, batches, scripts
 #   .compiled/  compiled waves and their results
 # Relative param values (an `outputs` default, say) resolve against runs/<id>/.
@@ -122,6 +125,7 @@ DOC_FORMATS = {"md", "markdown", "txt", "docx", "html", "pdf"}
 GATES_REF_RE = re.compile(r"\.\./gates/([^\s'\"]+)")
 PARAM_REF_RE = re.compile(r"\$\{([^}]*)\}")
 SCRIPT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+PATH_CHARS = set("/\\.~_-") | set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
 ABS_PATH_RE = re.compile(r"(^|[\s'\"=])(/[^\s'\"]+|~[^\s'\"]*|[A-Za-z]:[\\/][^\s'\"]*)")
 
 # Launch context pi-subagents' builtin agents use when `context` is omitted.
@@ -388,6 +392,56 @@ def child_keys(key, pattern):
     return key
 
 
+SCRIPT_BLOCK_RE = re.compile(r"^# /// script\s*$", re.MULTILINE)
+# import names whose package is called something else
+IMPORT_PACKAGES = {"yaml": "pyyaml", "bs4": "beautifulsoup4", "PIL": "pillow", "dotenv": "python-dotenv",
+                   "sklearn": "scikit-learn", "cv2": "opencv-python", "dateutil": "python-dateutil",
+                   "docx": "python-docx", "pptx": "python-pptx", "ruamel": "ruamel.yaml", "jwt": "pyjwt",
+                   "Crypto": "pycryptodome", "fitz": "pymupdf", "magic": "python-magic"}
+
+
+def norm_package(name):
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def project_packages(root: Path):
+    """Normalised names of the packages the workflow's pyproject.toml lists, or None if unreadable."""
+    try:
+        import tomllib
+        deps = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
+    except (ImportError, OSError, KeyError, TypeError, ValueError):
+        return None
+    return {norm_package(re.split(r"[\s<>=!~;\[(]", d, maxsplit=1)[0]) for d in deps if isinstance(d, str)}
+
+
+def package_problem(script: Path, packages, runs_with_uv: bool):
+    """Why a Python gate or stage program would fail before doing its work, or None. Its packages
+    are the workflow's, listed in pyproject.toml (`uv add <package>`); `uv run` syncs that
+    environment before running the script."""
+    try:
+        text = script.read_text(encoding="utf-8")
+        tree = ast.parse(text)
+    except (OSError, SyntaxError, ValueError) as exc:
+        return f"cannot be parsed: {exc}"
+    if SCRIPT_BLOCK_RE.search(text):
+        return "declares packages in a `# /// script` block; list them in the workflow's pyproject.toml instead (`uv add <package>`) and remove the block"
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            names.add(node.module.split(".")[0])
+    third_party = sorted(n for n in names if n not in sys.stdlib_module_names and not (script.parent / f"{n}.py").exists())
+    if third_party and packages is not None:
+        missing = [n for n in third_party if norm_package(IMPORT_PACKAGES.get(n, n)) not in packages]
+        if missing:
+            return (f"imports {', '.join(missing)}, which the workflow's pyproject.toml does not list: "
+                    f"`uv add {' '.join(IMPORT_PACKAGES.get(n, n) for n in missing)}`")
+    if third_party and not runs_with_uv:
+        return f"imports {', '.join(third_party)}, so its command must run it with `uv run` (the workflow's environment), not python3"
+    return None
+
+
 def literal_absolute(text):
     """True when a path or command contains an absolute path not rooted in a ${param}."""
     if not isinstance(text, str):
@@ -470,17 +524,18 @@ class Checker:
         self.workflow_root = Path(workflow_root) if workflow_root else None
         self.errors, self.warnings = [], []
         self.err, self.warn = self.errors.append, self.warnings.append
-        self.param_refs = []  # (where, name, is a path)
+        self.param_refs = []  # (where, name, is a path, follows path text such as `../`)
         self.agent_names, self.external, self.default_ctx, self.agent_sources = load_agents(
             plan, cli_agents, cli_external, self.warn)
         self.input_ids = {inp.id for inp in plan.inputs}
         self.approvals, self.keys_summary = [], {}
-        self.gate_scripts = []  # (where, file under <workflow>/gates/)
+        self.gate_scripts = []  # (where, file under <workflow>/gates/, its command runs uv)
         self.script_owner = {}  # stage program -> the stage it belongs to
 
     def check_refs(self, where, text, is_path=False):
         if isinstance(text, str):
-            self.param_refs.extend((where, ref, is_path) for ref in PARAM_REF_RE.findall(text))
+            self.param_refs.extend((where, m.group(1), is_path, m.start() > 0 and text[m.start() - 1] in PATH_CHARS)
+                                   for m in PARAM_REF_RE.finditer(text))
 
     def check_agent_ref(self, where, name):
         if self.agent_names is not None and name not in self.agent_names:
@@ -614,6 +669,9 @@ class Checker:
         elif st.kind == "deterministic" and st.pattern == "script":
             self.warn(f"{where}: name its program with `script:` (kept in scripts/, reviewed, reused by later runs); "
                       "without it every run writes the program again")
+        elif st.kind == "deterministic" and st.pattern in ("worker", "scout", "reviewer"):
+            self.warn(f"{where}: deterministic work in a {st.pattern} child; make it pattern: script with `script:` "
+                      "and `run:`, so the program is kept in scripts/ and later runs execute it without a model")
         if st.run is not None:
             self.check_refs(f"{where} run", st.run)
             if st.script is None:
@@ -721,7 +779,7 @@ class Checker:
             self.err(f"{where}: verify.gate must be a command string or a typed gate mapping")
         self.check_refs(f"{where} gate", command)
         if isinstance(command, str):
-            self.gate_scripts.extend((where, m) for m in GATES_REF_RE.findall(command))
+            self.gate_scripts.extend((where, m, "uv run" in command) for m in GATES_REF_RE.findall(command))
         if literal_absolute(command):
             self.warn(f"{where}: gate command has an absolute path; use a ${{param}} or a workflow-relative path")
         if st.resumes is not None:
@@ -926,12 +984,14 @@ class Checker:
             env_names.setdefault(env, name)
             if spec.type == "secret" and spec.default not in (None, ""):
                 err(f"param '{name}': a secret has no default; its value stays in the environment or .env")
-        for where, ref, is_path in self.param_refs:
+        for where, ref, is_path, embedded in self.param_refs:
             if ref not in params:
                 err(f"{where}: references undefined param '${{{ref}}}'")
             elif is_path and params[ref].type == "secret":
                 err(f"{where}: a secret (param '{ref}') cannot be part of a path")
-        used = {ref for _, ref, _ in self.param_refs}
+            elif embedded and params[ref].type == "path":
+                err(f"{where}: '${{{ref}}}' compiles to an absolute path; start the path with it (`${{{ref}}}/…`, not `../${{{ref}}}`)")
+        used = {ref for _, ref, _, _ in self.param_refs}
         for name, spec in params.items():
             if name not in used and spec.type != "secret":  # a secret may be read only from the environment (tools, scripts)
                 self.warn(f"param '{name}' is declared but never used")
@@ -955,10 +1015,17 @@ class Checker:
         ):
             if not (root / rel).exists():
                 self.warn(f"workflow: {rel} is missing ({what}); re-run scaffold_workflow.py --refresh")
-        for where, script in self.gate_scripts:
+        packages = project_packages(root)
+        for where, script, with_uv in self.gate_scripts:
             if not (root / "gates" / script).exists():
                 (err if status == "ready" else self.warn)(
                     f"{where}: gate script gates/{script} does not exist; write it while planning (never in the stage it checks)")
+            elif script.endswith(".py") and (problem := package_problem(root / "gates" / script, packages, with_uv)):
+                err(f"{where}: gates/{script} would fail before checking anything: it {problem}")
+        for program, key in self.script_owner.items():  # stage programs run with uv run
+            path = root / "scripts" / program
+            if path.suffix == ".py" and path.is_file() and (problem := package_problem(path, packages, True)):
+                err(f"stage '{key}': scripts/{program} {problem}")
         on_disk = project_agent_names(root)
         for name, src in self.agent_sources.items():
             if src == "project" and name not in on_disk:
@@ -1014,7 +1081,7 @@ def main(
     plan_path: Annotated[str, typer.Argument(metavar="PLAN.yaml")],
     agents: Annotated[str | None, typer.Option(help="comma-separated agent names from subagent list")] = None,
     external: Annotated[str | None, typer.Option(help="comma-separated names of agents on external runners")] = None,
-    workflow: Annotated[str | None, typer.Option(help="workflow root (default: detected from <workflow>/.pi/plan.yaml)")] = None,
+    workflow: Annotated[str | None, typer.Option(help="workflow root (default: detected from <workflow>/plan.yaml)")] = None,
 ):
     """Validate a workflow YAML file."""
     plan_path = Path(plan_path)
@@ -1026,8 +1093,8 @@ def main(
     workflow_root = Path(workflow) if workflow is not None else None
     if workflow_root is None:
         parent = plan_path.resolve().parent
-        if parent.name == ".pi":
-            workflow_root = parent.parent
+        if (parent / ".pi").is_dir():
+            workflow_root = parent
     errors, warnings, summary = validate(plan, agents, external, workflow_root)
     print(json.dumps({
         "valid": not errors,

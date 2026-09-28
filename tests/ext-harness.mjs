@@ -42,6 +42,7 @@ for (const step of steps) {
       let res;
       for (const h of handlers.tool_call ?? []) res = (await h({ type: "tool_call", toolCallId: "t-1", ...step.toolCall }, ctx)) ?? res;
       rec.blocked = !!res?.block;
+      rec.reason = res?.reason ?? null;
     } else if (step.cmd) {
       const def = commands[step.cmd];
       if (step.complete !== undefined) rec.completions = await def.getArgumentCompletions?.(step.complete);

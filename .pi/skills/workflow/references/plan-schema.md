@@ -1,6 +1,6 @@
 # Plan schema (version 1)
 
-`<workflow>/.pi/plan.yaml`. `workflow_check` enforces every **rule**;
+`<workflow>/plan.yaml`. `workflow_check` enforces every **rule**;
 *warnings* do not fail it. The plan is reusable and holds no run state: each
 execution is a run, `runs/<id>/`.
 
@@ -57,6 +57,8 @@ values resolve in `runs/<id>/work/`, the children's `cwd`.
 
 - **rule** every `${name}` is a declared param.
 - **rule** `out.path` is never a literal absolute path (`/…`, `~…`, `C:\…`).
+- **rule** a path param starts its path (`${out_dir}/x.xlsx`, never
+  `../${out_dir}/x.xlsx`): it compiles to an absolute path.
 - *warning* a literal absolute path in a `location` or gate command.
 - **rule** a param's variable is a valid name, not a system or tool one
   (`PATH`, `HOME`, `PI_…`), and not shared with another param.
@@ -156,7 +158,7 @@ agents:
   items: invoices              # map / map_reduce: the input or file output to split
   items_glob: "*.eml"          # optional, for folder items
   verify:
-    gate: python3 ../gates/check.py lines.csv                   # pass/fail command
+    gate: uv run ../gates/check.py lines.csv                    # pass/fail command
     # gate: {command: …, output: json, schema?, timeout_ms?}    # typed gate
     review: reviewer           # adds a <key>-review child
     check: every invoice id appears once
@@ -184,13 +186,18 @@ A provisional stage is an outline filled in at replan:
 ```
 
 **Gates** live in `gates/`, written while planning or at replan, never by
-the stage they check; commands call them as `python3 ../gates/<script>`
-(children run in `work/`). A typed gate's JSON becomes the child's
-structured output, so it excludes a returned `schema`.
+the stage they check; commands call them as `uv run ../gates/<script>`
+(children run in `work/`; `python3` is fine for a standard-library gate).
+Every package a gate or program imports is in the workflow's
+`pyproject.toml`: add one with `uv add <package>` (from the workflow root),
+never in the script itself. `uv run` syncs that environment first.
+`workflow_check` rejects a third-party import `pyproject.toml` does not list,
+a `# /// script` block, and one run with `python3`. A typed gate's JSON
+becomes the child's structured output, so it excludes a returned `schema`.
 
 **Stage programs.** `script: <file>` names a deterministic (or mechanical
 side-effect) stage's program in `scripts/`; `run:` gives its arguments,
-called as `python3 scripts/<file> <run>` from `work/`, params resolved and
+called as `uv run scripts/<file> <run>` from `work/`, params resolved and
 shell-quoted. The first run's child writes it (usage in its docstring); the
 run's review shows it; later runs execute it as a command with no model, and
 a `<key>-fix` child repairs it only if it or the gate fails.
@@ -229,7 +236,9 @@ Rules for concrete stages:
 - **rule** `deterministic` stages have a `verify`.
 - **rule** `script` is a file name, on a deterministic or side-effect stage
   with `pattern: script`, not shared; `run` needs `script`, and then every
-  `out` has a `path`.
+  `out` has a `path`. *warning* a deterministic stage without `script:`,
+  or in a `worker`/`scout`/`reviewer` child: its program would be rewritten
+  in `work/` every run.
 - **rule** a typed gate has `command` and `output: json`, and no returned
   `schema`.
 - **rule** `map` / `map_reduce` have `batch` (1 … `limits.max_batch`) and

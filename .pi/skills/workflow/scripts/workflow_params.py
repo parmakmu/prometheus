@@ -1,6 +1,6 @@
 """A workflow's param values: declared in the plan, set in the environment or `.env`.
 
-The plan declares each param (`params:` in .pi/plan.yaml) with a type:
+The plan declares each param (`params:` in plan.yaml) with a type:
   path    a file or folder (the default): ~ expands, and a relative value
           resolves inside the run, so runs do not overwrite each other
   text    used exactly as given: a table name, a URL, an account id

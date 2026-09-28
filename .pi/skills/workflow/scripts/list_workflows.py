@@ -31,8 +31,7 @@ def load(path, default):
 
 
 def summarise(root, slug):
-    pi = Path(root) / slug / ".pi"
-    plan = load(pi / "plan.yaml", {})
+    plan = load(Path(root) / slug / "plan.yaml", {})
     if not isinstance(plan, dict):
         return {"slug": slug, "error": "plan.yaml is not a mapping"}
     stages = [s for s in plan.get("stages") or [] if isinstance(s, dict)]
@@ -49,7 +48,7 @@ def summarise(root, slug):
         launch = (state.get("launches") or [None])[-1]
         last = {"id": runs[-1][0], **{k: state.get(k) for k in ("status", "started_at", "finished_at")},
                 "last_wave": {k: launch.get(k) for k in ("wave", "status")} if isinstance(launch, dict) else None}
-    agents_dir = pi / "agents"
+    agents_dir = Path(root) / slug / ".pi" / "agents"
     custom = sorted(p.stem for p in agents_dir.iterdir() if p.suffix == ".md") if agents_dir.is_dir() else []
     goal = plan.get("goal") or ""
     return {
@@ -78,7 +77,7 @@ def main(
     """List workflows."""
     if workflow:
         b = Path(workflow).resolve()
-        if not (b / ".pi" / "plan.yaml").is_file():
+        if not (b / "plan.yaml").is_file():
             print(json.dumps({"error": f"{b} is not a workflow"}))
             raise typer.Exit(1)
         print(json.dumps(summarise(b.parent, b.name), indent=2, default=str))
@@ -87,7 +86,7 @@ def main(
     workflows = [
         summarise(root, entry.name)
         for entry in (sorted(root_path.iterdir()) if root_path.is_dir() else [])
-        if (entry / ".pi" / "plan.yaml").is_file()
+        if (entry / "plan.yaml").is_file()
     ]
     print(json.dumps(workflows, indent=2, default=str))
 

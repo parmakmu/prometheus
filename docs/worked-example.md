@@ -111,7 +111,7 @@ Of the $0.0105 the children cost, `discover` and its review were $0.0053, about 
 
 ```text
 workflows/emails-to-excel/
-  .pi/plan.yaml              the plan (revision 3)
+  plan.yaml                  the plan (revision 3)
   .env                       EMAIL_FOLDER=…   (not in git)
   gates/                     check_email_rows.py, check_email_workbook.py
   scripts/                   read_emails.py, build_workbook.py

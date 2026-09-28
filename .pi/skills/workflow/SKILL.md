@@ -7,7 +7,7 @@ disable-model-invocation: true
 # Planning a workflow
 
 A workflow is a folder with a validated, critic-reviewed plan
-(`.pi/plan.yaml`) that a Pi session started in it runs with `/workflow-run`
+(`plan.yaml`) that a Pi session started in it runs with `/workflow-run`
 (`references/run-protocol.md`). While planning, the only children you launch
 are read-only: `scout` probes and the plan critic.
 
@@ -19,7 +19,7 @@ edits, never by rewriting the file.
 ## Protocol
 
 1. **Create the workflow** with `workflow_scaffold` (slug `^[a-z0-9-]+$`,
-   the request verbatim). All planning edits `workflows/<slug>/.pi/plan.yaml`.
+   the request verbatim). All planning edits `workflows/<slug>/plan.yaml`.
    Its result carries `today`, for `agents.checked`. Inside a workflow
    (`/workflow-run` on a draft plan), skip this step.
 
@@ -84,8 +84,10 @@ edits, never by rewriting the file.
 
 8. **Ask, or finish.**
    - Open questions → `status: needs_answers`, check, ask (below). Write each
-     answer into its question and update the plan. Resume the critic only if
-     the stage graph changed and it ran fewer than two passes this revision.
+     answer into its question and update the plan by editing the file (the
+     replan tools work only during a run). Resume the critic only if the
+     stage graph changed and it ran fewer than two passes this revision; an
+     answer that leaves the stages as they were needs no critic.
      After two rounds, remaining gaps become assumptions with
      `confirm: true`. Then the next bullet.
    - None open → `status: ready` (never back to `draft`), check, and tell the user: the goal, the waves

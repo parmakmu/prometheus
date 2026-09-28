@@ -1,5 +1,6 @@
-# Python dependencies of the skill scripts. `uv sync` creates .venv/, which the
-# workflow extension uses. Inside Prometheus the workflow uses Prometheus's .venv.
+# Every Python package the workflow uses: the skill scripts' (listed here) and
+# its gates' and stage programs' (added with `uv add <package>`). `uv run`, which
+# runs gates and programs, syncs .venv/ from this file and uv.lock first.
 [project]
 name = "workflow-{{slug}}"
 version = "0.1.0"

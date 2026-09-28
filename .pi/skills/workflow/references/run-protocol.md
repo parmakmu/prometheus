@@ -143,12 +143,13 @@ are history; request, goal, done_when, params, inputs, outputs and agents are
 locked (they change with `/workflow-revise` after the run). A side effect
 stays a side effect.
 
-Read the discovery outputs (or the user's request), `.pi/plan.yaml`, and
+Read the discovery outputs (or the user's request), `plan.yaml`, and
 `<skill>/references/plan-schema.md` ("Stages", "Waves"); `classify.md` only
 if a kind may change.
 
-1. Write gates for the stages you make concrete into `gates/`, and new
-   agents into `.pi/agents/` (`<skill>/references/agent-profiles.md`).
+1. Write gates for the stages you make concrete into `gates/` (a package
+   they import: `uv add <package>`), and new agents into `.pi/agents/`
+   (`<skill>/references/agent-profiles.md`).
 2. One `workflow_replan` call: `findings` for the resolved unknowns, and
    each provisional stage whose `resolves_after` is done, in full and
    without `provisional` / `resolves_after` (`pattern`, `agent`, `out`,
@@ -157,7 +158,10 @@ if a kind may change.
    what its validation reports with another call.
 3. Run the critic on the changed stages (`<skill>/references/critic-contract.md`)
    and record it with `workflow_record_critique`, which marks the plan ready
-   when it validates.
+   when it validates. At most two critic passes per replan, however many
+   revisions it takes (`workflow_record_critique` refuses a third): after
+   the second, reject what is left with a note (tell the user about a
+   blocking one) and continue.
 4. If the stage graph changed beyond filled-in details, or a side effect or
    question appeared, show the user and ask before continuing.
 
@@ -192,8 +196,10 @@ New runs and `/workflow-revise` refuse until this is done.
 `change/<date>-<n>`, bumps the revision and sets `draft`.
 
 1. If no change was given, ask what should change.
-2. Edit `.pi/plan.yaml` (anything), `gates/` and `.pi/agents/` directly,
-   following `<skill>/SKILL.md` for what you touch; `workflow_check`.
+2. Edit `plan.yaml` (anything), `gates/`, stage programs in `scripts/` and
+   `.pi/agents/` directly (packages: `uv add <package>`), following
+   `<skill>/SKILL.md` for what you touch; `workflow_check`. Delete a program
+   to have the next run write it again.
 3. Critic and `workflow_record_critique`, as in **Replanning** step 3.
 4. **Reviewing a branch**.
 
@@ -211,6 +217,8 @@ once nothing else touches the repo.
 ## What you may edit
 
 The plan directly only before the first run (on `main`) or on a change
-branch; during a run only through the replan tools, plus `gates/` and
-`.pi/agents/` while replanning. Params only through `workflow_set_params`;
-`.env` never. Run state only through the workflow tools. Nothing else.
+branch, with `gates/`, `scripts/`, `.pi/agents/` and packages (`uv add`,
+into `pyproject.toml`). During a run only through the replan tools, plus
+`gates/`, `.pi/agents/` and packages while replanning; stage programs are
+the children's. Params only through `workflow_set_params`; `.env` never. Run
+state only through the workflow tools. Nothing else.

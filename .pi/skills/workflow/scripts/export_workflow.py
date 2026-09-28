@@ -53,9 +53,9 @@ def main(
 ):
     """Copy a workflow elsewhere."""
     src = Path(workflow).resolve()
-    plan_path = src / ".pi" / "plan.yaml"
+    plan_path = src / "plan.yaml"
     if not plan_path.is_file():
-        print(json.dumps({"ok": False, "error": f"{src} is not a workflow (no .pi/plan.yaml)"}))
+        print(json.dumps({"ok": False, "error": f"{src} is not a workflow (no plan.yaml)"}))
         raise typer.Exit(1)
     slug = name or src.name
     dst = (Path(dest) / slug).resolve()
@@ -108,7 +108,7 @@ def main(
 
     check = subprocess.run(
         [sys.executable, str(dst / ".pi" / "skills" / "workflow" / "scripts" / "validate_plan.py"),
-         str(dst / ".pi" / "plan.yaml")],
+         str(dst / "plan.yaml")],
         capture_output=True, text=True, check=False,
     )
     try:

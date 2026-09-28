@@ -1,6 +1,6 @@
 # Example: an abstract request where the planner has nothing to look at.
 # Wave 1 discovers; the plan replans before the analysis is detailed.
-# In a workflow this file is workflows/competitor-memo/.pi/plan.yaml.
+# In a workflow this file is workflows/competitor-memo/plan.yaml.
 version: 1
 revision: 1
 status: ready

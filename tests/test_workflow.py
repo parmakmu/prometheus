@@ -117,7 +117,7 @@ def test_refresh_moves_params_yaml_into_env(env):
 
 def test_compile_check(env):
     import shutil
-    shutil.copy(SKILL / "examples" / "invoice-check.yaml", env.b / ".pi" / "plan.yaml")
+    shutil.copy(SKILL / "examples" / "invoice-check.yaml", env.b / "plan.yaml")
     (env.b / "gates" / "check_lines.py").write_text(
         "import json,sys,os\nprint(json.dumps({'ok': all(os.path.exists(p) for p in sys.argv[1:])}))\n", encoding="utf-8")
     (env.b / "gates" / "check_report.py").write_text(
@@ -129,7 +129,7 @@ def test_compile_check(env):
 # --- a run, from compile through both waves -----------------------------------
 
 def test_compile_needs_an_active_run(env):
-    plan = env.b / ".pi" / "plan.yaml"
+    plan = env.b / "plan.yaml"
     text = plan.read_text(encoding="utf-8").replace("    batch: 50\n", "    batch: 3\n")
     assert text != plan.read_text(encoding="utf-8")
     plan.write_text(text, encoding="utf-8")
@@ -269,10 +269,10 @@ def test_run_log_start_refuses_a_wave_that_is_not_next(env):
 
 
 def test_run_log_start(env):
-    plan_before = (env.b / ".pi" / "plan.yaml").read_text(encoding="utf-8")
+    plan_before = (env.b / "plan.yaml").read_text(encoding="utf-8")
     r = env.run(["run_log.py", "start", "--wave", "w1", "--subagent-run-id", "wf-1", "--mission-id", "m-1"])
     assert r.data and r.data["ok"]
-    assert (env.b / ".pi" / "plan.yaml").read_text(encoding="utf-8") == plan_before
+    assert (env.b / "plan.yaml").read_text(encoding="utf-8") == plan_before
     run_yaml = (env.run_dir / "run.yaml").read_text(encoding="utf-8")
     assert run_yaml.count(": running") == 6
 
@@ -438,7 +438,7 @@ def test_replan_refuses_to_change_the_goal(env):
 
 def test_replan_of_a_pending_stage_commits(env):
     from ruamel.yaml import YAML
-    plan = YAML(typ="safe").load((env.b / ".pi" / "plan.yaml").read_text(encoding="utf-8"))
+    plan = YAML(typ="safe").load((env.b / "plan.yaml").read_text(encoding="utf-8"))
     st = next(s for s in plan["stages"] if s["key"] == "approve-drafts")
     st = json.loads(json.dumps(st, default=str))
     st["title"] = "Confirm the drafts (replanned)"
@@ -451,7 +451,7 @@ def test_replan_of_a_pending_stage_commits(env):
     assert env.git("log", "-1", "--format=%s").stdout.strip() == "r2 draft: replan"
     assert r.data["commit"] == env.git("rev-parse", "HEAD").stdout.strip()
     assert r.data["previous_commit"] == env.git("rev-parse", "HEAD~1").stdout.strip()
-    assert "revision: 1" in env.git("show", "HEAD~1:.pi/plan.yaml").stdout.splitlines()
+    assert "revision: 1" in env.git("show", "HEAD~1:plan.yaml").stdout.splitlines()
 
 
 def test_record_critique_marks_the_plan_ready(env):
@@ -521,11 +521,11 @@ def test_second_run_reuses_the_merged_program(env):
 
 
 def test_an_existing_program_runs_as_a_command(env):
-    # no model: workflow-batcher runs `python3 <program> <run: args>` and then the gate
+    # no model: workflow-batcher runs `uv run <program> <run: args>` and then the gate
     extract = items(env.b / "runs" / env.rid2 / ".compiled" / "w1.json")["extract"]
     request = json.loads(extract["task"].split("BATCH_TOOL_REQUEST ", 1)[1])
     assert extract["agent"] == "workflow-batcher"
-    assert request["command"].startswith(f"python3 {env.br / 'scripts' / 'extract_invoice_lines.py'} ")
+    assert request["command"].startswith(f"uv run {env.br / 'scripts' / 'extract_invoice_lines.py'} ")
     assert request["command"].endswith("invoice-index.json invoice-lines.csv unparsed.json")
     assert "check_lines.py" in request["gate"] and request["gate_json"] is True
     assert extract["fix"]["key"] == "extract-fix" and extract["fix"]["agent"] == "worker"
@@ -558,7 +558,7 @@ def test_a_failing_program_gets_a_fix_child(env, run_node):
 
 
 def test_check_reports_the_last_run(env):
-    r = env.run(["validate_plan.py", ".pi/plan.yaml"])
+    r = env.run(["validate_plan.py", "plan.yaml"])
     assert r.data, r
     last = r.data["summary"]["last_run"]
     assert (last["id"], last["runs"]) == (env.rid2, 2)
@@ -593,7 +593,7 @@ def test_workflow_revise_change_branch_from_main(env):
     assert r.data, r
     today = datetime.datetime.now().astimezone().date().isoformat()
     assert (r.data["ok"], r.data["branch"], r.data["revision"]) == (True, f"change/{today}-1", 3)
-    assert "status: draft" in (env.b / ".pi" / "plan.yaml").read_text(encoding="utf-8").splitlines()
+    assert "status: draft" in (env.b / "plan.yaml").read_text(encoding="utf-8").splitlines()
 
 
 def test_replan_needs_an_active_run(env):
@@ -602,7 +602,7 @@ def test_replan_needs_an_active_run(env):
 
 
 def test_direct_edits_on_the_change_branch_critique_marks_it_ready(env):
-    plan_path = env.b / ".pi" / "plan.yaml"
+    plan_path = env.b / "plan.yaml"
     text = plan_path.read_text(encoding="utf-8")
     plan_path.write_text(text.replace("goal: >-\n", "goal: >-\n  Changed on a branch.\n", 1), encoding="utf-8")
     r = env.run(["plan_edit.py", "critique", "--result", '{"run_id":"c-3","verdict":"pass","findings":[]}'])
@@ -613,7 +613,7 @@ def test_merged_change_goal_changed_on_main_tag_r3(env):
     r = env.run(["workflow_git.py", "merge", "--action", "merge"])
     assert r.data, r
     assert (r.data["ok"], r.data["revision"]) == (True, 3)
-    assert "Changed on a branch" in env.git("show", "main:.pi/plan.yaml").stdout
+    assert "Changed on a branch" in env.git("show", "main:plan.yaml").stdout
     assert env.git("rev-parse", "r3").stdout.strip() == env.git("rev-parse", "main").stdout.strip()
 
 
@@ -656,7 +656,7 @@ def test_export_dotenv_lists_variables_without_values(env):
 
 def test_keep_state_export_keeps_runs_and_git_history(env):
     (env.b / ".pi" / "npm" / "node_modules").mkdir(parents=True)
-    (env.b / ".venv" / "bin").mkdir(parents=True)
+    (env.b / ".venv" / "bin").mkdir(parents=True, exist_ok=True)  # `uv run` may have made it already
     dest = env.tmp / "elsewhere"
     r = env.run_in(env.prometheus, ["export_workflow.py", "workflows/invoice-check", str(dest), "--keep-state"])
     assert r.data and r.data["ok"]
@@ -791,10 +791,10 @@ def test_workflow_extension_registers_commands_and_tools(env, ext):
     steps = [
         {"cmd": "workflow-status", "args": ""},
         {"tool": "workflow_compile", "params": {"approve": ["drafts"]}},
-        {"toolCall": {"toolName": "edit", "input": {"path": ".pi/plan.yaml"}}},
-        {"toolCall": {"toolName": "bash", "input": {"command": "sed -i s/x/y/ .pi/plan.yaml"}}},
+        {"toolCall": {"toolName": "edit", "input": {"path": "plan.yaml"}}},
+        {"toolCall": {"toolName": "bash", "input": {"command": "sed -i s/x/y/ plan.yaml"}}},
         {"toolCall": {"toolName": "write", "input": {"path": "runs/x/run.yaml"}}},
-        {"toolCall": {"toolName": "read", "input": {"path": ".pi/plan.yaml"}}},
+        {"toolCall": {"toolName": "read", "input": {"path": "plan.yaml"}}},
         {"toolCall": {"toolName": "bash", "input": {"command": "git commit -am x"}}},
         {"toolCall": {"toolName": "bash", "input": {"command": "git log --oneline"}}},
         {"toolCall": {"toolName": "read", "input": {"path": ".env"}}},
@@ -858,10 +858,31 @@ def test_change_branch_guard(env, ext):
     _subprocess.run(["python3", str(env.k / "run_log.py"), "stop"], cwd=env.b, capture_output=True, check=False)
     _subprocess.run(["python3", str(env.k / "workflow_git.py"), "begin-change"], cwd=env.b, capture_output=True, check=False)
     steps = [
-        {"toolCall": {"toolName": "edit", "input": {"path": ".pi/plan.yaml"}}},
-        {"toolCall": {"toolName": "bash", "input": {"command": "cat .pi/plan.yaml"}}},
+        {"toolCall": {"toolName": "edit", "input": {"path": "plan.yaml"}}},
+        {"toolCall": {"toolName": "bash", "input": {"command": "cat plan.yaml"}}},
         {"toolCall": {"toolName": "write", "input": {"path": "runs/x/run.yaml"}}},
         {"toolCall": {"toolName": "edit", "input": {"path": ".env"}}},
     ]
     report = drive(ext, ext.tmp / ".ext" / "workflow.ts", env.b, steps)
     assert [s["blocked"] for s in report["steps"]] == [False, False, True, True]
+
+
+@skip_extensions
+def test_main_guard_when_the_branch_was_switched(env, ext):
+    # between runs main changes only by a reviewed merge; the user switching away from a change
+    # branch mid-change must not let the agent's next edits land on main
+    branch = env.git("branch", "--show-current").stdout.strip()
+    assert branch.startswith("change/")
+    env.git("switch", "-q", "main")
+    try:
+        steps = [
+            {"toolCall": {"toolName": "write", "input": {"path": "scripts/extract_invoice_lines.py"}}},
+            {"toolCall": {"toolName": "edit", "input": {"path": "gates/check_lines.py"}}},
+            {"toolCall": {"toolName": "bash", "input": {"command": "uv add openpyxl"}}},
+            {"toolCall": {"toolName": "read", "input": {"path": "gates/check_lines.py"}}},
+        ]
+        report = drive(ext, ext.tmp / ".ext" / "workflow.ts", env.b, steps)
+    finally:
+        env.git("switch", "-q", branch)
+    assert [s["blocked"] for s in report["steps"]] == [True, True, True, False]
+    assert branch in report["steps"][0]["reason"]

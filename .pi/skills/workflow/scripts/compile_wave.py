@@ -47,6 +47,7 @@ import importlib.util
 import json
 import re
 import shlex
+import shutil
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from typing import Annotated
@@ -110,6 +111,7 @@ class Compiler:
         self.writers = {"worker"} | self.project_writers()
         self.missing_params = set()
         self.missing_secrets = set()
+        self.uses_uv = False  # a program or gate runs with `uv run` (the workflow's environment)
         self.errors = []
         self.notes = []
 
@@ -233,8 +235,9 @@ class Compiler:
             lit(f"\nWrite this stage's program at {script}, then run it{run_as} to write the outputs; do not process "
                 "items by hand. Later runs reuse it" + (", running it with exactly these arguments without a model"
                 if command else "") + ": take every input and output location as a command-line argument "
-                "(nothing of this run hard-coded), use only Python's standard library or packages already "
-                "installed, and say how to run it in its docstring.\n")
+                f"(nothing of this run hard-coded), use the packages {self.workflow / 'pyproject.toml'} lists (add one it "
+                f"lacks with `uv add --project {self.workflow} <package>`; never a `# /// script` block), "
+                "and say how to run it in its docstring.\n")
         elif kind == "deterministic":
             lit("\nThis is mechanical work: write a program that does it, run it, and keep the program "
                 f"in {self.work / 'scripts'}/. Do not process items by hand.\n")
@@ -303,7 +306,8 @@ class Compiler:
         """The shell command that runs the stage's program with its `run:` arguments, or None."""
         if not st.get("script") or st.get("run") is None:
             return None
-        return f"python3 {shlex.quote(self.script_path(st))} {self.resolve_command(st['run'])}".strip()
+        self.uses_uv = True
+        return f"uv run {shlex.quote(self.script_path(st))} {self.resolve_command(st['run'])}".strip()
 
     def resolve_command(self, text):
         """resolve_text for a shell command: values are quoted (a path may have spaces); a secret
@@ -340,6 +344,8 @@ class Compiler:
 
     def gate_command(self, command):
         """The gate with params resolved and ../gates/ pointing at the workflow's gates/."""
+        if "uv run" in command:
+            self.uses_uv = True
         return GATES_RE.sub(lambda m: str(self.workflow / "gates") + "/", self.resolve_text(command))
 
     def acceptance(self, key, agent, gate):
@@ -485,6 +491,9 @@ class Compiler:
                     children.append(f"{s}-review")
             in_wave_done |= set(layer)
 
+        if self.uses_uv and shutil.which("uv") is None:
+            self.errors.append("this wave runs stage programs or gates with `uv run`, but uv is not installed: "
+                               "ask the user to install it (https://docs.astral.sh/uv/)")
         preflight["missing_params"] = sorted(self.missing_params)
         preflight["missing_secrets"] = sorted(self.missing_secrets)
         blocked = any(preflight[k] for k in preflight) or self.errors
@@ -495,7 +504,7 @@ class Compiler:
         revision = self.plan.get("revision", 1)
         # the wave as data, then the fixed runner (JSON is a valid JS literal)
         spec = {"wave": wid, "revision": revision, "max_parallel": int(max_parallel), "steps": steps}
-        script = (f"// Compiled from .pi/plan.yaml revision {revision}, run {self.run_id}, wave {wid}. Do not edit; recompile instead.\n"
+        script = (f"// Compiled from plan.yaml revision {revision}, run {self.run_id}, wave {wid}. Do not edit; recompile instead.\n"
                   f"const W = {json.dumps(spec, indent=1, ensure_ascii=False)};\n\n" + RUNNER.read_text(encoding="utf-8"))
 
         call = {"async": True}
@@ -521,7 +530,7 @@ def main(
 ):
     """Compile the next wave into a pi-subagents call."""
     workflow = Path(workflow).resolve()
-    plan_path = workflow / ".pi" / "plan.yaml"
+    plan_path = workflow / "plan.yaml"
     if not plan_path.is_file():
         print(json.dumps({"ok": False, "error": f"{workflow} is not a workflow"}))
         raise typer.Exit(2)

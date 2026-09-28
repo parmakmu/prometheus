@@ -14,8 +14,8 @@ the user chose (or by planning before the first run):
                       while no run is active (begin-change)
 When a run ends (done or stopped) or a change is ready, the user reviews the
 branch against main and chooses: merge (only a ready, valid plan; a
-fast-forward when main has not moved; tags r<revision>), keep (switch back to
-main, keep the branch) or discard.
+fast-forward, rebased first if main has moved; the branch is deleted; tags
+r<revision>), keep (switch back to main, keep the branch) or discard.
 A new run or change needs main checked out, so no branch is left unreviewed
 by accident.
 
@@ -100,7 +100,7 @@ def identity(workflow):
 def plan_revision(workflow):
     from validate_plan import load_yaml
     try:
-        plan = load_yaml((Path(workflow) / ".pi" / "plan.yaml").read_text(encoding="utf-8")) or {}
+        plan = load_yaml((Path(workflow) / "plan.yaml").read_text(encoding="utf-8")) or {}
     except OSError:
         return None, None
     return plan.get("revision", 1), plan.get("status")
@@ -124,11 +124,14 @@ def commit(workflow, message):
     if wave_running(workflow):
         return head(workflow), "a wave is running: not committed now (the next compile commits it)"
     ensure_repo(workflow)
+    act = active_run(workflow)
+    to_run_branch = bool(act and branch(workflow) == MAIN and head(workflow) is not None)
+    if conflict := branch_conflict(workflow):
+        raise RuntimeError(conflict)  # checked before staging: a refused commit leaves nothing staged on main
     git(workflow, "add", "-A")
     staged = git(workflow, "diff", "--cached", "--quiet", check=False).returncode != 0
     if staged or head(workflow) is None:
-        act = active_run(workflow)
-        if act and branch(workflow) == MAIN and head(workflow) is not None:
+        if to_run_branch:
             git(workflow, "switch", "-q", "-c", f"run/{act[0]}")
         git(workflow, *identity(workflow), "commit", "-q", "--allow-empty", "-m", message)
     tag_ready(workflow)
@@ -149,6 +152,25 @@ def review_info(workflow):
             "see": f"git diff {MAIN}...{b}"}
 
 
+def branch_conflict(workflow):
+    """Why the active run cannot get its branch run/<id>, or None: an earlier run with the same
+    id left that branch (runs/ is not in git, so deleting its folder frees the id but not the branch)."""
+    act = active_run(workflow)
+    if not (act and available() and is_repo(workflow) and branch(workflow) == MAIN and head(workflow) is not None):
+        return None
+    if f"run/{act[0]}" not in run_branches(workflow):
+        return None
+    return (f"branch run/{act[0]} already exists from an earlier run with this id, so this run cannot commit to it. "
+            "Stop this run (workflow_stop_run), then ask the user to review or delete that branch")
+
+
+def run_branches(workflow):
+    """Every run/<id> branch, merged or not."""
+    if not available() or not is_repo(workflow):
+        return []
+    return git(workflow, "branch", "--list", "run/*", "--format=%(refname:short)", check=False).stdout.split()
+
+
 def unmerged_branches(workflow):
     if not available() or not is_repo(workflow):
         return []
@@ -166,8 +188,8 @@ def out(obj, code=0):
 @app.callback()
 def main(workflow: Annotated[str, typer.Option(help="workflow root")] = "."):
     os.chdir(workflow)
-    if not (Path(".pi") / "plan.yaml").is_file():
-        out({"ok": False, "error": f"{Path(workflow).resolve()} is not a workflow (no .pi/plan.yaml)"}, 2)
+    if not Path("plan.yaml").is_file():
+        out({"ok": False, "error": f"{Path(workflow).resolve()} is not a workflow (no plan.yaml)"}, 2)
     if not available():
         out({"ok": False, "error": "git is required; ask the user to install it"}, 2)
 
@@ -195,7 +217,7 @@ def begin_change():
     git(workflow, "switch", "-q", "-c", new)
     # a new revision, drafted; the critic's recorded result marks it ready again
     y = rt_yaml()
-    path = Path(".pi") / "plan.yaml"
+    path = Path("plan.yaml")
     plan = y.load(path.read_text(encoding="utf-8"))
     plan["revision"] = plan.get("revision", 1) + 1
     plan["status"] = "draft"
@@ -228,7 +250,7 @@ def merge(action: Annotated[str, typer.Option(help="merge | keep | discard")]):
         out({"ok": False, "error": f"run {act[0]} is still active: let it finish, or stop it (workflow_stop_run), then review"}, 1)
     if action == "merge":
         from validate_plan import load_yaml, validate
-        plan = load_yaml((Path(".pi") / "plan.yaml").read_text(encoding="utf-8")) or {}
+        plan = load_yaml(Path("plan.yaml").read_text(encoding="utf-8")) or {}
         errors = validate(plan, None, None, workflow)[0]
         if errors or plan.get("status") != "ready":
             out({"ok": False, "error": f"the plan on {b} is {plan.get('status')}" + (f" with errors {errors[:3]}" if errors else "")
@@ -237,13 +259,16 @@ def merge(action: Annotated[str, typer.Option(help="merge | keep | discard")]):
     git(workflow, "switch", "-q", MAIN)
     note = None
     if action == "merge":
+        # linear history: fast-forward, or replay the branch on top of a main that moved
         if git(workflow, "merge", "-q", "--ff-only", b, check=False).returncode != 0:
-            r = git(workflow, *identity(workflow), "merge", "-q", "--no-edit", b, check=False)
+            r = git(workflow, *identity(workflow), "rebase", "-q", MAIN, b, check=False)
             if r.returncode != 0:
-                git(workflow, "merge", "--abort", check=False)
+                git(workflow, "rebase", "--abort", check=False)
                 git(workflow, "switch", "-q", b)
                 out({"ok": False, "error": f"main has moved and {b} conflicts with it; the branch is checked out again. Resolve by hand, or discard it."}, 1)
-            note = "main had moved: merged with a merge commit"
+            git(workflow, "switch", "-q", MAIN)
+            git(workflow, "merge", "-q", "--ff-only", b)
+            note = f"main had moved: {b} was rebased onto it"
         git(workflow, "branch", "-q", "-d", b)
         tag_ready(workflow)
     elif action == "discard":

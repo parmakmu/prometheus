@@ -116,7 +116,8 @@ function slugs(root: string, prefix = ""): string[] {
 	try {
 		return fs
 			.readdirSync(path.join(root, WORKFLOWS))
-			.filter((d) => d.startsWith(prefix) && fs.existsSync(path.join(root, WORKFLOWS, d, ".pi", "plan.yaml")))
+			// .pi/plan.yaml: where the plan lived before; /workflow-refresh moves it
+			.filter((d) => d.startsWith(prefix) && ["plan.yaml", ".pi/plan.yaml"].some((f) => fs.existsSync(path.join(root, WORKFLOWS, d, f))))
 			.sort();
 	} catch {
 		return [];
@@ -125,7 +126,7 @@ function slugs(root: string, prefix = ""): string[] {
 
 async function check(pi: ExtensionAPI, root: string, slug: string, signal?: AbortSignal) {
 	const workflow = path.join(root, WORKFLOWS, slug);
-	const v = await runScript(pi, root, "validate_plan.py", [path.join(workflow, ".pi", "plan.yaml")], signal);
+	const v = await runScript(pi, root, "validate_plan.py", [path.join(workflow, "plan.yaml")], signal);
 	const c = await runScript(pi, root, "compile_wave.py", ["--workflow", workflow, "--check"], signal);
 	return {
 		valid: v.data?.valid ?? false,
@@ -343,7 +344,7 @@ export default function prometheus(pi: ExtensionAPI) {
 			name: "workflow_check",
 			label: "Check workflow",
 			description:
-				"Validate workflows/<slug>/.pi/plan.yaml and compile-check every concrete pending wave. Returns errors, warnings and a summary.",
+				"Validate workflows/<slug>/plan.yaml and compile-check every concrete pending wave. Returns errors, warnings and a summary.",
 			promptSnippet: "Validate and compile-check a workflow plan",
 			promptGuidelines: [
 				"Use workflow_check after every change to a workflow plan, instead of running validate_plan.py or compile_wave.py yourself.",

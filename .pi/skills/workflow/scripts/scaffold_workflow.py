@@ -18,7 +18,7 @@ The template holds AGENTS.md, pyproject.toml (Python deps for `uv sync`),
 workflow-batcher) and the plan skeleton.
 
 --refresh rewrites the template files and the skill copy in an existing
-workflow. It never touches .pi/plan.yaml, .env, runs/, gates/, scripts/ or agents
+workflow. It never touches plan.yaml, .env, runs/, gates/, scripts/ or agents
 the plan added. Values an older workflow kept in .pi/params.yaml move to .env.
 
 The workflow is its own git repo (workflow_git.py); both modes commit the result.
@@ -30,6 +30,7 @@ import datetime
 import json
 import re
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Annotated
 
@@ -43,9 +44,11 @@ SKILL_DIR = SCRIPT_DIR.parent
 TEMPLATE_DIR = SKILL_DIR / "templates" / "workflow"
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store")
-PLAN = Path(".pi") / "plan.yaml"
+PLAN = Path("plan.yaml")
 STATE_FILES = {Path(workflow_params.ENV_FILE): workflow_params.ENV_HEADER}
 OLD_PARAMS = Path(".pi") / "params.yaml"  # where values lived before .env
+OLD_PLAN = Path(".pi") / "plan.yaml"
+PYPROJECT = Path("pyproject.toml")  # the workflow adds its own packages: a refresh keeps them  # where the plan lived before it moved to the workflow root
 # Files and folders earlier versions wrote that are no longer part of a workflow.
 LEGACY_FILES = [Path(".pi") / "prompts" / name
                 for name in ("start.md", "workflow-run.md", "workflow-status.md", "workflow-replan.md")]
@@ -59,6 +62,40 @@ def template_files() -> list[Path]:
          if path.is_file() and path.suffix != ".pyc" and path.name != ".DS_Store"),
         key=lambda path: path.as_posix(),
     )
+
+
+def add_skill_packages(path: Path, template: str):
+    """Add the template's dependencies that the workflow's pyproject.toml lacks, keeping the
+    packages the workflow added; the names added."""
+    import tomllib
+    text = path.read_text(encoding="utf-8")
+    try:
+        have = tomllib.loads(text)["project"]["dependencies"]
+    except (KeyError, TypeError, ValueError):
+        return []
+    def name(dep):
+        return re.split(r"[\s<>=!~;\[(]", dep, maxsplit=1)[0].lower().replace("_", "-")
+
+    names = {name(d) for d in have}
+    missing = [d for d in tomllib.loads(template)["project"]["dependencies"] if name(d) not in names]
+    if missing:
+        deps = "dependencies = [" + ", ".join(f'"{d}"' for d in [*have, *missing]) + "]"
+        path.write_text(re.sub(r"(?ms)^dependencies\s*=\s*\[.*?\]", lambda _m: deps, text, count=1), encoding="utf-8")
+    return missing
+
+
+def lock_packages(workflow: Path):
+    """Write uv.lock from pyproject.toml, so it is committed with the workflow: otherwise the first
+    `uv run` of a gate or program writes it during a wave, and every run has a change to review.
+    Returns what it wrote, or None (no uv, or nothing to change)."""
+    if shutil.which("uv") is None:
+        return None
+    before = (workflow / "uv.lock").read_bytes() if (workflow / "uv.lock").exists() else None
+    r = subprocess.run(["uv", "lock", "--quiet", "--project", str(workflow)], capture_output=True, text=True, check=False)
+    if r.returncode != 0:
+        return f"uv.lock (not updated: {(r.stderr or r.stdout).strip()[:200]})"
+    after = (workflow / "uv.lock").read_bytes() if (workflow / "uv.lock").exists() else None
+    return "uv.lock" if after != before else None
 
 
 def move_old_params(workflow: Path):
@@ -95,12 +132,13 @@ def main(
         print(json.dumps({"ok": False, "error": f"slug must match {SLUG_RE.pattern}"}))
         raise typer.Exit(2)
     workflow = Path(root) / slug
-    exists = (workflow / PLAN).exists()
+    moved_plan = refresh and (workflow / OLD_PLAN).exists() and not (workflow / PLAN).exists()
+    exists = (workflow / PLAN).exists() or moved_plan
     if exists and not refresh:
         print(json.dumps({"ok": False, "error": f"{workflow} already has a plan; use --refresh to update it or pick another slug"}))
         raise typer.Exit(1)
     if refresh and not exists:
-        print(json.dumps({"ok": False, "error": f"{workflow} has no .pi/plan.yaml to refresh"}))
+        print(json.dumps({"ok": False, "error": f"{workflow} has no plan.yaml to refresh"}))
         raise typer.Exit(1)
     if refresh and workflow_git.wave_running(workflow.resolve()):
         # the refresh rewrites the skill copy, including the batch tool a running map stage uses
@@ -108,6 +146,9 @@ def main(
         raise typer.Exit(1)
 
     written, kept, removed = [], [], []
+    if moved_plan:
+        (workflow / OLD_PLAN).rename(workflow / PLAN)  # the refresh commit records the move
+        removed.append(f"{OLD_PLAN} (now {PLAN})")
     for rel in LEGACY_FILES:
         path = workflow / rel
         if path.exists():
@@ -120,11 +161,17 @@ def main(
             removed.append(str(rel) + "/")
     for directory in ("runs", "gates", "scripts"):
         (workflow / directory).mkdir(parents=True, exist_ok=True)
+    for directory in ("gates", "scripts"):  # git drops empty folders: checking out main after a run would delete them
+        (workflow / directory / ".gitkeep").touch()
 
     for rel in template_files():
         dst = workflow / rel
         if rel == PLAN and exists:
             kept.append(str(rel))
+            continue
+        if rel == PYPROJECT and dst.exists():
+            added = add_skill_packages(dst, (TEMPLATE_DIR / rel).read_text(encoding="utf-8"))
+            (written if added else kept).append(str(rel) + (f" (added {', '.join(added)})" if added else ""))
             continue
         dst.parent.mkdir(parents=True, exist_ok=True)
         text = (TEMPLATE_DIR / rel).read_text(encoding="utf-8")
@@ -154,6 +201,9 @@ def main(
             written.append(str(rel))
 
     workflow_abs = workflow.resolve()
+    locked = lock_packages(workflow_abs)
+    if locked:
+        written.append(locked)
     note = None
     try:
         commit, note = workflow_git.commit(str(workflow_abs), "Refresh from Prometheus" if refresh else f"Create workflow {slug}")

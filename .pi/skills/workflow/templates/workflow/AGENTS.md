@@ -3,7 +3,7 @@
 This folder is a self-contained, portable workflow. Everything it needs to
 plan and run lives here:
 
-- `.pi/plan.yaml` — the plan (goal, stages, approvals; waves are derived)
+- `plan.yaml` — the plan (goal, stages, approvals; waves are derived)
 - `.env` — param values for this machine (paths, accounts, secrets); not in git,
   and the model may not read it. `/workflow-run` asks for missing values and
   tells you which variables to add for secrets
@@ -32,7 +32,7 @@ plan and run lives here:
 
 When working in this folder, follow
 `.pi/skills/workflow/references/run-protocol.md`. Do not run stages
-outside that protocol, do not edit `.pi/plan.yaml` except as the protocol
+outside that protocol, do not edit `plan.yaml` except as the protocol
 says, and never perform a stage marked `approval: required` without the
 user's explicit approval for that stage.
 

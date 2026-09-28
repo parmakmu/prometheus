@@ -59,7 +59,7 @@ from ruamel.yaml.error import YAMLError
 from validate_plan import RUN_ID_RE, RUNS, active_run, list_runs, rt_yaml, validate
 
 HERE = Path(__file__).resolve().parent
-PLAN = Path(".pi") / "plan.yaml"
+PLAN = Path("plan.yaml")
 HEADER = "# Run state written by the run protocol (run_log.py). Do not edit by hand.\n"
 app = typer.Typer(add_completion=False)
 
@@ -104,7 +104,7 @@ def save(path, data, header=""):
 def open_workflow(need_run=True):
     """(plan, (id, dir, state) of the active run or None)."""
     if not Path(PLAN).is_file():
-        out({"ok": False, "error": "run from the workflow root (no .pi/plan.yaml here)"}, 2)
+        out({"ok": False, "error": "run from the workflow root (no plan.yaml here)"}, 2)
     act = active_run(Path.cwd())
     if need_run and act is None:
         out({"ok": False, "error": "no active run: start one with workflow_new_run (run_log.py new)"}, 1)
@@ -170,7 +170,9 @@ def new(
     if b not in (None, workflow_git.MAIN):
         out({"ok": False, "error": f"branch {b} is checked out and not reviewed: review it first (workflow_merge: merge, keep or discard)"}, 1)
     today = datetime.datetime.now().astimezone().date().isoformat()  # local date
-    taken = [int(m.group(2)) for rid, _ in list_runs(Path.cwd()) if (m := RUN_ID_RE.match(rid)) and m.group(1) == today]
+    # a run/<id> branch outlives its folder (runs/ is not in git): skip its id too
+    ids = [rid for rid, _ in list_runs(Path.cwd())] + [b.removeprefix("run/") for b in workflow_git.run_branches(Path.cwd())]
+    taken = [int(m.group(2)) for rid in ids if (m := RUN_ID_RE.match(rid)) and m.group(1) == today]
     rid = f"{today}-{max(taken, default=0) + 1}"
     run_dir = Path(RUNS) / rid
     try:
@@ -192,13 +194,16 @@ def stop(note: Annotated[str | None, typer.Option(help="why the run stopped")] =
     _plan, (rid, run_dir, state) = open_workflow()
     if "running" in (state.get("stages") or {}).values():
         out({"ok": False, "error": f"a wave of run {rid} is running: let it finish, or stop it in pi-subagents first, then record it with workflow_log_finish"}, 1)
-    workflow_git.commit(Path.cwd(), f"run {rid}: files its waves left in the workflow")  # on run/<id>, while still active
+    try:  # on run/<id>, while still active
+        _commit, git_note = workflow_git.commit(Path.cwd(), f"run {rid}: files its waves left in the workflow")
+    except RuntimeError as exc:
+        git_note = f"not committed: {exc}"  # stopping must still work
     state["status"] = "stopped"
     state["finished_at"] = now()
     if note:
         state["note"] = note
     save(state_file(run_dir), state, HEADER)
-    out({"ok": True, "run": rid, "run_status": "stopped", "review": workflow_git.review_info(Path.cwd()),
+    out({"ok": True, "run": rid, "run_status": "stopped", "git_note": git_note, "review": workflow_git.review_info(Path.cwd()),
          "mission_close": mission_close(state, rid, "cancelled", f"Workflow run {rid} stopped" + (f": {note}" if note else ""))})
 
 
@@ -300,7 +305,10 @@ def finish(
     set_status(state, entry.get("stages") or [], wave_status)
     save(state_file(run_dir), state, HEADER)
     # files the wave wrote into the workflow go to run/<id> while the run is still active
-    commit, git_note = workflow_git.commit(Path.cwd(), f"run {rid}, wave {wave}: files the wave wrote")
+    try:
+        commit, git_note = workflow_git.commit(Path.cwd(), f"run {rid}, wave {wave}: files the wave wrote")
+    except RuntimeError as exc:
+        commit, git_note = None, f"not committed: {exc}"
     keys = [s.get("key") for s in plan.get("stages") or []]
     done = bool(keys) and all(state["stages"].get(k) == "done" for k in keys)
     if done:
