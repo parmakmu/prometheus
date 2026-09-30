@@ -24,7 +24,7 @@ The model-facing rules are in the skill: `SKILL.md` (planning), `references/run-
 
 - The agent is **Prometheus** (repo folder `prometheus/`, extension `.pi/extensions/prometheus/`).
   Commands keep the `workflow-` prefix (Pi has built-in `/new` and `/export`).
-- Runtime is the **Pi coding agent** (earendil-works/pi, built against **0.87.1**) + **pi-subagents** (0.73.1).
+- Runtime is the **Pi coding agent** (earendil-works/pi, built against **0.87.1**; the test suite also passes on 0.99.2) + **pi-subagents** (0.73.1; tests also pass on 0.74.0). Live runs so far were on the older versions.
 - Prometheus is **standalone**: this folder, `cd` + `pi`. Not a global install into `~/.pi/agent/`.
 - Plans are **YAML**.
 - Commands and tools live in **Pi extensions**, one self-contained `index.ts` per agent. No
@@ -215,7 +215,9 @@ pi-subagents 0.73.1 (source in `~/.pi/agent/npm/node_modules/pi-subagents`):
   schema/gate/resume/fork. `runs.host` commands are only for extension-owned named workflows,
   not raw `workflowScript`/`workflowScriptPath`.
 - Tool activation (Pi >= 0.86.1): a fresh session has `subagents_enable` active and `subagent`
-  registered but inactive. pi-subagents re-applies the recorded selection only on `session_start`
+  registered but inactive (pi-subagents 0.74: `toolActivation` in its `config.json`, default `auto`,
+  starts models that can't add a tool mid-conversation with `subagent` already active; it doesn't
+  use Pi 0.99's per-tool `exposure` for this, only for its own `model-only` tools). pi-subagents re-applies the recorded selection only on `session_start`
   and `session_tree`; its `before_agent_start` hook only keeps the loader active, so another
   extension's `setActiveTools([..., "subagent"])` from a command handler holds (not yet live-verified).
 - Children are spawned with pi's `process.env` (so `.env` loaded by the extension reaches them).
@@ -224,8 +226,13 @@ pi-subagents 0.73.1 (source in `~/.pi/agent/npm/node_modules/pi-subagents`):
   `workflow.value` (the script's return value), `totalCost {costUsd, inputTokens, outputTokens}`;
   a workflow that fails before returning has `error` and `workflow.failureKind`.
   `mission.close` takes missionStatus completed | failed | cancelled.
-- `mcp:` direct-tool selections in agent files read pi-mcp-adapter's `mcp-adapter.json`, not
-  Pi's `mcp.json` (matters once a stage agent gets connector tools).
+- `mcp:` selections in an agent's `tools` (`mcp:server`, `mcp:server/tool`): with pi-mcp-adapter
+  installed they resolve against its config; without it (the owner's setup) and on Pi >= 0.99
+  they resolve against Pi's built-in MCP and its `mcp.json` (a project's `.pi/mcp.json` only once
+  trusted), whatever exposure the server has (default `codemode`, hidden from the model); the child
+  gets only the selected tools, as direct ones. Waves are async, so servers an extension adds with
+  `pi.registerMcpServer()` work too; a selected tool that doesn't register within 10 s fails the
+  launch. (From pi-subagents 0.74 docs; not live-verified. Matters once a stage agent gets connector tools.)
 
 ## Status
 

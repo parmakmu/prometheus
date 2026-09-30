@@ -1,6 +1,6 @@
 // Load a workflow extension with a mock pi host and drive it.
 // Usage: node --experimental-strip-types ext-harness.mjs <entry index.ts> <cwd> <steps.json>
-// steps: [{cmd:"workflow-list", args:""}, {tool:"workflow_check", params:{...}}, {toolCall:{toolName, input}}, {env:"NAME"}, ...]
+// steps: [{cmd:"workflow-list", args:""}, {systemPrompt:"..."}, {tool:"workflow_check", params:{...}}, {toolCall:{toolName, input}}, {env:"NAME"}, ...]
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import { Value } from "typebox/value";
@@ -43,6 +43,10 @@ for (const step of steps) {
       for (const h of handlers.tool_call ?? []) res = (await h({ type: "tool_call", toolCallId: "t-1", ...step.toolCall }, ctx)) ?? res;
       rec.blocked = !!res?.block;
       rec.reason = res?.reason ?? null;
+    } else if (step.systemPrompt !== undefined) {
+      let res;
+      for (const h of handlers.before_agent_start ?? []) res = (await h({ type: "before_agent_start", prompt: "", systemPrompt: step.systemPrompt }, ctx)) ?? res;
+      rec.systemPrompt = res?.systemPrompt ?? null;
     } else if (step.cmd) {
       const def = commands[step.cmd];
       if (step.complete !== undefined) rec.completions = await def.getArgumentCompletions?.(step.complete);

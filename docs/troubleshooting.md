@@ -10,7 +10,7 @@ Messages are quoted as the scripts print them; `<…>` marks the parts that vary
 Pi only loads a project's extension after you trust the folder. Start `pi` in the Prometheus folder (or the workflow's folder) and accept the trust prompt. Each workflow is its own project, so it needs trusting too, including after an export.
 
 **"Python package '<name>' is missing … ask the user to run `uv sync`"**
-The scripts' Python packages aren't installed for the Python the extension found. Run `uv sync` in the Prometheus folder (or, for an exported workflow, in the workflow's folder), then restart pi. The extensions use the nearest `.venv`, or `$PI_WORKFLOW_PYTHON` if set. The workflow agent is told never to install packages itself.
+A workflow creates its `.venv` itself on first start (`uv sync`), so this means that failed: `uv` is not installed, or offline. Install `uv` or get online, then restart pi. Otherwise, the scripts' Python packages aren't installed for the Python the extension found. Run `uv sync` in the Prometheus folder (or, for an exported workflow, in the workflow's folder), then restart pi. The extensions use the nearest `.venv`, or `$PI_WORKFLOW_PYTHON` if set. The workflow agent is told never to install packages itself.
 
 **"git is required"**
 Each workflow is its own git repository, and pi-subagents checks the repository's staged files around every child that writes. Install git.

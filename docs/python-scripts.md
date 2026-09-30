@@ -13,7 +13,7 @@ The scripts live in [`.pi/skills/workflow/scripts/`](../.pi/skills/workflow/scri
 
 ### Create and maintain workflows
 
-- **`scaffold_workflow.py`** — creates a new workflow from `templates/workflow/`, substitutes its slug and request, initializes the workflow's Git repository, and writes a draft plan. With `--refresh`, updates the copied template files and skill in an existing workflow while preserving its plan and run-specific/user-authored files. The Prometheus `/workflow-new` tool and `/workflow-refresh` command use this script.
+- **`scaffold_workflow.py`** — creates a new workflow from `templates/workflow/`, substitutes its slug and request, initializes the workflow's Git repository, and writes a draft plan. With `--refresh`, updates the copied template files and skill in an existing workflow while preserving its plan, the lessons section of `.pi/APPEND_SYSTEM.md` and run-specific/user-authored files. The Prometheus `/workflow-new` tool and `/workflow-refresh` command use this script.
 - **`export_workflow.py`** — copies a workflow to another location and validates the copy. A fresh export leaves out run state and Git history; `--keep-state` carries them over. Both modes leave out local installs and `.env` values, and the exported workflow gets an unset parameter file for its new machine.
 - **`list_workflows.py`** — reads plan and run state to produce summaries such as status, revision, active or last run, stage progress, next wave, open questions, custom agents, and unmerged branches. It does not change the workflow. Both `/workflow-list` and `/workflow-status` use it.
 
@@ -25,6 +25,7 @@ The scripts live in [`.pi/skills/workflow/scripts/`](../.pi/skills/workflow/scri
 ### Track and edit a run
 
 - **`run_log.py`** — owns durable run state in `runs/<id>/run.yaml`. Its operations create or stop a run, record a wave launch, record a user's decision, and finish a wave. Finishing reads the child workflow outcome from pi-subagents, updates stage and run status, saves wave results, and commits workflow files written by children on the run branch.
+- **`session_digest.py`** — condenses a workflow's Pi session logs (`~/.pi/agent/sessions/`) and `runs/*/run.yaml` into evidence: user messages, failed tool results, repeated calls, cost, unfinished or relaunched waves, plus the saved lessons in `improvements.yaml` (sessions before the newest lesson are skipped). `/workflow-improve` hands it to the model. It changes nothing.
 - **`plan_edit.py`** — performs checked changes that should not be made by directly editing protected state. It applies a replan to pending stages, records the plan critic's findings and disposition, or writes non-secret parameter values to `.env`. Replans preserve completed/running history and locked plan fields, validate the result, bump its revision, and commit it on the run branch.
 - **`workflow_git.py`** — centralizes workflow Git operations: ensuring the workflow repository exists, committing the plan and the files runs write into the workflow (gate scripts, stage programs; run state in `runs/` is not versioned), creating/reviewing branches, and merging, keeping, or discarding a reviewed branch. `main` remains the reviewed baseline; run and change branches keep proposed edits separate until the user chooses what to do.
 

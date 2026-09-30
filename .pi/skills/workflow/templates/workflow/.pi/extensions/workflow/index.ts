@@ -5,6 +5,7 @@
  *   /workflow-run [note]        plan, continue or run from where it stands (model)
  *   /workflow-status            where the workflow stands (no model)
  *   /workflow-revise [change]   change the plan on a branch, for review (no run active; model)
+ *   /workflow-improve [focus]   propose fixes from the sessions and runs, applied on a change branch (no run active; model)
  *
  * Tools for the model (the mechanical steps of the run protocol)
  *   workflow_check            validate the plan and compile-check its waves
@@ -75,6 +76,50 @@ ${where}
 
 Change requested (may be empty: then ask what to change, or continue the change on this branch): ${change}`;
 };
+
+const IMPROVE_PROMPT = (focus: string, branch: string, digest: string) => `Improve this workflow from how it actually went. You are on the change
+branch "${branch}". Launch no work stages.
+
+Below is a digest of this workflow's latest sessions and its runs: user messages, failed or
+blocked tool results, repeated calls, cost, launches that failed or ran twice. It only points at
+evidence; you were there, so use what you remember of this session too, and open the files it
+points at before proposing anything.
+
+1. Find causes, not symptoms: a gate that rejected correct output, a stage program rewritten or
+   failing each run, a stage task that left something out, a question the plan should have
+   settled, a refusal the user hit, work the model did by hand that a script could do. Skip
+   one-offs; a proposal needs a repeat or a real cost.
+2. Give each proposal: the evidence (session file or run id), the file to change, the edit, and what
+   it should prevent. Targets you may change here: plan.yaml, gates/, scripts/, .pi/agents/,
+   packages (uv add), and rules for this agent: short lines under the heading
+   "## Lessons for this workflow" at the end of \`.pi/APPEND_SYSTEM.md\` (add the heading if missing;
+   /workflow-refresh keeps that section). Every line of it is sent with every turn, so write a rule only
+   for a behaviour the evidence shows repeating, keep it to one or two sentences about this workflow,
+   merge or drop lines it makes redundant, and keep the section under 10 lines. Do not change the text
+   above the heading, or the skill and references: they are Prometheus's copies, which /workflow-refresh
+   overwrites. A problem there that is not specific to this workflow goes in a separate list, as text for
+   the user to take to Prometheus.
+   \`lessons\` are what earlier /workflow-improve passes decided: do not re-propose a rejected one, and
+   if an applied one's problem shows up again, say its fix did not work.
+3. Ask the user about each proposal with the question tool (apply / skip), then make the accepted
+   edits following the "Changing the plan" section of
+   \`.pi/skills/workflow/references/run-protocol.md\` (critic included when the plan changes).
+   Append every proposal, applied or skipped, to \`improvements.yaml\` (a list; create it if missing):
+   \`{date: <today, YYYY-MM-DD>, target: <file>, proposal: <one line>, evidence: <session or run>,
+   decision: applied | rejected, note: <the user's reason, if given>}\`. Write it even when nothing
+   was accepted; it marks these sessions as reviewed.
+   End with the user's review of the branch and workflow_merge (merge, keep or discard).
+
+Focus requested (may be empty): ${focus}
+
+Digest:
+${digest}`;
+
+// Pi opens its system prompt with this coding-assistant line; the workflow agent orchestrates instead.
+const PI_PREAMBLE =
+	"You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.";
+const ROLE_PREAMBLE =
+	"You are the workflow agent of one workflow, operating inside pi, a coding agent harness. You orchestrate: you run the workflow's plan with subagents and look after its plan, gates and scripts as the run protocol allows. You do not do a stage's work yourself.";
 
 // --- helpers --------------------------------------------------------------------
 
@@ -314,13 +359,31 @@ export default function workflowAgent(pi: ExtensionAPI) {
 			};
 	});
 
+	// Swap only Pi's opening line, so the tool list, rules and the appended role stay as Pi builds them
+	// (customPrompt would drop them). If Pi rewords the line, nothing matches and the prompt is left alone.
+	pi.on("before_agent_start", (event, ctx) => {
+		if (!findRoot(ctx.cwd) || !event.systemPrompt.includes(PI_PREAMBLE)) return;
+		return { systemPrompt: event.systemPrompt.replace(PI_PREAMBLE, ROLE_PREAMBLE) };
+	});
+
 	pi.on("session_start", async (_event, ctx) => {
 		const root = findRoot(ctx.cwd);
 		if (!root) return;
 		loadEnvFile(root);
-		const py = pythonFor(root);
-		const r = await pi.exec(py, ["-c", "import dotenv, pydantic, pydantic_settings, ruamel.yaml, typer"], { cwd: root, timeout: 10_000 });
-		if (r.code !== 0) ctx.ui.notify(`The skill scripts' Python packages are missing for ${py}. Run \`uv sync\` in ${root}, then restart pi.`, "warning");
+		const probe = () => pi.exec(pythonFor(root), ["-c", "import dotenv, pydantic, pydantic_settings, ruamel.yaml, typer"], { cwd: root, timeout: 10_000 });
+		let r = await probe();
+		// First start: no .venv yet. Create it from this workflow's pyproject.toml and uv.lock, as the gates and
+		// programs' `uv run` would (skipped when $PI_WORKFLOW_PYTHON names the Python to use).
+		if (r.code !== 0 && !process.env.PI_WORKFLOW_PYTHON) {
+			ctx.ui.notify("Setting up this workflow's Python environment (uv sync)...", "info");
+			try {
+				const sync = await pi.exec("uv", ["sync"], { cwd: root, timeout: 300_000 });
+				if (sync.code === 0) r = await probe();
+			} catch {
+				// uv is not installed: the warning below says what to do
+			}
+		}
+		if (r.code !== 0) ctx.ui.notify(`The skill scripts' Python packages are missing for ${pythonFor(root)}. Install uv, run \`uv sync\` in ${root}, then restart pi.`, "warning");
 	});
 
 	/** Show text in the conversation without starting a model turn. */
@@ -346,25 +409,47 @@ export default function workflowAgent(pi: ExtensionAPI) {
 		handler: async (args, ctx) => ask(ctx, RUN_PROMPT(args.trim())),
 	});
 
+	/** Open (or continue) the change branch for a command that edits the workflow; undefined after telling the user why not. */
+	const beginChange = async (ctx: ExtensionContext) => {
+		const root = findRoot(ctx.cwd);
+		if (!root) {
+			ctx.ui.notify("Not inside a workflow folder (no plan.yaml).", "error");
+			return;
+		}
+		if (!ctx.isIdle()) {
+			ctx.ui.notify("The agent is busy; wait for it to finish, then run the command again.", "warning");
+			return;
+		}
+		const r = await runScript(pi, root, "workflow_git.py", ["begin-change"]);
+		if (!r.data?.ok) {
+			ctx.ui.notify(r.data?.error ?? `workflow_git.py begin-change failed: ${(r.stderr || r.stdout).trim().slice(0, 500)}`, "error");
+			return;
+		}
+		return { root, branch: r.data.branch ?? "main", mode: r.data.mode };
+	};
+
 	pi.registerCommand("workflow-revise", {
 		description: "Change this workflow's plan on a branch you review before it reaches main (no run active): /workflow-revise [change]",
 		handler: async (args, ctx) => {
-			const root = findRoot(ctx.cwd);
-			if (!root) {
-				ctx.ui.notify("Not inside a workflow folder (no plan.yaml).", "error");
-				return;
-			}
-			if (!ctx.isIdle()) {
-				ctx.ui.notify("The agent is busy; wait for it to finish, then run the command again.", "warning");
-				return;
-			}
-			const r = await runScript(pi, root, "workflow_git.py", ["begin-change"]);
-			if (!r.data?.ok) {
-				ctx.ui.notify(r.data?.error ?? `workflow_git.py begin-change failed: ${(r.stderr || r.stdout).trim().slice(0, 500)}`, "error");
+			const change = await beginChange(ctx);
+			if (!change) return;
+			activateSubagent(pi); // the critic
+			pi.sendUserMessage(REVISE_PROMPT(args.trim(), change.branch, change.mode));
+		},
+	});
+
+	pi.registerCommand("workflow-improve", {
+		description: "Propose improvements from this workflow's sessions and runs, applied on a change branch you review (no run active): /workflow-improve [focus]",
+		handler: async (args, ctx) => {
+			const change = await beginChange(ctx);
+			if (!change) return;
+			const d = await runScript(pi, change.root, "session_digest.py", ["--workflow", change.root]);
+			if (!d.data?.ok) {
+				ctx.ui.notify(d.data?.error ?? `session_digest.py failed: ${(d.stderr || d.stdout).trim().slice(0, 500)}`, "error");
 				return;
 			}
 			activateSubagent(pi); // the critic
-			pi.sendUserMessage(REVISE_PROMPT(args.trim(), r.data.branch ?? "main", r.data.mode));
+			pi.sendUserMessage(IMPROVE_PROMPT(args.trim(), change.branch, JSON.stringify(d.data)));
 		},
 	});
 

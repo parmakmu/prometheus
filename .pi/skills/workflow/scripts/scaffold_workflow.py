@@ -49,6 +49,8 @@ STATE_FILES = {Path(workflow_params.ENV_FILE): workflow_params.ENV_HEADER}
 OLD_PARAMS = Path(".pi") / "params.yaml"  # where values lived before .env
 OLD_PLAN = Path(".pi") / "plan.yaml"
 PYPROJECT = Path("pyproject.toml")  # the workflow adds its own packages: a refresh keeps them  # where the plan lived before it moved to the workflow root
+ROLE = Path(".pi") / "APPEND_SYSTEM.md"
+LESSONS_HEADING = "## Lessons for this workflow"  # the end of the role file that /workflow-improve writes: a refresh keeps it
 # Files and folders earlier versions wrote that are no longer part of a workflow.
 LEGACY_FILES = [Path(".pi") / "prompts" / name
                 for name in ("start.md", "workflow-run.md", "workflow-status.md", "workflow-replan.md")]
@@ -176,6 +178,10 @@ def main(
         dst.parent.mkdir(parents=True, exist_ok=True)
         text = (TEMPLATE_DIR / rel).read_text(encoding="utf-8")
         text = text.replace("{{slug}}", slug).replace("{{request}}", json.dumps(request))
+        if rel == ROLE and dst.exists():
+            old = dst.read_text(encoding="utf-8")
+            if LESSONS_HEADING in old:
+                text = text.rstrip("\n") + "\n\n" + old[old.index(LESSONS_HEADING):]
         dst.write_text(text, encoding="utf-8")
         written.append(str(rel))
 

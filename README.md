@@ -50,6 +50,7 @@ pi                     # trust the folder
 | `/workflow-run [note]` | plan, continue or run from where it stands |
 | `/workflow-status` | report where it stands; changes nothing |
 | `/workflow-revise [change]` | change the workflow's plan on a branch you review and merge (no run active) |
+| `/workflow-improve [focus]` | propose improvements from the workflow's sessions and runs, applied on a change branch you review (no run active) |
 
 Machine-specific values (folders, pages, accounts, tokens) go in the
 workflow's `.env` (not in git) or the environment pi runs in; `/workflow-run`

@@ -105,6 +105,17 @@ def test_refresh_removes_the_skills_old_copy(env):
     assert (env.b / ".pi" / "skills" / "workflow" / "SKILL.md").is_file()
 
 
+def test_refresh_keeps_the_lessons_section_of_the_role_file(env):
+    role = env.b / ".pi" / "APPEND_SYSTEM.md"
+    original = role.read_text(encoding="utf-8")
+    role.write_text(original + "\n## Lessons for this workflow\n\n- Ask for the folder first.\n", encoding="utf-8")
+    r = env.run_in(env.prometheus, ["scaffold_workflow.py", "invoice-check", "--root", "workflows", "--refresh"])
+    assert r.data["ok"]
+    refreshed = role.read_text(encoding="utf-8")
+    assert refreshed.startswith(original.rstrip("\n")) and refreshed.endswith("- Ask for the folder first.\n")
+    assert refreshed.count("## Lessons for this workflow") == 1
+
+
 def test_refresh_moves_params_yaml_into_env(env):
     assert not (env.b / ".pi" / "params.yaml").exists()
     assert "MAIL_DIR='/old/mail'" in (env.b / ".env").read_text(encoding="utf-8").splitlines()
@@ -804,10 +815,12 @@ def test_workflow_extension_registers_commands_and_tools(env, ext):
         {"cmd": "workflow-run", "args": ""},
         {"tool": "workflow_merge", "params": {"action": "keep"}},
         {"tool": "workflow_record_decision", "params": {"stage": "no-such-stage", "answer": {"a": 1}}},
+        {"systemPrompt": "You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.\n\n<tools>x</tools>"},
+        {"systemPrompt": "Some other opening.\n\n<tools>x</tools>"},
     ]
     report = drive(ext, ext.tmp / ".ext" / "workflow.ts", env.b, steps)
     env.workflow_ext_report = report
-    assert (len(report["commands"]), len(report["tools"])) == (3, 11)
+    assert (len(report["commands"]), len(report["tools"])) == (4, 11)
 
 
 @skip_extensions
@@ -886,3 +899,11 @@ def test_main_guard_when_the_branch_was_switched(env, ext):
         env.git("switch", "-q", branch)
     assert [s["blocked"] for s in report["steps"]] == [True, True, True, False]
     assert branch in report["steps"][0]["reason"]
+
+
+@skip_extensions
+def test_the_coding_assistant_line_is_replaced_and_the_rest_kept(env):
+    swapped, untouched = env.workflow_ext_report["steps"][-2:]
+    assert swapped["systemPrompt"].startswith("You are the workflow agent") and swapped["systemPrompt"].endswith("<tools>x</tools>")
+    assert "coding assistant" not in swapped["systemPrompt"]
+    assert untouched["systemPrompt"] is None  # Pi reworded its line: leave the prompt alone
