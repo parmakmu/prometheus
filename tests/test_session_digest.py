@@ -1,5 +1,6 @@
 """session_digest.py condenses a workflow's Pi sessions and runs into evidence for /workflow-improve."""
 import json
+from datetime import datetime
 
 from conftest import SKILL
 
@@ -40,6 +41,7 @@ def test_digest_reports_failures_repeats_cost_and_unfinished_launches(tmp_path, 
     session = data["sessions"][0]
     assert session["user_messages"] == ["go"]
     assert session["cost_usd"] == 0.04
+    assert datetime.fromisoformat(data["now"]).utcoffset() is not None  # improvements.yaml `date`, with its offset
     assert len(session["failed_or_blocked"]) == 3  # a normal result that mentions "blocked" is not one
     assert session["repeated_calls"][0]["times"] == 3
     run = data["runs"][0]
@@ -67,3 +69,50 @@ def test_sessions_before_the_last_lesson_are_skipped(tmp_path, run_py):
 
     assert [x["file"] for x in data["sessions"]] == ["new.jsonl"]
     assert data["lessons"][0]["decision"] == "rejected"
+
+
+def workflow_with(tmp_path, lessons=None):
+    workflow = tmp_path / "wf"
+    workflow.mkdir()
+    (workflow / "plan.yaml").write_text("version: 1\n")
+    if lessons:
+        (workflow / "improvements.yaml").write_text(lessons)
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    return workflow, sessions
+
+
+def test_a_session_from_the_day_of_the_last_lesson_counts_only_if_it_started_after_it(tmp_path, run_py):
+    workflow, sessions = workflow_with(tmp_path, "- {date: '2026-01-02T12:00:00+00:00', target: gates/g.py, decision: applied}\n")
+    (sessions / "morning.jsonl").write_text(line(type="session", timestamp="2026-01-02T09:00:00Z"))
+    (sessions / "evening.jsonl").write_text(line(type="session", timestamp="2026-01-02T18:00:00Z"))
+
+    data = run_py([SCRIPT, "--workflow", workflow, "--sessions-dir", sessions]).data
+
+    assert [x["file"] for x in data["sessions"]] == ["evening.jsonl"]
+
+
+def test_sessions_that_edit_the_plan_are_not_evidence(tmp_path, run_py):
+    workflow, sessions = workflow_with(tmp_path)
+    for name, first in (("a", "Run this workflow."), ("b", "Improve this workflow from how it actually went. You are on"),
+                        ("c", "Change this workflow's plan following the rules")):
+        (sessions / f"{name}.jsonl").write_text("\n".join([line(type="session", timestamp="2026-01-01T00:00:00Z"),
+                                                          line(type="message", message={"role": "user", "content": first})]))
+
+    data = run_py([SCRIPT, "--workflow", workflow, "--sessions-dir", sessions]).data
+
+    assert [x["file"] for x in data["sessions"]] == ["a.jsonl"] and "plan_session" not in data["sessions"][0]
+
+
+def test_only_the_newest_runs_since_the_last_review_are_digested(tmp_path, run_py):
+    workflow, sessions = workflow_with(tmp_path, "- {date: '2026-01-03T00:00:00+00:00', target: plan.yaml, decision: applied}\n")
+    for n, started in enumerate(["2026-01-01", "2026-01-04", "2026-01-05", "2026-01-06", "2026-01-07"], start=1):
+        run = workflow / "runs" / f"2026-01-0{n}-1"
+        run.mkdir(parents=True)
+        (run / "run.yaml").write_text(f"id: 2026-01-0{n}-1\nstatus: done\nstarted_at: '{started}T10:00:00+00:00'\n")
+
+    data = run_py([SCRIPT, "--workflow", workflow, "--sessions-dir", sessions, "--runs", "3"]).data
+
+    # run 1 predates the lesson; of the four after it, the newest three
+    assert [r["id"] for r in data["runs"]] == ["2026-01-03-1", "2026-01-04-1", "2026-01-05-1"]
+    assert "do not open the raw session files" in data["note"].lower()

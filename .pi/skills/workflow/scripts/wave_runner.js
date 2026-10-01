@@ -8,7 +8,9 @@
 // An item is a pi-subagents child. Its `task` is text, or parts [{text} | {result: key} |
 // {failure: key}] that splice in the result, or the error, of a child launched earlier in this
 // wave; `resumeFrom: key` resumes that child. A layer item with `fix` runs a stage's program as
-// a command (no model); only if that fails is `fix`, a model child, launched to repair it.
+// a command (no model); only if that fails is `fix`, a model child, launched to repair it. A
+// layer item with `reuse` completed in the wave's last launch and is unchanged: its earlier
+// result stands in and it is not launched again (compile_wave.py, reuse_finished).
 //
 // pi-subagents runs this as a script body: top-level await and return, no nested async
 // functions. A child result has `ok` (no status): runs.all returns a failed child as
@@ -21,7 +23,7 @@ function summary() {
   const o = {};
   for (const k of Object.keys(R)) {
     const r = R[k] || {};
-    o[k] = { runId: r.runId ?? null, status: outcome(r), outputReference: r.outputReference ?? null, structuredOutput: r.structuredOutput ?? null };
+    o[k] = { runId: r.runId ?? null, status: outcome(r), outputReference: r.outputReference ?? null, structuredOutput: r.structuredOutput ?? null, reused: r.reused === true };
   }
   return o;
 }
@@ -34,7 +36,7 @@ function text(task) {
 }
 /** The item as pi-subagents takes it: task as text, resumeFrom as the resumed child's run id. */
 function child(item) {
-  const { resumeFrom, fix, ...c } = item;
+  const { resumeFrom, fix, reuse, ...c } = item;
   c.task = text(item.task);
   if (resumeFrom !== undefined) c.resume = R[resumeFrom].runId;
   return c;
@@ -67,7 +69,10 @@ try {
       batches = JSON.parse(R[m.split.key].output).batches;
       items = batches.map((b) => batchChild(m, b));
     } else {
-      items = step.layer.map(child);
+      for (const it of step.layer.filter((x) => x.reuse)) {
+        R[it.key] = { ok: true, reused: true, runId: it.reuse.runId, outputReference: it.reuse.outputReference, structuredOutput: it.reuse.structuredOutput };
+      }
+      items = step.layer.filter((x) => !x.reuse).map(child);
     }
     for (let i = 0; i < items.length; i += W.max_parallel) {
       const part = await runs.all(items.slice(i, i + W.max_parallel));

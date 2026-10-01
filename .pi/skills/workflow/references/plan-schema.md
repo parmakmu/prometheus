@@ -86,6 +86,10 @@ outputs:                  # final deliverables
 - **rule** each output `id` is produced by exactly one stage.
 - **rule** an output with `kind: app` or `message`, or `overwrite: true`, is
   produced by a `side_effect` stage.
+- **rule** the agent of a `side_effect` stage that writes an `app` or
+  `message` output can reach it: a project agent's `tools` list a connector
+  (`mcp:<server>` or `mcp:<server>/<tool>`) or `bash` (for a CLI); *warning*
+  a builtin agent (they get no connector tools, so only a CLI through bash).
 
 ## Agents
 

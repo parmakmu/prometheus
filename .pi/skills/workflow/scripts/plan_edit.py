@@ -1,41 +1,24 @@
 #!/usr/bin/env python3
-"""Change a workflow's plan and params through checked operations.
+"""Change a workflow's plan and params through checked operations (`--help` lists the options).
 
-While a run is active, the run protocol changes plan.yaml only through
-`replan` and `critique`, and the workflow extension blocks direct edits. Commits
-go to the run's branch run/<id> (workflow_git.py), which the user reviews and
-merges (or not) when the run ends. With no run active, the plan changes
-on a change branch (/workflow-revise, workflow_git.py begin-change), by direct
-edits and `critique`.
+While a run is active the plan changes only here (the workflow extension blocks direct edits), and
+commits go to the run's branch run/<id>, which the user reviews when the run ends. With no run
+active, the plan changes on a change branch (/workflow-revise) by direct edits and `critique`.
 
-Usage:
-  plan_edit.py [--workflow DIR] replan   --change FILE_OR_JSON
-  plan_edit.py [--workflow DIR] critique --result FILE_OR_JSON
-  plan_edit.py [--workflow DIR] params   --values FILE_OR_JSON
-
-replan    (an active run is required) applies
-          {stages, remove, findings, questions, answers, note}:
-          - stages: full stage definitions; replaces the stage with the same key
-            or adds a new one. A provisional stage becomes concrete when given
-            without `provisional`. Waves follow from the stages (compile_wave.py).
-          - remove: keys of pending stages to drop.
-          - findings: {unknown id: finding}; questions: new questions;
-            answers: {question id: answer}.
-          Locked: stages that are done or running in the active run, and request, goal,
-          done_when, params, inputs, outputs and agents (a change there is a
-          change for /workflow-revise once no run is active). A
-          side_effect stage stays side_effect with approval: required and
-          cannot be removed. Bumps revision, sets status draft, clears the
-          critique (re-run the critic) and commits on the run's branch.
-critique  records a plan-critic result {run_id, verdict, passes?, findings} for
-          the current revision, then marks the plan ready if it validates (or
-          needs_answers when questions are open), and commits.
-params    sets {name: value} in .env for params the plan declares, except secrets
-          (per machine, not versioned; see workflow_params.py).
+replan    (an active run, no wave running) applies {stages, remove, findings, questions, answers,
+          note}: full stage definitions replace or add stages (one given without `provisional`
+          becomes concrete); `remove` drops pending stages; findings and answers fill unknowns and
+          questions. Locked: stages done or running in the run, and the request, goal, done_when,
+          params, inputs, outputs and agents (a change for /workflow-revise); a side effect stays
+          one. Bumps the revision, sets draft, clears the critique, commits.
+critique  records a plan-critic result {run_id, verdict, passes?, findings} with a digest of the
+          plan it is for, marks the plan ready if it validates (needs_answers with open questions),
+          commits. The run id must be a completed critic child in pi-subagents' records; refused
+          while a wave runs and, once a run exists, on main.
+params    sets {name: value} in .env for params the plan declares, except secrets.
 
 Prints one JSON object with the validation result.
 """
-import io
 import json
 import os
 from pathlib import Path
@@ -45,18 +28,15 @@ import typer
 import workflow_git
 import workflow_params
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
-from utils import emit
-from validate_plan import active_run, rt_yaml, validate
+from runs import active_run, list_runs
+from utils import emit, read_yaml, refuse, report_state, subagent_child, write_yaml
+from validate_plan import plan_digest, validate
 
 PLAN = Path("plan.yaml")
 CRITIC_PASSES = 2  # per replan: a plan fixed after a finding gets a new revision, not a new budget
 LOCKED = ("request", "goal", "done_when", "params", "inputs", "outputs", "agents")
 REPLAN_KEYS = {"stages", "remove", "findings", "questions", "answers", "note"}
 app = typer.Typer(add_completion=False)
-
-
-def refuse(errors):
-    emit({"ok": False, "errors": errors if isinstance(errors, list) else [errors]}, 1)
 
 
 def read_json(arg):
@@ -83,24 +63,11 @@ def styled(value, key=None):
     return value
 
 
-def load(path):
-    return rt_yaml().load(Path(path).read_text(encoding="utf-8"))
-
-
-def save(path, data):
-    buf = io.StringIO()
-    rt_yaml().dump(data, buf)
-    path = Path(path)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(buf.getvalue(), encoding="utf-8")
-    tmp.replace(path)
-
-
-def commit(message):
-    """Commit the workflow (the cwd; on the active run's branch during a run); (commit, note).
-    A git failure is reported, not fatal."""
+def commit(message, run):
+    """Commit the workflow (on the run's branch during a run); (commit, note). A git failure is
+    reported, not fatal."""
     try:
-        return workflow_git.commit(Path.cwd(), message)
+        return workflow_git.commit(Path.cwd(), message, to=run.branch if run else None)
     except RuntimeError as exc:
         return None, str(exc)
 
@@ -122,12 +89,13 @@ def main(workflow: Annotated[str, typer.Option(help="workflow root")] = "."):
     os.chdir(workflow)
     if not PLAN.is_file():
         refuse(f"{Path(workflow).resolve()} is not a workflow (no plan.yaml)")
+    report_state(Path.cwd())
 
 
 @app.command()
 def replan(change: Annotated[str, typer.Option(help="the change as a JSON object, or a file holding it")]):
     """Change pending stages after discovery."""
-    plan, c = load(PLAN), read_json(change)
+    plan, c = read_yaml(PLAN, {}), read_json(change)
     if not isinstance(c, dict):
         refuse("the change must be a JSON object")
     extra = sorted(set(c) - REPLAN_KEYS)
@@ -138,13 +106,15 @@ def replan(change: Annotated[str, typer.Option(help="the change as a JSON object
                f"{', '.join(LOCKED)} are locked: change them with /workflow-revise once no run is active")
 
     stages = plan.get("stages") or []
-    act = active_run(Path.cwd())
-    if act is None:
+    run = active_run(Path.cwd())
+    if run is None:
         refuse("no run is active: the replan tools work only during a run. Before the first run (on main) or on a "
                "change branch, edit plan.yaml directly; after a run, start a change with /workflow-revise")
-    if conflict := workflow_git.branch_conflict(Path.cwd()):
+    if conflict := workflow_git.branch_conflict(Path.cwd(), run.branch):
         refuse(conflict)
-    frozen = set(act[2].get("stages") or {})
+    if run.wave_running:
+        refuse(f"a wave of run {run.id} is running: replan after workflow_log_finish")
+    frozen = set(run.state.get("stages") or {})
     by_key = {s.get("key"): s for s in stages}
     unknowns = {u.get("id"): u for u in plan.get("unknowns") or []}
     questions = {q.get("id"): q for q in plan.get("questions") or []}
@@ -152,7 +122,7 @@ def replan(change: Annotated[str, typer.Option(help="the change as a JSON object
     problems = []
     for key in c.get("remove") or []:
         if key in frozen:
-            problems.append(f"stage '{key}' is done or running in run {act[0]}; it is history")
+            problems.append(f"stage '{key}' is done or running in run {run.id}; it is history")
         elif key not in by_key:
             problems.append(f"no stage '{key}' to remove")
         elif by_key[key].get("kind") == "side_effect":
@@ -162,7 +132,7 @@ def replan(change: Annotated[str, typer.Option(help="the change as a JSON object
         if not key:
             problems.append("each stage needs a key"); continue
         if key in frozen:
-            problems.append(f"stage '{key}' is done or running in run {act[0]}; it is history")
+            problems.append(f"stage '{key}' is done or running in run {run.id}; it is history")
         elif "status" in st:
             problems.append(f"stage '{key}': status belongs to the run, not the plan")
         old = by_key.get(key)
@@ -172,7 +142,7 @@ def replan(change: Annotated[str, typer.Option(help="the change as a JSON object
     problems += [f"no question '{q}'" for q in c.get("answers") or {} if q not in questions]
     problems += [f"question '{q.get('id')}' already exists" for q in c.get("questions") or [] if q.get("id") in questions]
     if problems:
-        refuse(problems)
+        refuse("; ".join(problems))
 
     rev = plan.get("revision", 1)
     previous = workflow_git.head(Path.cwd())
@@ -193,34 +163,50 @@ def replan(change: Annotated[str, typer.Option(help="the change as a JSON object
     plan["revision"] = rev + 1
     plan["status"] = "draft"
     plan.pop("critique", None)
-    save(PLAN, plan)
-    new, git_note = commit(f"r{rev + 1} draft: replan" + (f": {c['note']}" if c.get("note") else ""))
+    write_yaml(PLAN, plan)
+    new, git_note = commit(f"r{rev + 1} draft: replan" + (f": {c['note']}" if c.get("note") else ""), run)
     emit({"ok": True, "previous_commit": previous, "commit": new, "git_note": git_note, "note": c.get("note"), **report(plan)})
 
 
 @app.command()
 def critique(result: Annotated[str, typer.Option(help="the critic's result as JSON {run_id, verdict, passes?, findings}, or a file")]):
     """Record a plan-critic result and mark the plan ready if it validates."""
-    plan, c = load(PLAN), read_json(result)
+    plan, c = read_yaml(PLAN, {}), read_json(result)
     if not isinstance(c, dict) or not c.get("run_id") or not c.get("verdict"):
         refuse("the result needs run_id and verdict")
     if not isinstance(c.get("passes", 1), int) or not 1 <= c.get("passes", 1) <= CRITIC_PASSES:
         refuse(f"passes is 1 or 2: at most {CRITIC_PASSES} critic passes per revision, and per replan during a run. "
                "Do not launch another; record the last pass with each remaining finding rejected and a note why")
-    if conflict := workflow_git.branch_conflict(Path.cwd()):
+    run = active_run(Path.cwd())
+    if run and (conflict := workflow_git.branch_conflict(Path.cwd(), run.branch)):
         refuse(conflict)
-    act = active_run(Path.cwd())
-    if act:  # a replan: count the critic results recorded since the last wave launched
-        _rid, run_dir, state = act
-        waves = len(state.get("launches") or [])
-        seen = [e.get("run_id") for e in state.get("critiques") or [] if e.get("after_waves") == waves]
+    if run and run.wave_running:
+        refuse(f"a wave of run {run.id} is running: the critic reviews a replan, which waits for workflow_log_finish")
+    if run is None and workflow_git.branch(Path.cwd()) == workflow_git.MAIN and list_runs(Path.cwd()):
+        refuse("main changes only by a reviewed merge once a run exists: change the plan with /workflow-revise "
+               "(a branch), and record the critic there")
+    child = subagent_child(c["run_id"])
+    if child is None:
+        refuse(f"pi-subagents has no record of a critic run {c['run_id']}: record the run id of the plan-critic child "
+               "that reviewed this plan (critic-contract.md), after it completed")
+    if child.get("state") not in ("completed", "complete") or (child.get("agent") or "plan-critic") != c.get("agent", "plan-critic"):
+        refuse(f"run {c['run_id']} is a {child.get('agent')} child in state {child.get('state')}, not a completed "
+               f"{c.get('agent', 'plan-critic')} run: record the critic's result only once it has completed")
+    if run:  # a replan: count the critic results recorded since the last wave launched
+        waves = len(run.state.get("launches") or [])
+        seen = [e.get("run_id") for e in run.state.get("critiques") or [] if e.get("after_waves") == waves]
         if c["run_id"] not in seen and len(seen) >= CRITIC_PASSES:
             refuse(f"this replan already had {CRITIC_PASSES} critic passes ({', '.join(seen)}); do not launch another. "
                    f"Record the last one again (run_id {seen[-1]}) with each remaining finding rejected and a note why, "
                    "tell the user about any blocking one, and continue")
         if c["run_id"] not in seen:
-            state.setdefault("critiques", []).append({"run_id": c["run_id"], "after_waves": waves})
-            save(run_dir / "run.yaml", state)
+            run.state.setdefault("critiques", []).append({"run_id": c["run_id"], "after_waves": waves})
+            run.save()
+    if run is None and workflow_git.is_change_branch(workflow_git.branch(Path.cwd()) or ""):
+        # a change's first critique of an edited plan makes it a new revision (begin-change leaves the plan as is)
+        base = workflow_git.main_plan(Path.cwd()) or {}
+        if plan.get("revision", 1) == base.get("revision", 1) and plan_digest(plan) != plan_digest(base):
+            plan["revision"] = plan.get("revision", 1) + 1
     plan["critique"] = {
         "agent": c.get("agent", "plan-critic"),
         "run_id": c["run_id"],
@@ -234,15 +220,17 @@ def critique(result: Annotated[str, typer.Option(help="the critic's result as JS
     if not r["valid"]:
         plan["status"] = "needs_answers" if r["open_questions"] else "draft"
         r = report(plan)
-    save(PLAN, plan)
-    new, git_note = commit(f"r{plan.get('revision', 1)} {plan['status']}: critic {c['verdict']}")
+    # the plan the critic saw: an edit after this record makes it unready (validate_plan.check_ready)
+    plan["critique"]["plan_digest"] = plan_digest(plan)
+    write_yaml(PLAN, plan)
+    new, git_note = commit(f"r{plan.get('revision', 1)} {plan['status']}: critic {c['verdict']}", run)
     emit({"ok": True, "ready": plan["status"] == "ready", "commit": new, "git_note": git_note, **r})
 
 
 @app.command()
 def params(values: Annotated[str, typer.Option(help="{name: value} as JSON, or a file")]):
     """Set values for params that are not secrets in .env (workflow_params.py)."""
-    plan, v = load(PLAN), read_json(values)
+    plan, v = read_yaml(PLAN, {}), read_json(values)
     if not isinstance(v, dict):
         refuse("values must be a JSON object {name: value}")
     problems = workflow_params.set_values(Path.cwd(), plan.get("params") or {}, v)

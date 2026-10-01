@@ -7,7 +7,7 @@ Usage:
   validate_plan.py PLAN.yaml [--agents a,b,c] [--external x,y] [--workflow DIR]
 
 In a workflow, stage status comes from the active run (runs/<id>/run.yaml; see
-"Runs" below): the plan is reusable, each run is one execution of it.
+runs.py): the plan is reusable, each run is one execution of it.
 
 --agents    agent names from subagent({ action: "list" }); overrides the
             plan's `agents.available` list
@@ -24,6 +24,7 @@ Prints one JSON object {valid, status, errors, warnings, summary} and exits
 Requires typer, pydantic and ruamel.yaml (`uv sync`).
 """
 import ast
+import hashlib
 import json
 import re
 import sys
@@ -44,79 +45,27 @@ from pydantic import (
 )
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
+from runs import active_run, last_run
+from utils import load_yaml
 
 
-def rt_yaml():
-    """Round-trip YAML in the plans' house style (quotes kept, no line wrapping,
-    lists as `  - key:`), so a load + dump changes only what was edited. It rejects
-    repeated keys: a plain loader keeps the last one silently, so an edit that
-    drops a `- id:` line would merge two list items."""
-    y = YAML()
-    y.preserve_quotes = True
-    y.width = 4096
-    y.indent(mapping=2, sequence=4, offset=2)
-    return y
+def plan_digest(plan):
+    """A hash of the plan's content, not its status or critique: what a critic's result is for."""
+    content = {k: v for k, v in plan.items() if k not in ("status", "critique")}
+    return hashlib.sha256(json.dumps(content, sort_keys=True, default=str, ensure_ascii=False).encode()).hexdigest()[:16]
 
 
-def load_yaml(src):
-    """Parse YAML text or an open file (round-trip, see rt_yaml)."""
-    return rt_yaml().load(src)
-
-
-# --- runs ---------------------------------------------------------------------
-# Each execution of a workflow's plan is a folder runs/<id>/ (id: <date>-<n>):
-#   run.yaml    id, status (active | done | stopped), revision, started_at,
-#               finished_at, note, stages {key: running | done} (absent = pending),
-#               launches [one entry per wave launch]; written by run_log.py;
-#               critiques [{run_id, after_waves}]: critic results a replan recorded
-#               (plan_edit.py caps them per replan)
-#   work/       the children's cwd: stage outputs, decisions, batches, scripts
-#   .compiled/  compiled waves and their results
-# Relative param values (an `outputs` default, say) resolve against runs/<id>/.
-# At most one run is active; /workflow-run continues it.
-RUNS = "runs"
-RUN_ID_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})-(\d+)$")
-
-
-def list_runs(workflow_root: Path):
-    """[(id, dir)] of the workflow's runs, oldest first."""
-    base = Path(workflow_root) / RUNS
-    names = [p.name for p in base.iterdir() if (p / "run.yaml").is_file()] if base.is_dir() else []
-    key = lambda n: (m.group(1), int(m.group(2))) if (m := RUN_ID_RE.match(n)) else (n, 0)
-    return [(n, base / n) for n in sorted(names, key=key)]
-
-
-def read_run(run_dir: Path):
-    state = load_yaml((Path(run_dir) / "run.yaml").read_text(encoding="utf-8"))
-    return state if isinstance(state, dict) else {}
-
-
-def last_run(workflow_root):
-    """The latest run in brief (so the parent need not look in runs/), or None."""
-    runs = list_runs(workflow_root)
-    if not runs:
-        return None
-    rid, d = runs[-1]
-    try:
-        state = read_run(d)
-    except (OSError, YAMLError):
-        state = {}
-    launches = state.get("launches") or []
-    last = launches[-1] if launches else {}
-    return {"id": rid, "status": state.get("status"), "started_at": state.get("started_at"),
-            "finished_at": state.get("finished_at"), "note": state.get("note"), "runs": len(runs),
-            "last_wave": {"wave": last.get("wave"), "status": last.get("status")} if last else None}
-
-
-def active_run(workflow_root):
-    """(id, dir, state) of the run /workflow-run continues, or None."""
-    for rid, d in reversed(list_runs(workflow_root)):
-        try:
-            state = read_run(d)
-        except (OSError, YAMLError):
-            continue
-        if state.get("status") == "active":
-            return rid, d, state
+def check_ready(plan, base=None):
+    """Why the plan cannot run, or None: its status is not ready, or it changed after the critic's
+    result was recorded (critique.plan_digest). `base`: main's plan, on a branch; a plan that differs
+    from it needs a critique of exactly this plan, even when its critique predates plan_digest."""
+    if plan.get("status") != "ready":
+        return f"the plan is {plan.get('status')}, not ready: finish it first (the critic, then workflow_record_critique)"
+    critique = plan.get("critique") if isinstance(plan.get("critique"), dict) else {}
+    seen, digest = critique.get("plan_digest"), plan_digest(plan)
+    if seen != digest and (seen or (base is not None and plan_digest(base) != digest)):
+        return ("plan.yaml changed after the critic's result was recorded, so the critic has not seen this plan: "
+                "run the critic on it and record the result (workflow_record_critique)")
     return None
 
 
@@ -266,6 +215,7 @@ class Critique(M):
     verdict: Literal["pass", "revise", "ask_user"]
     passes: Annotated[int, Field(ge=1, le=2)] = 1
     revision: int | None = None
+    plan_digest: str | None = None  # plan_digest() of the plan it was recorded for (plan_edit.py critique)
     findings: list[Finding] = []
 
 
@@ -458,23 +408,39 @@ def duplicates(values):
     return dup
 
 
-def read_frontmatter_name(path: Path):
+def read_frontmatter(path: Path):
+    """An agent file's frontmatter as a mapping ({} when it has none or cannot be read)."""
     try:
         text = Path(path).read_text(encoding="utf-8")
     except OSError:
-        return None
+        return {}
     end = text.find("\n---", 3) if text.startswith("---") else -1
     if end == -1:
-        return None
+        return {}
     try:
         meta = YAML(typ="safe").load(text[3:end]) or {}
     except YAMLError:
-        return None
-    return meta.get("name") if isinstance(meta, dict) else None
+        return {}
+    return meta if isinstance(meta, dict) else {}
+
+
+def project_agents(root: Path):
+    """{name: frontmatter} of the agents in the workflow's .pi/agents/."""
+    out = {}
+    for path in (Path(root) / ".pi" / "agents").rglob("*.md"):
+        meta = read_frontmatter(path)
+        out[meta.get("name") or path.stem] = meta
+    return out
 
 
 def project_agent_names(root: Path):
-    return {read_frontmatter_name(p) or p.stem for p in (Path(root) / ".pi" / "agents").rglob("*.md")}
+    return set(project_agents(root))
+
+
+def agent_tools(meta):
+    """An agent's `tools` (a list, or a comma-separated string) as a list of names."""
+    tools = meta.get("tools")
+    return [str(x).strip() for x in (tools.split(",") if isinstance(tools, str) else tools or []) if str(x).strip()]
 
 
 def load_agents(plan, cli_agents, cli_external, warn):
@@ -508,7 +474,7 @@ def validate(raw, cli_agents=None, cli_external=None, workflow_root=None, run_st
     except ValidationError as exc:
         return shape_errors(exc, raw), [], {}
     c = Checker(plan, raw, cli_agents, cli_external, workflow_root, run_state)
-    for rules in (c.limits, c.inputs, c.stage_index, c.graph, c.stages, c.outputs, c.run_and_waves,
+    for rules in (c.limits, c.inputs, c.stage_index, c.graph, c.stages, c.outputs, c.side_effect_reach, c.run_and_waves,
                   c.unknowns, c.assumptions, c.critique, c.questions, c.params, c.workflow):
         rules()
     return c.errors, c.warnings, c.summary()
@@ -810,6 +776,27 @@ class Checker:
             self.err(f"{where}: batch {b} exceeds limits.max_batch {max_batch}")
 
     # --- the rest of the plan ---------------------------------------------------------
+    def side_effect_reach(self):
+        """A side effect that writes outside the workflow (an `app` or `message` output) needs an agent
+        that can reach it: a connector (`mcp:` tools) or, for a CLI, bash. Builtin agents get neither
+        extension nor MCP tools (a strict allowlist), so they can reach it only with bash."""
+        outside = {o.id: o for o in self.plan.outputs if o.kind in ("app", "message")}
+        defined = project_agents(self.workflow_root) if self.workflow_root else {}
+        for key, st in self.by_key.items():
+            targets = [outside[o.id].location for o in st.out or [] if o.id in outside]
+            if st.kind != "side_effect" or not targets or not st.agent:
+                continue
+            where = f"stage '{key}'"
+            if st.agent in defined:
+                tools = agent_tools(defined[st.agent])
+                if tools and not any(x.startswith("mcp:") for x in tools) and "bash" not in tools:
+                    self.err(f"{where}: agent '{st.agent}' cannot reach {', '.join(targets)}: its tools list no connector "
+                             "(mcp:<server> or mcp:<server>/<tool>) and no bash")
+            elif self.agent_sources.get(st.agent, "builtin") == "builtin":
+                self.warn(f"{where}: builtin agent '{st.agent}' writes {', '.join(targets)} but has no connector tools "
+                          "(builtin agents get no extension or MCP tools), so it can reach it only with a CLI through bash. "
+                          "For a connector, use a project agent in .pi/agents/ whose tools list it (mcp:<server>)")
+
     def outputs(self):
         for out in self.plan.outputs:
             where = f"output '{out.id}'"
@@ -833,9 +820,8 @@ class Checker:
                 err(f"stage '{key}': status belongs to the run (runs/<id>/run.yaml), not the plan; remove it")
         run_id, rs = None, self.run_state
         if rs is None and self.workflow_root:
-            act = active_run(self.workflow_root)
-            if act:
-                run_id, _, rs = act
+            if run := active_run(self.workflow_root):
+                run_id, rs = run.id, run.state
         elif rs is not None:
             run_id = rs.get("id")
         self.run_id, self.rs = run_id, rs or {}
@@ -929,6 +915,8 @@ class Checker:
             crev = plan.revision if c.revision is None else c.revision
             if crev != plan.revision:
                 self.warn(f"critique is for revision {crev} but the plan is at revision {plan.revision}; re-run the critic after replanning")
+            if plan.status == "ready" and c.plan_digest and (why := check_ready(self.raw)):
+                err(why)
             for fid in duplicates(f.id for f in c.findings):
                 err(f"critic finding '{fid}': duplicate id")
             for f in c.findings:
@@ -1096,12 +1084,17 @@ def main(
         if (parent / ".pi").is_dir():
             workflow_root = parent
     errors, warnings, summary = validate(plan, agents, external, workflow_root)
+    where = None
+    if workflow_root is not None:
+        from workflow_state import state  # imported late: it imports this module
+        where = state(workflow_root)
     print(json.dumps({
         "valid": not errors,
         "status": plan.get("status") if isinstance(plan, dict) else None,
         "errors": errors,
         "warnings": warnings,
         "summary": summary,
+        "state": where,
     }, indent=2))
     sys.exit(0 if not errors else 1)
 

@@ -4,7 +4,7 @@
 Usage:
   scaffold_workflow.py SLUG [--root workflows] [--request TEXT] [--refresh]
 
-Creates <root>/<slug>/ from templates/workflow/ (everything in it, with
+Creates <root>/<slug>/ from templates/workflow/ (at the repo root, outside the skill and .pi) (everything in it, with
 {{slug}} and {{request}} filled in) plus:
   runs/                          one folder per run: state, work files, outputs (see validate_plan.py)
   gates/                         gate scripts, written while planning
@@ -22,7 +22,12 @@ workflow. It never touches plan.yaml, .env, runs/, gates/, scripts/ or agents
 the plan added. Values an older workflow kept in .pi/params.yaml move to .env.
 
 The workflow is its own git repo (workflow_git.py); both modes commit the result.
-A refresh refuses while a wave of the workflow's active run is running.
+--if-stale (with --refresh) skips a workflow whose skill copy already has this Prometheus's version
+(prometheus_version.py: pyproject version + commit, and a content hash when the skill has uncommitted
+changes); the version is written to .pi/skills/workflow/VERSION and goes in the commit message.
+A refresh refuses while the workflow has an active run (it rewrites the skill copy, including the
+batch tool a running map stage uses, and its commit would land on the run branch) or while a run
+or change branch is checked out for review.
 
 Prints one JSON object (with `today`, the date for the plan's agents.checked).
 """
@@ -34,14 +39,18 @@ import subprocess
 from pathlib import Path
 from typing import Annotated
 
+import prometheus_version
 import typer
 import workflow_git
 import workflow_params
 from ruamel.yaml import YAML
+from runs import active_run
+from utils import refuse
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 SKILL_DIR = SCRIPT_DIR.parent
-TEMPLATE_DIR = SKILL_DIR / "templates" / "workflow"
+PROMETHEUS_DIR = SKILL_DIR.parents[2]  # .pi/skills/workflow -> the repo root; the templates are not part of the skill
+TEMPLATE_DIR = PROMETHEUS_DIR / "templates" / "workflow"
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store")
 PLAN = Path("plan.yaml")
@@ -66,9 +75,15 @@ def template_files() -> list[Path]:
     )
 
 
+def version_key(text: str):
+    """'3.14' -> (3, 14), for comparing Python versions."""
+    return tuple(int(part) for part in text.split(".") if part.isdigit())
+
+
 def add_skill_packages(path: Path, template: str):
-    """Add the template's dependencies that the workflow's pyproject.toml lacks, keeping the
-    packages the workflow added; the names added."""
+    """Bring the workflow's pyproject.toml up to the template: its dependencies the workflow lacks
+    (keeping the packages the workflow added), and its requires-python when the workflow's `>=`
+    floor is lower (a higher one is the workflow's own); what changed."""
     import tomllib
     text = path.read_text(encoding="utf-8")
     try:
@@ -79,11 +94,21 @@ def add_skill_packages(path: Path, template: str):
         return re.split(r"[\s<>=!~;\[(]", dep, maxsplit=1)[0].lower().replace("_", "-")
 
     names = {name(d) for d in have}
-    missing = [d for d in tomllib.loads(template)["project"]["dependencies"] if name(d) not in names]
+    wanted = tomllib.loads(template)["project"]
+    missing = [d for d in wanted["dependencies"] if name(d) not in names]
+    changes = list(missing)
     if missing:
         deps = "dependencies = [" + ", ".join(f'"{d}"' for d in [*have, *missing]) + "]"
-        path.write_text(re.sub(r"(?ms)^dependencies\s*=\s*\[.*?\]", lambda _m: deps, text, count=1), encoding="utf-8")
-    return missing
+        text = re.sub(r"(?ms)^dependencies\s*=\s*\[.*?\]", lambda _m: deps, text, count=1)
+    # raise a lower `>=` floor to the template's; keep a higher one, or any other specifier the workflow chose
+    have_floor = re.search(r'(?m)^requires-python\s*=\s*"\s*>=\s*([\d.]+)\s*"\s*$', text)
+    if have_floor and version_key(have_floor.group(1)) < version_key(wanted["requires-python"].lstrip(">= ")):
+        floor = f'requires-python = "{wanted["requires-python"]}"'
+        text = text[:have_floor.start()] + floor + text[have_floor.end():]
+        changes.append(floor)
+    if changes:
+        path.write_text(text, encoding="utf-8")
+    return changes
 
 
 def lock_packages(workflow: Path):
@@ -122,30 +147,43 @@ def move_old_params(workflow: Path):
     return moved
 
 
+def refresh_refusal(workflow: Path):
+    """Why a refresh must wait, or None: its commit would land on a run or change branch."""
+    if run := active_run(workflow):
+        return f"has an active run ({run.id}); refresh it once the run has finished and its branch is reviewed"
+    if (b := workflow_git.branch(workflow)) and b != workflow_git.MAIN:
+        return f"has branch {b} checked out; refresh it after merging, keeping or discarding that branch"
+    return None
+
+
 def main(
     slug: str,
     root: Annotated[str, typer.Option(help="folder that holds workflows")] = "workflows",
     request: Annotated[str, typer.Option(help="the user's request, verbatim")] = "",
     refresh: Annotated[bool, typer.Option("--refresh", help="update template files and the skill copy")] = False,
+    if_stale: Annotated[bool, typer.Option("--if-stale", help="with --refresh: do nothing when the workflow already has this Prometheus version")] = False,
 ):
     """Create or refresh a workflow."""
 
     if not SLUG_RE.match(slug):
-        print(json.dumps({"ok": False, "error": f"slug must match {SLUG_RE.pattern}"}))
-        raise typer.Exit(2)
+        refuse(f"slug must match {SLUG_RE.pattern}", 2)
+    if not TEMPLATE_DIR.is_dir():  # a workflow's copy of the skill has no templates: they are Prometheus's
+        refuse(f"no workflow template at {TEMPLATE_DIR}: create and refresh workflows from Prometheus", 2)
     workflow = Path(root) / slug
     moved_plan = refresh and (workflow / OLD_PLAN).exists() and not (workflow / PLAN).exists()
     exists = (workflow / PLAN).exists() or moved_plan
     if exists and not refresh:
-        print(json.dumps({"ok": False, "error": f"{workflow} already has a plan; use --refresh to update it or pick another slug"}))
-        raise typer.Exit(1)
+        refuse(f"{workflow} already has a plan; use --refresh to update it or pick another slug", 1)
     if refresh and not exists:
-        print(json.dumps({"ok": False, "error": f"{workflow} has no plan.yaml to refresh"}))
-        raise typer.Exit(1)
-    if refresh and workflow_git.wave_running(workflow.resolve()):
-        # the refresh rewrites the skill copy, including the batch tool a running map stage uses
-        print(json.dumps({"ok": False, "error": f"{workflow} has a wave running; refresh it once the wave has finished"}))
-        raise typer.Exit(1)
+        refuse(f"{workflow} has no plan.yaml to refresh", 1)
+    if refresh and (why := refresh_refusal(workflow.resolve())):
+        refuse(f"{workflow} {why}", 1)
+    version = prometheus_version.current()
+    was = prometheus_version.installed(workflow) if refresh else None
+    if refresh and if_stale and was and was == version:
+        print(json.dumps({"ok": True, "workflow": str(workflow.resolve()), "mode": "refresh", "prometheus_version": version,
+                          "skipped": f"already at Prometheus {version}"}))
+        raise typer.Exit(0)
 
     written, kept, removed = [], [], []
     if moved_plan:
@@ -173,7 +211,7 @@ def main(
             continue
         if rel == PYPROJECT and dst.exists():
             added = add_skill_packages(dst, (TEMPLATE_DIR / rel).read_text(encoding="utf-8"))
-            (written if added else kept).append(str(rel) + (f" (added {', '.join(added)})" if added else ""))
+            (written if added else kept).append(str(rel) + (f" (updated {', '.join(added)})" if added else ""))
             continue
         dst.parent.mkdir(parents=True, exist_ok=True)
         text = (TEMPLATE_DIR / rel).read_text(encoding="utf-8")
@@ -185,12 +223,13 @@ def main(
         dst.write_text(text, encoding="utf-8")
         written.append(str(rel))
 
-    skill_dst = workflow / ".pi" / "skills" / "workflow"
-    if skill_dst.resolve() != SKILL_DIR.resolve():  # not when refreshing from the workflow's own copy
-        if skill_dst.exists():
-            shutil.rmtree(skill_dst)
-        shutil.copytree(SKILL_DIR, skill_dst, ignore=IGNORE)
-        written.append(str(Path(".pi") / "skills" / "workflow") + "/")
+    skill_dst = workflow / ".pi" / "skills" / "workflow"  # never this script's own copy: that has no templates
+    if skill_dst.exists():
+        shutil.rmtree(skill_dst)
+    shutil.copytree(SKILL_DIR, skill_dst, ignore=IGNORE)
+    if version:
+        (skill_dst / prometheus_version.VERSION_FILE).write_text(version + "\n", encoding="utf-8")
+    written.append(str(Path(".pi") / "skills" / "workflow") + "/")
 
     moved = move_old_params(workflow)
     if moved is not None:
@@ -212,7 +251,9 @@ def main(
         written.append(locked)
     note = None
     try:
-        commit, note = workflow_git.commit(str(workflow_abs), "Refresh from Prometheus" if refresh else f"Create workflow {slug}")
+        label = f" {version}" if version else ""
+        moved_from = f" (was {was})" if was and was != version else ""
+        commit, note = workflow_git.commit(str(workflow_abs), f"Refresh from Prometheus{label}{moved_from}" if refresh else f"Create workflow {slug} with Prometheus{label}")
     except RuntimeError as exc:
         commit, note = None, str(exc)
     print(json.dumps({
@@ -221,6 +262,8 @@ def main(
         "commit": commit,
         "git_note": note,
         "mode": "refresh" if refresh else "create",
+        "prometheus_version": version,
+        "was": was,
         "written": written,
         "kept": kept,
         "removed": removed,

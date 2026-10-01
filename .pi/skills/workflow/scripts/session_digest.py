@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Condense a workflow's Pi sessions and runs into evidence for /workflow-improve.
 
-Usage: session_digest.py --workflow DIR [--sessions-dir DIR] [--sessions 5]
+Usage: session_digest.py --workflow DIR [--sessions-dir DIR] [--sessions 5] [--runs 3]
 
-Sessions older than the newest entry of the workflow's improvements.yaml (the
-lessons /workflow-improve saved) were already reviewed and are skipped; the
-entries are returned as `lessons`.
+Only what is new: sessions that started, and runs that started, after the newest
+entry of the workflow's improvements.yaml (the lessons /workflow-improve saved)
+were not reviewed yet; the entries are returned as `lessons`. A lesson's `date`
+is a timestamp (an old one may be a bare date, read as the start of that day).
+Sessions of /workflow-improve and /workflow-revise are skipped: they change the
+plan, they are not evidence of how it ran.
 
-Pi keeps one JSONL per session under ~/.pi/agent/sessions/--<cwd with / as ->--/.
+Pi keeps one JSONL per session under <agent dir>/sessions/--<cwd with / as ->--/ (the agent dir is
+$PI_CODING_AGENT_DIR, else ~/.pi/agent).
 Prints one JSON object: `sessions` (newest first, at most --sessions), each with
 its user messages, tool use and cost, the failed or blocked tool results, and the
 calls repeated three times or more; `runs` from runs/*/run.yaml (status, cost,
@@ -16,22 +20,35 @@ model opens the files they point at. Nothing is changed.
 """
 import json
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 
+import prometheus_version
 import typer
-from utils import emit, load_yaml_safe
-from validate_plan import list_runs
+from runs import list_runs
+from utils import emit, pi_agent_dir, read_yaml
 
 SNIPPET = 240  # characters kept of a message, argument or result
 FAILURE = ("traceback", "exit code", "command not found", "no module named", "permission denied")
 REPEATS = 3
 LESSONS = "improvements.yaml"
 LIMIT = 12  # entries kept per signal per session
+# how the commands' prompts begin (templates/workflow/.pi/extensions/workflow/index.ts, at the repo root): sessions that edit the plan
+PLAN_SESSIONS = ("Improve this workflow from how it actually went", "Change this workflow's plan following")
 
 
 def default_sessions_dir(workflow: Path) -> Path:
-    return Path.home() / ".pi" / "agent" / "sessions" / f"--{str(workflow).strip('/').replace('/', '-')}--"
+    return pi_agent_dir() / "sessions" / f"--{str(workflow).strip('/').replace('/', '-')}--"
+
+
+def moment(value):
+    """A timestamp or bare date as an aware datetime (a bare date is the start of that day, local time); None if unreadable."""
+    try:
+        when = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return when if when.tzinfo else when.astimezone()
 
 
 def clip(text, size=SNIPPET):
@@ -45,15 +62,26 @@ def text_of(content):
     return " ".join(p.get("text", "") for p in content or [] if isinstance(p, dict) and p.get("type") == "text")
 
 
+def session_start(path: Path):
+    """When a session started, from its first line (Pi's session header) only; None if it has none."""
+    try:
+        with path.open(encoding="utf-8", errors="replace") as f:
+            head = json.loads(f.readline())
+    except (OSError, ValueError):
+        return None
+    return head.get("timestamp") if isinstance(head, dict) and head.get("type") == "session" else None
+
+
 def digest_session(path: Path):
     calls, tools, args_seen, failures, users = {}, Counter(), Counter(), [], []
-    cost = turns = 0
+    cost = turns = records = 0
     started = model = None
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         try:
             entry = json.loads(line)
         except ValueError:
             continue
+        records += 1
         kind, msg = entry.get("type"), entry.get("message") or {}
         if kind == "session":
             started = entry.get("timestamp")
@@ -80,7 +108,9 @@ def digest_session(path: Path):
                 failures.append({"tool": name, "call": args, "result": clip(text), "at": entry.get("timestamp")})
     return {
         "file": path.name,
+        "plan_session": bool(users) and users[0].startswith(PLAN_SESSIONS),
         "started": started,
+        "records": records,
         "model": model,
         "assistant_turns": turns,
         "cost_usd": round(cost, 4),
@@ -92,7 +122,7 @@ def digest_session(path: Path):
 
 
 def digest_run(run_id: str, run_dir: Path):
-    state = load_yaml_safe(run_dir / "run.yaml", {})
+    state = read_yaml(run_dir / "run.yaml", {})
     launches = [x for x in state.get("launches") or [] if isinstance(x, dict)]
     waves = Counter(x.get("wave") for x in launches)
     return {
@@ -112,23 +142,40 @@ def digest_run(run_id: str, run_dir: Path):
 def main(
     workflow: Annotated[Path, typer.Option(help="The workflow folder, workflows/<slug>.")],
     sessions_dir: Annotated[Path | None, typer.Option(help="Pi's session folder for the workflow; default from its path.")] = None,
-    sessions: Annotated[int, typer.Option(help="How many of the newest sessions to read.")] = 5,
+    sessions: Annotated[int, typer.Option(help="How many of the newest unreviewed sessions to read.")] = 5,
+    runs: Annotated[int, typer.Option(help="How many of the newest unreviewed runs to read.")] = 3,
 ):
     workflow = workflow.resolve()
     if not (workflow / "plan.yaml").is_file():
         emit({"ok": False, "error": f"{workflow} is not a workflow"}, 1)
     folder = sessions_dir or default_sessions_dir(workflow)
-    lessons = [x for x in load_yaml_safe(workflow / LESSONS, []) if isinstance(x, dict)]
-    since = max((str(x.get("date", "")) for x in lessons), default="")
-    files = sorted(folder.glob("*.jsonl"), reverse=True)[:sessions] if folder.is_dir() else []
-    found = [d for d in (digest_session(f) for f in files) if str(d["started"] or "") > since]
+    lessons = [x for x in read_yaml(workflow / LESSONS, []) if isinstance(x, dict)]
+    since = max(filter(None, (moment(x.get("date")) for x in lessons)), default=None)
+
+    def unreviewed(started):
+        when = moment(started)
+        return since is None or (when is not None and when > since)
+
+    found = []
+    for f in sorted(folder.glob("*.jsonl"), reverse=True) if folder.is_dir() else []:
+        if len(found) == sessions:
+            break
+        if (start := session_start(f)) is not None and not unreviewed(start):
+            continue  # reviewed: known from the header, without reading the whole file
+        d = digest_session(f)
+        if unreviewed(d["started"]) and not d.pop("plan_session"):
+            found.append(d)
+    new_runs = [(rid, d) for rid, d in list_runs(workflow) if unreviewed((read_yaml(d / "run.yaml", {}) or {}).get("started_at"))]
     emit({
         "ok": True,
         "workflow": workflow.name,
+        "now": datetime.now().astimezone().isoformat(timespec="seconds"),  # for improvements.yaml `date`
+        "prometheus_version": prometheus_version.installed(workflow),
         "sessions_dir": str(folder),
         "lessons": lessons,
         "sessions": found,
-        "runs": [digest_run(rid, d) for rid, d in list_runs(workflow)],
+        "runs": [digest_run(rid, d) for rid, d in new_runs[-runs:]] if runs else [],
+        "note": "This digest is the evidence: do not open the raw session files (their lines are too long to read). Read more of a session with workflow_sessions (show <file> --around <the failure's at>); open only the run.yaml, gates and scripts a finding points at.",
     })
 
 

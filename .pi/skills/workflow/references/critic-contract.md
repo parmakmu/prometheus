@@ -9,18 +9,12 @@ the plan has a side_effect or judgment stage or more than 3 stages. If
 
 ## Launch
 
+The launch script is fixed in `<skill>/references/critic.js` (it holds the output schema); pass
+only the task. Do not write a script block, list agents first (`subagent list`) or read `plan-critic.md`:
+
 ```js
-subagent({ async: true, mission: false, workflowScript: `return runs.run("plan-critic", {
-  agent: "plan-critic", label: "Critique plan",
-  task: "Critique the plan at <absolute plan path>. Read only that file and, if needed, cheap read-only looks at the inputs it names. Return only the structured report.",
-  outputSchema: { type: "object", required: ["verdict", "goal", "findings", "questions_for_user"], properties: {
-    verdict: { enum: ["pass", "revise", "ask_user"] },
-    goal: { type: "object", required: ["matches_request", "notes"], properties: { matches_request: { type: "boolean" }, notes: { type: "string" } } },
-    findings: { type: "array", maxItems: 8, items: { type: "object", required: ["id", "target", "category", "severity", "claim", "fix"], properties: {
-      id: { type: "string" }, target: { type: "string" }, category: { type: "string" },
-      severity: { enum: ["blocking", "major", "minor"] }, claim: { type: "string" }, evidence: { type: "string" }, fix: { type: "string" } } } },
-    questions_for_user: { type: "array", maxItems: 3, items: { type: "string" } } } }
-})` })
+subagent({ async: true, mission: false, workflow: ".pi/skills/workflow/references/critic.js",
+  args: { task: "Critique the plan at <absolute plan path>. Read only that file and, if needed, cheap read-only looks at the inputs it names. Return only the structured report." } })
 ```
 
 At replan or on a change branch, add to the task which stages changed. Tell
@@ -32,7 +26,10 @@ once; if that fails too, tell the user and stop.
 ## Folding findings in
 
 Give every finding a disposition in `critique.findings` (in a workflow,
-through `workflow_record_critique`):
+through `workflow_record_critique`, with `run_id` the plan-critic child's run
+id from the result, once it completed: the tool checks it in pi-subagents'
+records, and ties the record to the plan as it is then, so edit first, record
+last):
 
 - `accepted` — change the plan; `note` says what changed.
 - `rejected` — `note` says why; tell the user about a rejected `blocking` one.
@@ -40,7 +37,7 @@ through `workflow_record_critique`):
   `questions_for_user` (the three-per-round limit still applies).
 
 If accepted findings changed the stage graph, resume the critic once:
-`runs.run("plan-critic-2", { resume: "<run_id>", task: "The plan changed: <summary>. Check only the changes." })`,
-and set `passes: 2`. A new revision gets a fresh critic, `passes: 1`, except
+a second launch of the same kind with `args: { task: "The plan changed: <summary>. Check only the changes.", resume: "<run_id>" }`
+(`critic.js` passes `resume` through and drops `agent` and the schema then), and set `passes: 2`. A new revision gets a fresh critic, `passes: 1`, except
 during a run: a replan gets two passes in all, even when fixing findings
 bumps the revision.

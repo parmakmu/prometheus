@@ -236,7 +236,7 @@ export default function prometheus(pi: ExtensionAPI) {
 				show("Workflows", "No workflows yet. Create one with /workflow-new <request>.");
 				return;
 			}
-			const rows = [["slug", "status", "rev", "runs", "active run", "next", "open q", "last run"]];
+			const rows = [["slug", "status", "rev", "runs", "active run", "next", "open q", "last run", "prometheus"]];
 			for (const b of list) {
 				rows.push([
 					b.slug,
@@ -247,6 +247,7 @@ export default function prometheus(pi: ExtensionAPI) {
 					String(b.next_wave ?? "-"),
 					String((b.open_questions ?? []).length),
 					b.last_run ? `${b.last_run.id} ${b.last_run.status}` : "-",
+					b.prometheus_version ? `${b.prometheus_version}${b.stale ? " (stale)" : ""}` : "unknown",
 				]);
 			}
 			show("Workflows", table(rows));
@@ -300,12 +301,13 @@ export default function prometheus(pi: ExtensionAPI) {
 				return;
 			}
 			const targets = target === "--all" ? slugs(root) : [target];
-			const rows = [["slug", "refreshed", "plan valid", "compiles", "first error"]];
+			const rows = [["slug", "refreshed", "version", "plan valid", "compiles", "first error"]];
 			for (const slug of targets) {
-				const res = await runScript(pi, root, "scaffold_workflow.py", [slug, "--root", WORKFLOWS, "--refresh"]);
+				// --all leaves a workflow already at this Prometheus's version alone; a named one is always refreshed
+				const res = await runScript(pi, root, "scaffold_workflow.py", [slug, "--root", WORKFLOWS, "--refresh", ...(target === "--all" ? ["--if-stale"] : [])]);
 				const c = await check(pi, root, slug);
 				const firstErr = c.errors[0] ?? Object.values(c.compile_errors as Record<string, string[]>).flat()[0] ?? "";
-				rows.push([slug, String(res.data?.ok ?? false), String(c.valid), String(c.compiles), firstErr.slice(0, 80)]);
+				rows.push([slug, res.data?.skipped ? "skipped (current)" : String(res.data?.ok ?? false), String(res.data?.prometheus_version ?? ""), String(c.valid), String(c.compiles), firstErr.slice(0, 80)]);
 			}
 			show("Refreshed workflows", table(rows));
 		},

@@ -6,8 +6,9 @@ Usage: list_workflows.py [--root workflows] [--workflow DIR]
 Prints a JSON list, one object per workflow: slug, status, revision, goal,
 runs (count), last_run {id, status, started_at, finished_at, last_wave},
 active_run, next_wave and stages_done/stages_total (of the active run),
-provisional, open_questions, custom_agents, branch (checked out) and unmerged
-(run/ and change/ branches not merged into main). Waves and stage status come from
+provisional, open_questions, custom_agents, prometheus_version (the skill copy's; stale when
+Prometheus here has another), branch (checked out) and unmerged
+(run/, revise/ and improve/ branches not merged into main). Waves and stage status come from
 validate_plan (waves are derived; status lives in runs/<id>/run.yaml).
 Nothing is changed.
 """
@@ -15,14 +16,17 @@ import json
 from pathlib import Path
 from typing import Annotated
 
+import prometheus_version
 import typer
 import workflow_git
-from ruamel.yaml.error import YAMLError
-from utils import load_yaml_safe as load
-from validate_plan import list_runs, read_run, validate
+from runs import last_run, list_runs
+from utils import read_yaml as load
+from utils import refuse
+from validate_plan import validate
 
 
-def summarise(root, slug):
+def summarise(root, slug, current):
+    """One workflow's summary; `current` is this Prometheus's version (prometheus_version.current(), the same for all)."""
     plan = load(Path(root) / slug / "plan.yaml", {})
     if not isinstance(plan, dict):
         return {"slug": slug, "error": "plan.yaml is not a mapping"}
@@ -31,18 +35,11 @@ def summarise(root, slug):
     active = (summary.get("run") or {}).get("id")
     questions = [q for q in plan.get("questions") or [] if isinstance(q, dict)]
     runs = list_runs(Path(root) / slug)
-    last = None
-    if runs:
-        try:
-            state = read_run(runs[-1][1])
-        except (OSError, YAMLError):
-            state = {}
-        launch = (state.get("launches") or [None])[-1]
-        last = {"id": runs[-1][0], **{k: state.get(k) for k in ("status", "started_at", "finished_at")},
-                "last_wave": {k: launch.get(k) for k in ("wave", "status")} if isinstance(launch, dict) else None}
+    last = last_run(Path(root) / slug)
     agents_dir = Path(root) / slug / ".pi" / "agents"
     custom = sorted(p.stem for p in agents_dir.iterdir() if p.suffix == ".md") if agents_dir.is_dir() else []
     goal = plan.get("goal") or ""
+    installed = prometheus_version.installed(Path(root) / slug)
     return {
         "slug": slug,
         "status": plan.get("status"),
@@ -57,6 +54,8 @@ def summarise(root, slug):
         "open_questions": [q.get("id") for q in questions if q.get("answer") in (None, "")],
         "last_run": last,
         "custom_agents": [a for a in custom if a not in ("plan-critic", "workflow-batcher")],
+        "prometheus_version": installed,
+        "stale": bool(current and installed != current),
         "branch": workflow_git.branch(Path(root) / slug),
         "unmerged": workflow_git.unmerged_branches(Path(root) / slug),
     }
@@ -70,13 +69,13 @@ def main(
     if workflow:
         b = Path(workflow).resolve()
         if not (b / "plan.yaml").is_file():
-            print(json.dumps({"error": f"{b} is not a workflow"}))
-            raise typer.Exit(1)
-        print(json.dumps(summarise(b.parent, b.name), indent=2, default=str))
+            refuse(f"{b} is not a workflow")
+        print(json.dumps(summarise(b.parent, b.name, prometheus_version.current()), indent=2, default=str))
         return
     root_path = Path(root)
+    current = prometheus_version.current()  # git calls and, when dirty, a hash of the skill: once
     workflows = [
-        summarise(root, entry.name)
+        summarise(root, entry.name, current)
         for entry in (sorted(root_path.iterdir()) if root_path.is_dir() else [])
         if (entry / "plan.yaml").is_file()
     ]

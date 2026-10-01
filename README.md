@@ -31,7 +31,7 @@ agent to `workflows/<slug>/`. It never does the work itself.
 | `/workflow-new <request>` | plan a new workflow |
 | `/workflow-list [slug]` | list workflows and where they stand |
 | `/workflow-export <slug> <dest> [--keep-state]` | copy a workflow somewhere else to run |
-| `/workflow-refresh <slug \| --all>` | update workflows to Prometheus's skill version |
+| `/workflow-refresh <slug \| --all>` | update workflows to Prometheus's skill version (`--all` skips current ones) |
 
 Commands are prefixed `workflow-` because Pi has built-in `/new` and `/export`.
 
@@ -50,7 +50,7 @@ pi                     # trust the folder
 | `/workflow-run [note]` | plan, continue or run from where it stands |
 | `/workflow-status` | report where it stands; changes nothing |
 | `/workflow-revise [change]` | change the workflow's plan on a branch you review and merge (no run active) |
-| `/workflow-improve [focus]` | propose improvements from the workflow's sessions and runs, applied on a change branch you review (no run active) |
+| `/workflow-improve [focus]` | propose improvements from the workflow's sessions and runs, applied on an `improve/` branch you review (no run active) |
 
 Machine-specific values (folders, pages, accounts, tokens) go in the
 workflow's `.env` (not in git) or the environment pi runs in; `/workflow-run`
@@ -77,6 +77,6 @@ tests/                               pytest suite (`uv run pytest`; see docs/how
 
 ## Requirements
 
-Pi with pi-subagents (installed globally: `pi install npm:pi-subagents`), Python 3 with
+Pi with pi-subagents (installed globally: `pi install npm:pi-subagents`), Python 3.14 with
 typer, pydantic, pydantic-settings and ruamel.yaml (run `uv sync` here; the extensions use `.venv`), and project trust for this
 folder and each workflow.

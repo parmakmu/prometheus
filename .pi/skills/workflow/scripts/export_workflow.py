@@ -30,7 +30,8 @@ from typing import Annotated
 import typer
 import workflow_git
 import workflow_params
-from utils import load_yaml_safe as load
+from utils import read_yaml as load
+from utils import refuse
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 CACHE = shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store")
@@ -46,16 +47,13 @@ def main(
     src = Path(workflow).resolve()
     plan_path = src / "plan.yaml"
     if not plan_path.is_file():
-        print(json.dumps({"ok": False, "error": f"{src} is not a workflow (no plan.yaml)"}))
-        raise typer.Exit(1)
+        refuse(f"{src} is not a workflow (no plan.yaml)", 1)
     slug = name or src.name
     dst = (Path(dest) / slug).resolve()
     if dst.exists():
-        print(json.dumps({"ok": False, "error": f"{dst} already exists"}))
-        raise typer.Exit(1)
+        refuse(f"{dst} already exists", 1)
     if dst.is_relative_to(src):
-        print(json.dumps({"ok": False, "error": "destination is inside the workflow"}))
-        raise typer.Exit(1)
+        refuse("destination is inside the workflow", 1)
 
     plan = load(plan_path, {})
 

@@ -7,6 +7,7 @@ is not itself a failure: scripts report refusals as {"ok": false, ...} on exit
 `git -C path ...` and returns the completed process.
 """
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -37,6 +38,31 @@ class Result:
 def _run(args, cwd=None, env=None, input=None) -> Result:
     proc = subprocess.run(args, cwd=cwd, env=env, input=input, capture_output=True, text=True, check=False)
     return Result(proc)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def private_pi(tmp_path_factory):
+    """Scripts read pi-subagents' run records and Pi's agent folder (missions, sessions): point both
+    at a folder of the test session's own, never the user's."""
+    root = tmp_path_factory.mktemp("pi")
+    saved = {k: os.environ.get(k) for k in ("PI_SUBAGENTS_TEMP_ROOT", "PI_CODING_AGENT_DIR")}
+    os.environ["PI_SUBAGENTS_TEMP_ROOT"] = str(root / "subagents")
+    os.environ["PI_CODING_AGENT_DIR"] = str(root / "agent")
+    yield root
+    for k, v in saved.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+
+
+def fake_critic(run_id, agent="plan-critic", state="completed", root=None):
+    """A pi-subagents record of a critic workflow whose child `run_id` ran (what
+    workflow_record_critique checks), in $PI_SUBAGENTS_TEMP_ROOT unless `root` is given."""
+    folder = Path(root or os.environ["PI_SUBAGENTS_TEMP_ROOT"]) / "async-subagent-runs" / f"critic-of-{run_id}"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "status.json").write_text(json.dumps({"runId": f"critic-of-{run_id}", "state": "complete", "workflowChildren": {
+        "children": [{"childId": "plan-critic", "state": state, "runId": run_id, "agent": agent}]}}), encoding="utf-8")
 
 
 @pytest.fixture(scope="session")

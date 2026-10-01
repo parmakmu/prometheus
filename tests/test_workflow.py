@@ -12,13 +12,13 @@ import types
 from pathlib import Path
 
 import pytest
-from conftest import HERE, ROOT, SKILL, git_in
+from conftest import HERE, ROOT, SKILL, fake_critic, git_in
 
 
 def ws(compiled_json_path: Path) -> str:
-    """The workflowScript text a compiled wave's call points to (workflowScriptPath)."""
+    """The workflowScript text a compiled wave's call points to (call.workflow)."""
     data = json.loads(Path(compiled_json_path).read_text(encoding="utf-8"))
-    return Path(data["call"]["workflowScriptPath"]).read_text(encoding="utf-8")
+    return Path(data["call"]["workflow"]).read_text(encoding="utf-8")
 
 
 def wave(compiled_json_path: Path) -> dict:
@@ -40,6 +40,7 @@ def env(tmp_path_factory, run_py):
     (prometheus / "workflows").mkdir(parents=True)
     import shutil
     shutil.copytree(ROOT / ".pi", prometheus / ".pi")
+    shutil.copytree(ROOT / "templates", prometheus / "templates")  # beside .pi, as in the repo
     k = prometheus / ".pi" / "skills" / "workflow" / "scripts"
     b = prometheus / "workflows" / "invoice-check"
     ns = types.SimpleNamespace(
@@ -64,7 +65,7 @@ def test_prometheus_has_only_plan_critic(env):
 
 def test_plan_critic_identical_in_prometheus_and_workflow_template(env):
     a = (ROOT / ".pi" / "agents" / "plan-critic.md").read_text(encoding="utf-8")
-    b = (SKILL / "templates" / "workflow" / ".pi" / "agents" / "plan-critic.md").read_text(encoding="utf-8")
+    b = (ROOT / "templates" / "workflow" / ".pi" / "agents" / "plan-critic.md").read_text(encoding="utf-8")
     assert a == b
 
 
@@ -214,7 +215,7 @@ def test_compile_w1_from_main_tag_r1(env):
 def test_launch_carries_a_script_path_not_the_text(env):
     data = json.loads(env.w1.read_text(encoding="utf-8"))
     assert data["call"].get("workflowScript") is None
-    script_path = Path(data["call"]["workflowScriptPath"])
+    script_path = Path(data["call"]["workflow"])
     assert script_path == env.run_dir / ".compiled" / "w1.js"
     assert script_path.stat().st_size > 0
 
@@ -315,12 +316,12 @@ def test_nothing_commits_while_a_wave_runs(env, python_exe):
     assert env.git("write-tree").stdout.strip() == tree
 
 
-def test_refresh_refused_while_a_wave_runs(env):
+def test_refresh_refused_during_an_active_run(env):
     skill_file = env.b / ".pi" / "skills" / "workflow" / "SKILL.md"
     before = skill_file.stat().st_mtime_ns
     r = env.run_in(env.prometheus, ["scaffold_workflow.py", "invoice-check", "--root", "workflows", "--refresh"])
     assert r.data and r.data["ok"] is False
-    assert "wave running" in r.data["error"]
+    assert "active run" in r.data["error"]
     assert skill_file.stat().st_mtime_ns == before  # nothing rewritten
 
 
@@ -353,6 +354,16 @@ def test_finish_reads_outcome_and_cost_from_pi_subagents(env):
 def test_finish_returns_a_children_summary_not_their_outputs(env):
     assert "structuredOutput" not in json.dumps(env.fin["children"])
     assert set(env.fin["children"]["extract"]) == {"status", "output"}
+
+
+def test_finish_names_the_next_wave_so_no_check_is_needed(env):
+    nxt = env.fin["next_wave"]
+    assert nxt and nxt["id"] != "w1" and nxt["stages"] and "ends_with" in nxt
+    assert "entry" not in env.fin
+    # what compile would ask first, so the parent asks the user before compiling, not after
+    assert [x["stage"] for x in nxt["preflight"]["decisions_needed"]] == ["approve-drafts"]
+    assert "drafts" in [x["stage"] for x in nxt["preflight"]["approvals_needed"]]
+    assert "missing_params" not in nxt["preflight"]  # empty lists are left out
 
 
 def test_finish_marks_the_waves_stages_done(env):
@@ -407,14 +418,14 @@ _PI_SUBAGENTS = Path.home() / ".pi" / "agent" / "npm" / "node_modules" / "pi-sub
 
 
 @pytest.mark.skipif(not _PI_SUBAGENTS.is_file(), reason="needs pi-subagents installed globally (pi install npm:pi-subagents)")
-def test_pi_subagents_accepts_the_compiled_waves(env, run_node):
+def test_pi_subagents_accepts_the_compiled_waves_and_the_critic_script(env, run_node):
     # pi-subagents' own pre-launch check (syntax, no nested async functions, keys)
     check = env.tmp / "check-script.mjs"
     check.write_text(f"""import fs from "node:fs";
 import {{ validateWorkflowScript }} from {json.dumps(str(_PI_SUBAGENTS))};
 console.log(JSON.stringify(process.argv.slice(2).map((f) => validateWorkflowScript(fs.readFileSync(f, "utf8")))));
 """, encoding="utf-8")
-    scripts = sorted((env.run_dir / ".compiled").glob("*.js"))
+    scripts = [*sorted((env.run_dir / ".compiled").glob("*.js")), SKILL / "references" / "critic.js"]  # + the critic launch
     r = run_node([check, *scripts])
     assert scripts and r.data == [{"ok": True, "errors": []}] * len(scripts), r
 
@@ -429,22 +440,22 @@ def test_every_wave_runs_the_same_runner(env):
 
 def test_replan_refuses_a_stage_done_in_the_active_run(env):
     r = env.run(["plan_edit.py", "replan", "--change", '{"stages":[{"key":"find","kind":"judgment"}]}'])
-    assert "history" in " ".join((r.data or {}).get("errors", []))
+    assert "history" in (r.data or {}).get("error", "")
 
 
 def test_replan_refuses_waves(env):
     r = env.run(["plan_edit.py", "replan", "--change", '{"waves":[]}'])
-    assert "not part of the plan" in " ".join((r.data or {}).get("errors", []))
+    assert "not part of the plan" in (r.data or {}).get("error", "")
 
 
 def test_replan_refuses_to_weaken_a_side_effect(env):
     r = env.run(["plan_edit.py", "replan", "--change", '{"stages":[{"key":"drafts","kind":"deterministic"}]}'])
-    assert "must stay kind: side_effect" in " ".join((r.data or {}).get("errors", []))
+    assert "must stay kind: side_effect" in (r.data or {}).get("error", "")
 
 
 def test_replan_refuses_to_change_the_goal(env):
     r = env.run(["plan_edit.py", "replan", "--change", '{"goal":"something else"}'])
-    assert "locked" in " ".join((r.data or {}).get("errors", []))
+    assert "locked" in (r.data or {}).get("error", "")
 
 
 def test_replan_of_a_pending_stage_commits(env):
@@ -466,6 +477,7 @@ def test_replan_of_a_pending_stage_commits(env):
 
 
 def test_record_critique_marks_the_plan_ready(env):
+    fake_critic("c-2")
     r = env.run(["plan_edit.py", "critique", "--result", '{"run_id":"c-2","verdict":"pass","findings":[]}'])
     assert r.data and r.data["ready"] is True
     assert env.git("log", "-1", "--format=%s").stdout.strip() == "r2 ready: critic pass"
@@ -474,7 +486,7 @@ def test_record_critique_marks_the_plan_ready(env):
 
 def test_params_relative_path_reported(env):
     r = env.run(["plan_edit.py", "params", "--values", '{"mail_dir":"data/mail"}'])
-    assert "relative path" in " ".join((r.data or {}).get("errors", []))
+    assert "relative path" in " ".join((r.data or {}).get("errors", []))  # the validation report, not a refusal
 
 
 def test_params_absolute_path_accepted(env):
@@ -509,8 +521,12 @@ def test_no_new_run_while_a_run_branch_waits_for_review(env):
 
 
 def test_merge_run_branch(env):
+    steps = int(env.git("rev-list", "--count", f"main..run/{env.rid}").stdout)
     r = env.run(["workflow_git.py", "merge", "--action", "merge"])
     assert r.data, r
+    # one commit on main for the whole run, however many the run's branch made
+    assert steps > 1 and env.git("rev-list", "--count", f"{env.main0}..main").stdout.strip() == "1"
+    assert env.git("log", "-1", "--format=%s", "main").stdout.strip() == f"r2: run/{env.rid}"
     assert (r.data["ok"], r.data["revision"], r.data["unmerged"]) == (True, 2, [])
     assert env.git("symbolic-ref", "--short", "HEAD").stdout.strip() == "main"
     assert env.git("merge-base", "--is-ancestor", env.main0, "main").returncode == 0
@@ -603,26 +619,31 @@ def test_workflow_revise_change_branch_from_main(env):
     r = env.run(["workflow_git.py", "begin-change"])
     assert r.data, r
     today = datetime.datetime.now().astimezone().date().isoformat()
-    assert (r.data["ok"], r.data["branch"], r.data["revision"]) == (True, f"change/{today}-1", 3)
-    assert "status: draft" in (env.b / "plan.yaml").read_text(encoding="utf-8").splitlines()
+    assert (r.data["ok"], r.data["branch"], r.data["revision"]) == (True, f"revise/{today}-1", 2)
+    assert "status: ready" in (env.b / "plan.yaml").read_text(encoding="utf-8").splitlines()  # untouched until edited
 
 
 def test_replan_needs_an_active_run(env):
     r = env.run(["plan_edit.py", "replan", "--change", '{"note":"x"}'])
-    assert "no run is active" in " ".join((r.data or {}).get("errors", []))
+    assert "no run is active" in (r.data or {}).get("error", "")
 
 
 def test_direct_edits_on_the_change_branch_critique_marks_it_ready(env):
     plan_path = env.b / "plan.yaml"
     text = plan_path.read_text(encoding="utf-8")
     plan_path.write_text(text.replace("goal: >-\n", "goal: >-\n  Changed on a branch.\n", 1), encoding="utf-8")
+    fake_critic("c-3")
     r = env.run(["plan_edit.py", "critique", "--result", '{"run_id":"c-3","verdict":"pass","findings":[]}'])
-    assert r.data and r.data["ready"] is True
+    assert r.data and r.data["ready"] is True and r.data["revision"] == 3  # an edited plan is a new revision
 
 
 def test_merged_change_goal_changed_on_main_tag_r3(env):
+    before = env.git("rev-parse", "main").stdout.strip()
+    revise = env.git("symbolic-ref", "--short", "HEAD").stdout.strip()
     r = env.run(["workflow_git.py", "merge", "--action", "merge"])
     assert r.data, r
+    assert revise.startswith("revise/") and env.git("rev-list", "--count", f"{before}..main").stdout.strip() == "1"
+    assert env.git("log", "-1", "--format=%s", "main").stdout.strip() == f"r3: {revise}"
     assert (r.data["ok"], r.data["revision"]) == (True, 3)
     assert "Changed on a branch" in env.git("show", "main:plan.yaml").stdout
     assert env.git("rev-parse", "r3").stdout.strip() == env.git("rev-parse", "main").stdout.strip()
@@ -631,11 +652,13 @@ def test_merged_change_goal_changed_on_main_tag_r3(env):
 def test_a_draft_change_cannot_merge_discard_leaves_main_unchanged(env):
     r = env.run(["workflow_git.py", "begin-change"])
     assert r.data and r.data["ok"]
+    plan_path = env.b / "plan.yaml"  # an edit the critic has not seen
+    plan_path.write_text(plan_path.read_text(encoding="utf-8").replace("goal: >-\n", "goal: >-\n  Not reviewed.\n", 1), encoding="utf-8")
     r = env.run(["workflow_git.py", "merge", "--action", "merge"])
     assert "only a ready, valid plan" in (r.data or {}).get("error", "")
     r = env.run(["workflow_git.py", "merge", "--action", "discard"])
     assert r.data and (r.data["ok"], r.data["revision"]) == (True, 3)
-    assert env.git("branch", "--list", "change/*").stdout.strip() == ""
+    assert env.git("branch", "--list", "revise/*").stdout.strip() == ""
 
 
 def test_third_run_starts(env):
@@ -716,7 +739,7 @@ def ext(env, tmp_path_factory):
     (nm / "typebox").symlink_to(_pi_pkg / "node_modules" / "typebox", target_is_directory=True)
     (nm / "@types" / "node").symlink_to(ROOT / "node_modules" / "@types" / "node", target_is_directory=True)
     _shutil.copy(ROOT / ".pi" / "extensions" / "prometheus" / "index.ts", tmp / ".ext" / "prometheus.ts")
-    _shutil.copy(SKILL / "templates" / "workflow" / ".pi" / "extensions" / "workflow" / "index.ts", tmp / ".ext" / "workflow.ts")
+    _shutil.copy(ROOT / "templates" / "workflow" / ".pi" / "extensions" / "workflow" / "index.ts", tmp / ".ext" / "workflow.ts")
     _shutil.copy(HERE / "tsconfig.json", tmp / "tsconfig.json")
     _shutil.copy(HERE / "ext-harness.mjs", tmp / "h.mjs")
     pi_version = json.loads((_pi_pkg / "package.json").read_text(encoding="utf-8"))["version"]
@@ -815,12 +838,23 @@ def test_workflow_extension_registers_commands_and_tools(env, ext):
         {"cmd": "workflow-run", "args": ""},
         {"tool": "workflow_merge", "params": {"action": "keep"}},
         {"tool": "workflow_record_decision", "params": {"stage": "no-such-stage", "answer": {"a": 1}}},
+        {"toolCall": {"toolName": "read", "input": {"path": "/home/u/.pi/agent/sessions/--w--/2026-01-01_a.jsonl"}}},
+        {"toolCall": {"toolName": "bash", "input": {"command": "grep -c failed ~/.pi/agent/sessions/--w--/a.jsonl"}}},
+        {"tool": "workflow_sessions", "params": {"action": "list"}},
         {"systemPrompt": "You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.\n\n<tools>x</tools>"},
         {"systemPrompt": "Some other opening.\n\n<tools>x</tools>"},
     ]
     report = drive(ext, ext.tmp / ".ext" / "workflow.ts", env.b, steps)
     env.workflow_ext_report = report
-    assert (len(report["commands"]), len(report["tools"])) == (4, 11)
+    assert (len(report["commands"]), len(report["tools"])) == (4, 12)
+
+
+@skip_extensions
+def test_session_files_are_read_through_the_sessions_tool(env):
+    read, shell, listed = env.workflow_ext_report["steps"][-5:-2]
+    assert [read["blocked"], shell["blocked"]] == [True, True]
+    assert "workflow_sessions" in read["reason"]
+    assert listed.get("blocked") in (False, None) and "error" not in listed
 
 
 @skip_extensions
@@ -885,7 +919,7 @@ def test_main_guard_when_the_branch_was_switched(env, ext):
     # between runs main changes only by a reviewed merge; the user switching away from a change
     # branch mid-change must not let the agent's next edits land on main
     branch = env.git("branch", "--show-current").stdout.strip()
-    assert branch.startswith("change/")
+    assert branch.startswith("revise/")
     env.git("switch", "-q", "main")
     try:
         steps = [

@@ -14,10 +14,10 @@ const [, , compiledPath, ...flags] = process.argv;
 const failKey = flags.includes("--fail") ? flags[flags.indexOf("--fail") + 1] : null;
 const blockKey = flags.includes("--block") ? flags[flags.indexOf("--block") + 1] : null;
 const compiled = JSON.parse(fs.readFileSync(compiledPath, "utf8"));
-// mirrors pi-subagents' own loadWorkflowScriptPath (subagent-executor.js): workflowScriptPath
-// is read from disk before anything else runs, so it behaves exactly like an inline workflowScript
-const script = compiled.call.workflowScriptPath
-  ? fs.readFileSync(compiled.call.workflowScriptPath, "utf8")
+// mirrors pi-subagents >= 0.74: a `workflow` value containing "/" is a script file path,
+// read from disk, so it behaves exactly like inline script text
+const script = compiled.call.workflow
+  ? fs.readFileSync(compiled.call.workflow, "utf8")
   : compiled.call.workflowScript;
 const log = [];
 let n = 0;

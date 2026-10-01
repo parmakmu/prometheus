@@ -15,21 +15,24 @@ the settled decisions and the reasons for them, so you don't re-litigate them.
 | [`docs/python-scripts.md`](../docs/python-scripts.md) | what each script does and how they fit together |
 | [`docs/params-and-secrets.md`](../docs/params-and-secrets.md) | params, `.env`, secrets, their validator rules |
 | [`docs/troubleshooting.md`](../docs/troubleshooting.md) | refusals a user meets, their causes and fixes |
+| [`docs/state-machine.md`](../docs/state-machine.md) | the states a workflow can be in, the legal moves and which script refuses the rest |
 | [`docs/worked-example.md`](../docs/worked-example.md) | emails-to-excel from request to reused stage programs |
 
-The model-facing rules are in the skill: `SKILL.md` (planning), `references/run-protocol.md`
-(running, replanning, changing, reviewing), `references/plan-schema.md` (the plan format).
+The model-facing rules are in the skill: `SKILL.md` (planning), `references/run-protocol.md` (running; the core, read every session), `references/replanning.md` and
+`references/changing.md` (replanning; reviewing a branch and changing the plan: read only when a route needs them, to keep a plain run cheap),
+`references/plan-schema.md` (the plan format).
 
 ## Owner's constraints (settled — don't reopen without asking)
 
 - The agent is **Prometheus** (repo folder `prometheus/`, extension `.pi/extensions/prometheus/`).
   Commands keep the `workflow-` prefix (Pi has built-in `/new` and `/export`).
-- Runtime is the **Pi coding agent** (earendil-works/pi, built against **0.87.1**; the test suite also passes on 0.99.2) + **pi-subagents** (0.73.1; tests also pass on 0.74.0). Live runs so far were on the older versions.
+- Runtime is the **Pi coding agent** (earendil-works/pi, built against **0.87.1**; the test suite also passes on 0.99.2 and 1.0.0, but live waves fail on 1.0.0 with pi-subagents 0.74.0: its async runner requires `@earendil-works/pi-agent-core/node`, an export pi-agent-core 1.0.0 dropped, so every background child fails at startup; stay on Pi 0.99.2 until pi-subagents supports 1.0) + **pi-subagents** (0.73.1; tests also pass on 0.74.0). Live runs so far were on the older versions.
 - Prometheus is **standalone**: this folder, `cd` + `pi`. Not a global install into `~/.pi/agent/`.
 - Plans are **YAML**.
 - Commands and tools live in **Pi extensions**, one self-contained `index.ts` per agent. No
   re-export indirection, no prompt templates.
 - Keep it simple; the owner pushes back on indirection and duplicate folders.
+- Python **3.14** (`requires-python` in Prometheus and the workflow template; a refresh keeps an existing workflow's own `pyproject.toml` and its packages, but raises a lower `>=` floor to the template's; a higher one, or another specifier, is the workflow's own and stays): stdlib `tomllib` and ISO timestamps with `Z` are fine to use.
 - Python: typer for CLIs, pathlib for paths (`os` only where pathlib has no equivalent: `chdir`,
   `environ`, `getuid`), pytest for tests. Never install packages; ask the user to run `uv sync`.
 
@@ -47,16 +50,18 @@ The model-facing rules are in the skill: `SKILL.md` (planning), `references/run-
   `script:` in `scripts/`. "check" means validating the plan (`workflow_check`, `compile --check`).
 - **project agent**: an agent the workflow defines in `.pi/agents/` (`source: project`).
 - **replan**: a plan change during a run (branch `run/<id>`); **change**: one made with
-  `/workflow-revise` between runs (branch `change/<date>-<n>`).
+  `/workflow-revise` or `/workflow-improve` between runs (branch `revise/<date>-<n>` or `improve/<date>-<n>`; older workflows may hold `change/<date>-<n>`, still reviewed).
 - The skill is `.pi/skills/workflow/` (formerly `request-to-plan`).
 
 ## Architecture in one paragraph
 
-The Python scripts in `.pi/skills/workflow/scripts/` hold all logic and print one JSON object;
+The Python scripts in `.pi/skills/workflow/scripts/` hold all logic and print one JSON object
+(`utils.emit`; a refusal is `utils.refuse`, `{ok: false, error}`); runs are read through `runs.py`
+(`Run`), YAML through `utils` (`read_yaml`/`write_yaml`), and a commit names its branch (`commit(…, to=)`);
 the two extensions are thin (run a script via `pi.exec`, format its JSON). Scripts are testable
 without Pi. Extensions run them with `$PI_WORKFLOW_PYTHON`, else the nearest `.venv/bin/python`
 upwards (a workflow inside Prometheus uses Prometheus's), else `python3`; a script's
-`No module named …` becomes "ask the user to run `uv sync`". `templates/workflow/` is copied
+`No module named …` becomes "ask the user to run `uv sync`". `templates/workflow/` (at the repo root, outside `.pi/` and the skill, so workflows do not carry a copy) is copied
 into each workflow by `scaffold_workflow.py`, together with a copy of the whole skill, so a
 workflow runs without Prometheus. `wave_runner.js` is the one piece of JS: the compiler appends
 it to every wave. `batch_tool.py` stays stdlib-only: the batcher runs it with plain `python3`.
@@ -107,9 +112,14 @@ Libraries: typer, pydantic (plan shape, in `validate_plan.py`; the cross-referen
   workflow's repo from the child's cwd). The extension blocks git commands that write. A commit
   on `main` with a ready plan moves tag `r<rev>`.
 - **Main changes only by a reviewed merge.** A run's first commit creates `run/<id>` lazily;
-  `/workflow-revise` creates `change/<date>-<n>`. At the end the user sees the diff and chooses
-  merge (only a ready, valid plan; a fast-forward, rebased onto `main` first if it moved, so history
-  stays linear; the branch is deleted) / keep / discard. New runs and changes refuse while another
+  `/workflow-revise` creates `revise/<date>-<n>`, `/workflow-improve` `improve/<date>-<n>`, leaving the plan as it is:
+  editing `plan.yaml` unreadies it (`plan_digest`; on a branch, any difference from `main`'s plan, see
+  `workflow_git.why_not_ready`) until the critic is recorded, which raises the revision once; a change
+  to gates, programs, agents or lessons alone merges without the critic. Why: drafting the plan up front
+  made an improve that found nothing leave an r+1 draft branch to review. At the end the user sees the diff and chooses
+  merge (only a ready, valid plan; squashed into one commit on `main`, `r<rev>: <branch>` listing
+  the branch's commits, so `main` stays linear with one commit per reviewed change, however many
+  the branch made; the branch is deleted) / keep / discard. New runs and changes refuse while another
   branch is checked out, so reviews can't be skipped. Why: a run's discoveries are a proposal,
   not a silent change to every later run; and the workflow owns its plan (Prometheus's old
   outside revise command, with no locks, was removed).
@@ -128,7 +138,7 @@ Libraries: typer, pydantic (plan shape, in `validate_plan.py`; the cross-referen
 - **Explicit acceptance** on every writer child and gated stage: `{level, preserveStagedIndex:
   true, review: {required: false}, verify}`. Why: inferred acceptance for an async writer demands
   no staged files and an independent review; the first real run failed on it with correct output.
-- **The compiled call carries `workflowScriptPath`**, the script saved at
+- **The compiled call carries `workflow: "<path>"`**, the script saved at
   `runs/<id>/.compiled/<wave>.js`, not the script text. Why: retyping it was ~half the
   orchestrator's output tokens. `--check` and a directly built `Compiler` keep it inline.
 - **The compiler writes data, not code**: a compiled script is `const W = {wave as JSON};` plus
@@ -157,8 +167,24 @@ Libraries: typer, pydantic (plan shape, in `validate_plan.py`; the cross-referen
 - **The orchestrator does no bookkeeping**: `workflow_log_finish {wave}` reads the outcome and
   cost from pi-subagents' `status.json`, returns a children summary (not outputs), the
   `mission_close` call and, when the run is done, the plan's `done_when` for the final report;
-  compile's preflight describes approvals; the check reports `last_run`. Why: run 2's log showed
-  ~12 of 26 orchestrator turns spent on these; run 6 still read the plan for `done_when`.
+  compile's preflight describes approvals, and `log_finish` returns the next wave's preflight
+  (`next_wave.preflight`), so the user is asked before its first compile; the check reports
+  `last_run`. Why: run 2's log showed ~12 of 26 orchestrator turns spent on these; run 6 still read
+  the plan for `done_when`; run 9 compiled `w2` once only to learn it needed an approval.
+- **The state machine is code** (`workflow_state.py`, `docs/state-machine.md`): ten states from
+  the plan's status, the active run, a running wave and the branch, and per state the moves the
+  scripts accept (`MOVES`); every workflow tool's result carries it as `next`
+  (`utils.report_state` + `emit`), `workflow_check` as `state`. `tests/test_state_machine.py` walks
+  every state and move in-process and checks: unlisted moves are refused and change nothing,
+  `main` moves only by a merge (or planning), every state has an exit. Why: the model worked out
+  where it stood from `workflow_check` plus `run.yaml`; the walk found two holes the hand-written
+  table missed (a critique committing on `main`, `log_start` on a draft plan).
+- **Guards around the launch**: a run starts only from a ready, valid plan; compile commits only
+  a wave that can launch, refuses one launched but never recorded (pi-subagents' `scriptDigest`),
+  and holds the wave after a `review` until `reviewed`; a relaunch reuses children that completed
+  in the failed launch and are unchanged (`reuse` items, `compile_wave.reuse_finished`; not after a
+  rerun dependency, not when a later child splices in a text-only result); a critique must name a
+  completed plan-critic child and is tied to the plan by `plan_digest`.
 - **Commands activate `subagent`**: `/workflow-new`, `/workflow-run` and `/workflow-revise` call
   `activateSubagent` (`pi.setActiveTools`) before sending their prompt. Why: pi-subagents starts
   sessions with only its `subagents_enable` loader; the model enabling it mid-turn cost run 4 two
@@ -177,6 +203,11 @@ Libraries: typer, pydantic (plan shape, in `validate_plan.py`; the cross-referen
   `AGENTS.md`, `CLAUDE.md` from every folder up from its cwd, so a root `CLAUDE.md` put ~5k tokens
   of contributor notes into every Prometheus and in-repo workflow turn (~20% of a planning
   session's tokens). Claude Code reads `.claude/CLAUDE.md`; Pi doesn't. Keep the root free of those names.
+- **Prometheus version** (`prometheus_version.py`): `<pyproject version>+<commit>[.dirty-<hash of the skill's files>]`, the commit
+  being the last that touched the skill or `templates/` (a docs commit must not make every workflow stale),
+  written to the workflow's `.pi/skills/workflow/VERSION` on create/refresh and named in the commit message; no tags
+  (the owner skipped them). The hash is there because dirty refreshes would otherwise all share one label. `--all`
+  refreshes only stale workflows (`--if-stale`); `/workflow-list` shows the version.
 - **Agent files**: pi-subagents discovers agents only in `~/.pi/agent/agents/` and a project's
   `.pi/agents/`. The two `plan-critic.md` copies (Prometheus, workflow template) must stay
   identical (tests check).
@@ -195,12 +226,12 @@ Pi 0.87.1:
   {triggerTurn:false})` shows text. `ctx.cwd`, `ctx.ui.notify`, `pi.on("session_start" | "tool_call", …)`.
 - `.pi/APPEND_SYSTEM.md` appends to the system prompt. Project packages install into `<cwd>/.pi/npm/`.
 
-pi-subagents 0.73.1 (source in `~/.pi/agent/npm/node_modules/pi-subagents`):
+pi-subagents 0.73.1, with the `workflow` field from 0.74.0 (source in `~/.pi/agent/npm/node_modules/pi-subagents`):
 
-- `subagent({ async: true, mission|missionId, workflowScript | workflowScriptPath })`; the script
+- `subagent({ async: true, mission|missionId, workflow: true | "<script path>" })`; the script
   uses `runs.run(key, opts)` / `runs.all([...])`, plain JS, top-level await, no nested async
-  functions. `workflowScriptPath` is read by `loadWorkflowScriptPath` in `executePublic` before
-  anything else, so it behaves exactly like inline text (confirmed live in run 4).
+  functions. 0.74.0 replaced `workflowScript`/`workflowScriptPath` with one `workflow` field: `true` runs the ```` ```js workflow ```` block
+  written in the same reply; a string containing `/` loads that file relative to `cwd` (an absolute path is what the compiler emits; not live-verified); other strings are named workflows. Calls with the old names fail. (Path loading confirmed live in run 4 under 0.73.1 as `workflowScriptPath`; the `workflow` form is covered by the mock only.)
 - A child result is `{ok, state, stopped?, detached?, error?, runId, output, outputReference,
   structuredOutput}`: no `status`. `runs.run` throws on a failed child; `runs.all` with config
   objects returns it as `{ok: false}`. The mock (`tests/mock-subagents.mjs`) mirrors both.
@@ -213,7 +244,7 @@ pi-subagents 0.73.1 (source in `~/.pi/agent/npm/node_modules/pi-subagents`):
 - Command-runner agents (`runner.type: external-cli`): stdin = instructions + task, stdout =
   output; a non-zero exit fails the child with stderr as its `error`; async only; no
   schema/gate/resume/fork. `runs.host` commands are only for extension-owned named workflows,
-  not raw `workflowScript`/`workflowScriptPath`.
+  not raw workflow scripts.
 - Tool activation (Pi >= 0.86.1): a fresh session has `subagents_enable` active and `subagent`
   registered but inactive (pi-subagents 0.74: `toolActivation` in its `config.json`, default `auto`,
   starts models that can't add a tool mid-conversation with `subagent` already active; it doesn't
@@ -224,8 +255,15 @@ pi-subagents 0.73.1 (source in `~/.pi/agent/npm/node_modules/pi-subagents`):
 - Async run record: `<tmp root>/async-subagent-runs/<runId>/status.json` (tmp root:
   `$PI_SUBAGENTS_TEMP_ROOT`, else `os.tmpdir()/pi-subagents-uid-<uid>`). `state`,
   `workflow.value` (the script's return value), `totalCost {costUsd, inputTokens, outputTokens}`;
-  a workflow that fails before returning has `error` and `workflow.failureKind`.
+  a workflow that fails before returning has `error` and `workflow.failureKind`; `pid` is the
+  runner's process. `workflow.scriptDigest` is the sha256 of the script text (matched against
+  `.compiled/<wave>.js` on 0.74.0; `compile_wave.unrecorded_launch` relies on it and fails open).
+  A workflow run's children are in `workflowChildren.children` `[{childId, state, runId, agent}]`;
+  the critic's child run id (what the model records, and what a second pass resumes) is there.
   `mission.close` takes missionStatus completed | failed | cancelled.
+- Missions: `<agent dir>/missions/projects/<sha256 of project root>/<mission id>.json`, each with
+  `runs [{runId, …}]` (agent dir: `$PI_CODING_AGENT_DIR`, else `~/.pi/agent`; Pi's `getAgentDir`).
+  A run's status.json does not name its mission.
 - `mcp:` selections in an agent's `tools` (`mcp:server`, `mcp:server/tool`): with pi-mcp-adapter
   installed they resolve against its config; without it (the owner's setup) and on Pi >= 0.99
   they resolve against Pi's built-in MCP and its `mcp.json` (a project's `.pi/mcp.json` only once
@@ -236,17 +274,17 @@ pi-subagents 0.73.1 (source in `~/.pi/agent/npm/node_modules/pi-subagents`):
 
 ## Status
 
-`uv run pytest`: 190 tests, including the validator's broken-variant cases, param tests, compiled
+`uv run pytest`: 233 tests, including the validator's broken-variant cases, param tests, the
+state machine's refusals and its walk (`tests/test_run_finish.py`, `tests/test_state_machine.py`), compiled
 waves run in a mock of `runs.run/runs.all` (real batch tool and gates, fake children), and both
-extensions type-checked and driven with Pi's real types. The 92 outside `tests/test_workflow.py`
-pass without Node or uv; that file's 98 (the scenario and the extensions) need `npm install` and
-uv, and have not run since the plan moved to the workflow root and programs to `uv run`.
+extensions type-checked and driven with Pi's real types. The 131 outside `tests/test_workflow.py`
+pass without Node or uv; that file's 102 (the scenario and the extensions) need `npm install` and uv.
 
 Verified in live runs of emails-to-excel (see `docs/worked-example.md`): planning with the
 critic and questions; discovery + replan; explicit acceptance; derived waves and run folders;
 side-effect approval; `.env` loading; `workflow_log_finish` reading `status.json` and returning
 `mission_close`; stage programs written and committed at finish; the end-of-run review (keep);
-`/workflow-revise` with the critic and a merge; `workflowScriptPath`; a run reusing merged programs
+`/workflow-revise` with the critic and a merge; `workflowScriptPath` (0.73.1); a run reusing merged programs
 unchanged (run 4: nothing committed, children $0.0105, orchestrator $0.0135); the question tool for
 every choice and `subagent` active from the command (run 6); "Used next by" (run 6: `discover`
 covered `Cc`, review passed); the data + `wave_runner.js` compiled waves and `done_when` in the
@@ -256,13 +294,14 @@ run took about 1 min, down from 2 min 22 s).
 
 Not yet verified live: the `<key>-fix` fallback for a failing program; the
 `workflow-batcher` command runner (no map stage has run); the replan tools since they were added;
-cross-wave resume; secret params; refresh refusing during a wave.
+cross-wave resume; secret params; refresh refusing during a wave; everything in "Guards around the
+launch" and the state machine's `next` (tested against fake pi-subagents records and the mock only).
 
 ## Next steps (suggested order)
 
 1. A new plan with a map stage, to exercise `workflow-batcher`.
-2. Check that side-effect stages' agents have the connector tools they need (a validator rule).
-3. Retry relaunches the whole wave; per-key resume of failed children would be cheaper.
+2. A live run that fails a wave and relaunches it (reuse), stops after a `review` wave
+   (`review_needed`), and records a real critic (the `workflowChildren` lookup).
 
 ## How to test
 

@@ -10,12 +10,15 @@ the user chose (or by planning before the first run):
   run/<run id>        a run's changes (replans, gate scripts written for them);
                       created on the run's first commit, so a run that changes
                       nothing has no branch
-  change/<date>-<n>   a change to the plan asked for with /workflow-revise
+  revise/<date>-<n>   a change to the plan asked for with /workflow-revise
                       while no run is active (begin-change)
+  improve/<date>-<n>  the same for /workflow-improve (begin-change --kind improve)
+                      (older workflows may hold change/<date>-<n>: still reviewed)
 When a run ends (done or stopped) or a change is ready, the user reviews the
-branch against main and chooses: merge (only a ready, valid plan; a
-fast-forward, rebased first if main has moved; the branch is deleted; tags
-r<revision>), keep (switch back to main, keep the branch) or discard.
+branch against main and chooses: merge (only a ready, valid plan; squashed
+into one commit on main, "r<revision>: <branch>" listing the branch's commits;
+the branch is deleted; tags r<revision>), keep (switch back to main, keep the
+branch) or discard.
 A new run or change needs main checked out, so no branch is left unreviewed
 by accident.
 
@@ -25,12 +28,11 @@ the workflow) before and after each writer child. The same check makes git a
 requirement: without a repo, writer children fail.
 
 Usage (from the workflow root, or --workflow DIR):
-  workflow_git.py begin-change     start or continue a change branch (no active run)
+  workflow_git.py begin-change     start or continue a change branch (no active run; improve needs a run first)
   workflow_git.py review           the checked-out branch against main: commits, files
   workflow_git.py merge --action merge|keep|discard
 """
 import datetime
-import io
 import os
 import re
 import shutil
@@ -39,9 +41,13 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-from utils import emit
+from runs import active_run, list_runs
+from utils import emit, load_yaml, read_yaml, refuse, report_state
+from validate_plan import check_ready, validate
 
 MAIN = "main"
+CHANGE_KINDS = ("revise", "improve")  # a change to the plan between runs: /workflow-revise, /workflow-improve
+LEGACY_CHANGE = "change"  # the one prefix both commands used before; still reviewed
 FALLBACK_IDENTITY = ["-c", "user.name=Prometheus", "-c", "user.email=prometheus@localhost"]
 app = typer.Typer(add_completion=False)
 
@@ -82,28 +88,13 @@ def branch(workflow):
     return git(workflow, "symbolic-ref", "--short", "-q", "HEAD", check=False).stdout.strip() or None
 
 
-def active_run(workflow):
-    from validate_plan import active_run as find
-    return find(workflow)
-
-
-def wave_running(workflow):
-    """True while a stage of the active run is running (see validate_plan, runs)."""
-    act = active_run(workflow)
-    return bool(act and "running" in (act[2].get("stages") or {}).values())
-
-
 def identity(workflow):
     return [] if git(workflow, "config", "user.email", check=False).stdout.strip() else FALLBACK_IDENTITY
 
 
 def plan_revision(workflow):
-    from validate_plan import load_yaml
-    try:
-        plan = load_yaml((Path(workflow) / "plan.yaml").read_text(encoding="utf-8")) or {}
-    except OSError:
-        return None, None
-    return plan.get("revision", 1), plan.get("status")
+    plan = read_yaml(Path(workflow) / "plan.yaml", {})
+    return (plan.get("revision", 1), plan.get("status")) if plan else (None, None)
 
 
 def tag_ready(workflow):
@@ -113,26 +104,24 @@ def tag_ready(workflow):
         git(workflow, "tag", "-f", f"r{rev}")
 
 
-def commit(workflow, message):
+def commit(workflow, message, to=None):
     """Commit every change to the plan, gates and agents; returns (commit or None, note).
 
-    Skipped (with a note) while a wave runs or without git. While a run is
-    active and main is checked out, the commit goes to a new branch run/<id>:
-    a run never changes main directly."""
+    `to`: the branch the commit belongs on (a run's run/<id>). When main is checked out, that
+    branch is created for it, so a run never changes main directly. Skipped (with a note) while a
+    wave runs or without git."""
     if not available():
         return None, "git not found: the plan was not committed"
-    if wave_running(workflow):
+    if (run := active_run(workflow)) and run.wave_running:
         return head(workflow), "a wave is running: not committed now (the next compile commits it)"
     ensure_repo(workflow)
-    act = active_run(workflow)
-    to_run_branch = bool(act and branch(workflow) == MAIN and head(workflow) is not None)
-    if conflict := branch_conflict(workflow):
+    if conflict := branch_conflict(workflow, to):
         raise RuntimeError(conflict)  # checked before staging: a refused commit leaves nothing staged on main
     git(workflow, "add", "-A")
     staged = git(workflow, "diff", "--cached", "--quiet", check=False).returncode != 0
     if staged or head(workflow) is None:
-        if to_run_branch:
-            git(workflow, "switch", "-q", "-c", f"run/{act[0]}")
+        if to and branch(workflow) == MAIN and head(workflow) is not None:
+            git(workflow, "switch", "-q", "-c", to)
         git(workflow, *identity(workflow), "commit", "-q", "--allow-empty", "-m", message)
     tag_ready(workflow)
     return head(workflow), None
@@ -152,15 +141,14 @@ def review_info(workflow):
             "see": f"git diff {MAIN}...{b}"}
 
 
-def branch_conflict(workflow):
-    """Why the active run cannot get its branch run/<id>, or None: an earlier run with the same
-    id left that branch (runs/ is not in git, so deleting its folder frees the id but not the branch)."""
-    act = active_run(workflow)
-    if not (act and available() and is_repo(workflow) and branch(workflow) == MAIN and head(workflow) is not None):
+def branch_conflict(workflow, to):
+    """Why a commit cannot create branch `to` from main, or None: an earlier run with the same id
+    left that branch (runs/ is not in git, so deleting its folder frees the id but not the branch)."""
+    if not (to and available() and is_repo(workflow) and branch(workflow) == MAIN and head(workflow) is not None):
         return None
-    if f"run/{act[0]}" not in run_branches(workflow):
+    if to not in run_branches(workflow):
         return None
-    return (f"branch run/{act[0]} already exists from an earlier run with this id, so this run cannot commit to it. "
+    return (f"branch {to} already exists from an earlier run with this id, so this run cannot commit to it. "
             "Stop this run (workflow_stop_run), then ask the user to review or delete that branch")
 
 
@@ -171,11 +159,19 @@ def run_branches(workflow):
     return git(workflow, "branch", "--list", "run/*", "--format=%(refname:short)", check=False).stdout.split()
 
 
+def is_change_branch(name):
+    return bool(name) and name.split("/")[0] in (*CHANGE_KINDS, LEGACY_CHANGE) and "/" in name
+
+
+def is_review_branch(name):
+    return bool(name) and (name.startswith("run/") or is_change_branch(name))
+
+
 def unmerged_branches(workflow):
     if not available() or not is_repo(workflow):
         return []
     r = git(workflow, "branch", "--no-merged", MAIN, "--format=%(refname:short)", check=False)
-    return [b for b in r.stdout.split() if b.startswith(("run/", "change/"))]
+    return [b for b in r.stdout.split() if is_review_branch(b)]
 
 
 # --- commands -----------------------------------------------------------------
@@ -184,44 +180,54 @@ def unmerged_branches(workflow):
 def main(workflow: Annotated[str, typer.Option(help="workflow root")] = "."):
     os.chdir(workflow)
     if not Path("plan.yaml").is_file():
-        emit({"ok": False, "error": f"{Path(workflow).resolve()} is not a workflow (no plan.yaml)"}, 2)
+        refuse(f"{Path(workflow).resolve()} is not a workflow (no plan.yaml)", 2)
     if not available():
-        emit({"ok": False, "error": "git is required; ask the user to install it"}, 2)
+        refuse("git is required; ask the user to install it", 2)
+    report_state(Path.cwd())
 
 
 @app.command("begin-change")
-def begin_change():
-    """Start (or continue) a branch for changing the plan with /workflow-revise."""
-    from validate_plan import list_runs, rt_yaml
+def begin_change(kind: Annotated[str, typer.Option(help="revise (/workflow-revise) | improve (/workflow-improve)")] = "revise"):
+    """Start (or continue) a branch for changing the plan: revise/<date>-<n> or improve/<date>-<n>."""
+    if kind not in CHANGE_KINDS:
+        refuse(f"kind must be one of {', '.join(CHANGE_KINDS)}")
     workflow = Path.cwd()
-    act = active_run(workflow)
-    if act:
-        emit({"ok": False, "error": f"run {act[0]} is active: tell the run what to change (it replans on its branch), or stop it first"}, 1)
+    if run := active_run(workflow):
+        refuse(f"run {run.id} is active: tell the run what to change (it replans on its branch), or stop it first")
     if not list_runs(workflow):
+        if kind == "improve":
+            refuse("no run yet, so nothing to improve from: run the workflow first (/workflow-run), "
+                   "or change the plan directly while planning (/workflow-revise)")
         emit({"ok": True, "branch": branch(workflow), "mode": "planning", "note": "no run yet: planning edits the plan directly"})
     b = branch(workflow)
-    if b and b.startswith("change/"):
-        emit({"ok": True, "branch": b, "mode": "change", "continued": True})
+    if is_change_branch(b):
+        open_kind = b.split("/")[0]
+        if open_kind not in (kind, LEGACY_CHANGE):  # both commands used change/ once
+            refuse(f"{b} is an open /workflow-{open_kind} change: finish it first (review: merge, keep "
+                   f"or discard), then start /workflow-{kind}")
+        emit({"ok": True, "branch": b, "mode": open_kind, "continued": True})
     if b != MAIN:
-        emit({"ok": False, "error": f"branch {b} is checked out and not reviewed: review it first (workflow_merge: merge, keep or discard)"}, 1)
-    commit(workflow, "Uncommitted changes before a change")
+        refuse(f"branch {b} is checked out and not reviewed: review it first (workflow_merge: merge, keep or discard)")
     today = datetime.datetime.now().astimezone().date().isoformat()  # local date
-    taken = [int(m.group(1)) for x in git(workflow, "branch", "--list", f"change/{today}-*", "--format=%(refname:short)").stdout.split()
-             if (m := re.match(rf"^change/{today}-(\d+)$", x))]
-    new = f"change/{today}-{max(taken, default=0) + 1}"
-    git(workflow, "switch", "-q", "-c", new)
-    # a new revision, drafted; the critic's recorded result marks it ready again
-    y = rt_yaml()
-    path = Path("plan.yaml")
-    plan = y.load(path.read_text(encoding="utf-8"))
-    plan["revision"] = plan.get("revision", 1) + 1
-    plan["status"] = "draft"
-    plan.pop("critique", None)
-    buf = io.StringIO()
-    y.dump(plan, buf)
-    path.write_text(buf.getvalue(), encoding="utf-8")
-    sha, _ = commit(workflow, f"r{plan['revision']} draft: change started")
-    emit({"ok": True, "branch": new, "mode": "change", "revision": plan["revision"], "commit": sha})
+    taken = [int(m.group(1)) for x in git(workflow, "branch", "--list", f"{kind}/{today}-*", "--format=%(refname:short)").stdout.split()
+             if (m := re.match(rf"^{kind}/{today}-(\d+)$", x))]
+    new = f"{kind}/{today}-{max(taken, default=0) + 1}"
+    git(workflow, "switch", "-q", "-c", new)  # uncommitted changes come along: main changes only by a merge
+    # the plan is left as it is: an edit to it unreadies it (critique.plan_digest) until the critic is
+    # recorded, which also raises the revision; a change to gates, scripts or lessons alone needs no critic
+    sha, _ = commit(workflow, f"{kind} started: changes left uncommitted on main")
+    emit({"ok": True, "branch": new, "mode": kind, "revision": plan_revision(workflow)[0], "commit": sha})
+
+
+def main_plan(workflow):
+    """plan.yaml as main has it, or None."""
+    r = git(workflow, "show", f"{MAIN}:plan.yaml", check=False)
+    return load_yaml(r.stdout) if r.returncode == 0 else None
+
+
+def why_not_ready(workflow, plan):
+    """check_ready, against main's plan when a branch is checked out (a change must be critiqued)."""
+    return check_ready(plan, main_plan(workflow) if branch(workflow) not in (None, MAIN) else None)
 
 
 @app.command()
@@ -236,41 +242,35 @@ def merge(action: Annotated[str, typer.Option(help="merge | keep | discard")]):
     """Finish the review of the checked-out branch and switch back to main."""
     workflow = Path.cwd()
     if action not in ("merge", "keep", "discard"):
-        emit({"ok": False, "error": "action must be merge, keep or discard"}, 1)
-    act = active_run(workflow)
+        refuse("action must be merge, keep or discard")
     b = branch(workflow)
     if b in (None, MAIN):
-        emit({"ok": False, "error": "main is checked out: nothing to review"}, 1)
-    if act:
-        emit({"ok": False, "error": f"run {act[0]} is still active: let it finish, or stop it (workflow_stop_run), then review"}, 1)
+        refuse("main is checked out: nothing to review")
+    if run := active_run(workflow):
+        refuse(f"run {run.id} is still active: let it finish, or stop it (workflow_stop_run), then review")
     if action == "merge":
-        from validate_plan import load_yaml, validate
-        plan = load_yaml(Path("plan.yaml").read_text(encoding="utf-8")) or {}
+        plan = read_yaml("plan.yaml", {})
         errors = validate(plan, None, None, workflow)[0]
-        if errors or plan.get("status") != "ready":
-            emit({"ok": False, "error": f"the plan on {b} is {plan.get('status')}" + (f" with errors {errors[:3]}" if errors else "")
-                 + ": only a ready, valid plan can reach main. Finish the change (critic, workflow_record_critique), or keep or discard the branch."}, 1)
+        if errors or why_not_ready(workflow, plan):
+            refuse(f"the plan on {b} is {plan.get('status')}" + (f" with errors {errors[:3]}" if errors else "")
+                   + ": only a ready, valid plan can reach main. Finish the change (critic, workflow_record_critique), or keep or discard the branch.")
     commit(workflow, "Uncommitted changes at review")  # leftovers belong to the branch
     git(workflow, "switch", "-q", MAIN)
-    note = None
     if action == "merge":
-        # linear history: fast-forward, or replay the branch on top of a main that moved
-        if git(workflow, "merge", "-q", "--ff-only", b, check=False).returncode != 0:
-            r = git(workflow, *identity(workflow), "rebase", "-q", MAIN, b, check=False)
-            if r.returncode != 0:
-                git(workflow, "rebase", "--abort", check=False)
-                git(workflow, "switch", "-q", b)
-                emit({"ok": False, "error": f"main has moved and {b} conflicts with it; the branch is checked out again. Resolve by hand, or discard it."}, 1)
-            git(workflow, "switch", "-q", MAIN)
-            git(workflow, "merge", "-q", "--ff-only", b)
-            note = f"main had moved: {b} was rebased onto it"
-        git(workflow, "branch", "-q", "-d", b)
+        # one commit on main per merged branch (a squash); the branch's commits were its working steps
+        steps = git(workflow, "log", "--reverse", "--format=- %s", f"{MAIN}..{b}").stdout
+        if git(workflow, "merge", "-q", "--squash", b, check=False).returncode != 0:
+            git(workflow, "reset", "-q", "--merge", check=False)
+            git(workflow, "switch", "-q", b)
+            refuse(f"main has moved and {b} conflicts with it; the branch is checked out again. Resolve by hand, or discard it.")
+        if git(workflow, "diff", "--cached", "--quiet", check=False).returncode != 0:
+            git(workflow, *identity(workflow), "commit", "-q", "-m", f"r{plan_revision(workflow)[0]}: {b}\n\n{steps}")
         tag_ready(workflow)
-    elif action == "discard":
-        git(workflow, "branch", "-q", "-D", b)
+    if action in ("merge", "discard"):
+        git(workflow, "branch", "-q", "-D", b)  # -D: a squashed branch is not an ancestor of main
     rev, status = plan_revision(workflow)
     emit({"ok": True, "action": action, "branch": b, "main": head(workflow), "revision": rev, "status": status,
-         "note": note, "unmerged": unmerged_branches(workflow)})
+         "unmerged": unmerged_branches(workflow)})
 
 
 if __name__ == "__main__":

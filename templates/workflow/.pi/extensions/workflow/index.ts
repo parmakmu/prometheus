@@ -5,10 +5,11 @@
  *   /workflow-run [note]        plan, continue or run from where it stands (model)
  *   /workflow-status            where the workflow stands (no model)
  *   /workflow-revise [change]   change the plan on a branch, for review (no run active; model)
- *   /workflow-improve [focus]   propose fixes from the sessions and runs, applied on a change branch (no run active; model)
+ *   /workflow-improve [focus]   propose fixes from the sessions and runs, applied on an improve/ branch (no run active; model)
  *
  * Tools for the model (the mechanical steps of the run protocol)
  *   workflow_check            validate the plan and compile-check its waves
+ *   workflow_sessions         list this workflow's Pi sessions, or read a bounded part of one
  *   workflow_new_run          start a run (runs/<id>/)
  *   workflow_stop_run         stop the active run (kept in runs/); returns its branch for review
  *   workflow_compile          compile the active run's next wave into the exact subagent call
@@ -24,7 +25,7 @@
  * state (run.yaml), the children's work/ and compiled waves. Waves are not written in the
  * plan; the scripts derive them from the stages and the active run's stage status.
  * The workflow is its own git repo (workflow_git.py). main holds the reviewed plan; a
- * run's changes go to run/<id>, a /workflow-revise change to change/<date>-<n>, and each
+ * run's changes go to run/<id>, a /workflow-revise change to revise/<date>-<n>, /workflow-improve to improve/<date>-<n>, and each
  * reaches main only when the user merges it. The scripts commit (never while a wave runs:
  * pi-subagents checks the repo's staged index around writer children); git commands that
  * change the repo are blocked for the model.
@@ -70,20 +71,23 @@ const REVISE_PROMPT = (change: string, branch: string, mode: string) => {
 plan.yaml, gates/, scripts/ and .pi/agents/ directly (packages: uv add); anything in the plan may change. End with the
 user's review of the branch and workflow_merge (merge, keep or discard).`;
 	return `Change this workflow's plan following the "Changing the plan" section
-of \`.pi/skills/workflow/references/run-protocol.md\`. Launch no work stages.
+of \`.pi/skills/workflow/references/changing.md\`. Launch no work stages.
 
 ${where}
 
 Change requested (may be empty: then ask what to change, or continue the change on this branch): ${change}`;
 };
 
-const IMPROVE_PROMPT = (focus: string, branch: string, digest: string) => `Improve this workflow from how it actually went. You are on the change
+const IMPROVE_PROMPT = (focus: string, branch: string, digest: string) => `Improve this workflow from how it actually went. You are on the improve
 branch "${branch}". Launch no work stages.
 
-Below is a digest of this workflow's latest sessions and its runs: user messages, failed or
-blocked tool results, repeated calls, cost, launches that failed or ran twice. It only points at
-evidence; you were there, so use what you remember of this session too, and open the files it
-points at before proposing anything.
+Below is a digest of what is new since the last review: this workflow's sessions and runs (user
+messages, failed or blocked tool results, repeated calls, cost, launches that failed or ran twice).
+It only points at evidence. Do not open the raw session files (their lines are too long to read) or parse them yourself;
+before proposing anything, open only the files a finding points at (the digest already summarises
+runs: no need to read every run.yaml, gate and script), read more of a session with workflow_sessions
+(show <file> around a failure's \`at\`) only where a finding needs it, and check with \`git branch\`
+any branch you mean to cite.
 
 1. Find causes, not symptoms: a gate that rejected correct output, a stage program rewritten or
    failing each run, a stage task that left something out, a question the plan should have
@@ -101,13 +105,17 @@ points at before proposing anything.
    the user to take to Prometheus.
    \`lessons\` are what earlier /workflow-improve passes decided: do not re-propose a rejected one, and
    if an applied one's problem shows up again, say its fix did not work.
-3. Ask the user about each proposal with the question tool (apply / skip), then make the accepted
+3. Ask the user about each proposal with the question tool (apply / skip). The question text itself
+   must carry the context, since the dialog may not show your chat: what happened (the evidence), why
+   it matters (the cost or repeat), the exact edit (before and after), and what skipping leaves. Then make the accepted
    edits following the "Changing the plan" section of
-   \`.pi/skills/workflow/references/run-protocol.md\` (critic included when the plan changes).
+   \`.pi/skills/workflow/references/changing.md\` (critic included when the plan changes; it says what to read).
    Append every proposal, applied or skipped, to \`improvements.yaml\` (a list; create it if missing):
-   \`{date: <today, YYYY-MM-DD>, target: <file>, proposal: <one line>, evidence: <session or run>,
+   \`{date: <the digest's \`now\`>, target: <file>, proposal: <one line>, evidence: <session or run>,
    decision: applied | rejected, note: <the user's reason, if given>}\`. Write it even when nothing
-   was accepted; it marks these sessions as reviewed.
+   was accepted; it marks these sessions as reviewed. Write it once, when the decisions are final,
+   not before the critic: workflow_merge commits leftover files, so never call workflow_record_critique
+   again just to commit it.
    End with the user's review of the branch and workflow_merge (merge, keep or discard).
 
 Focus requested (may be empty): ${focus}
@@ -218,10 +226,40 @@ async function runScript(
 	return { code: r.code, data, stdout: r.stdout, stderr };
 }
 
-/** Tool result carrying a script's JSON; throws when the script produced no JSON. */
-function toolResult(r: ScriptResult, what: string) {
+/** `value` without what says nothing: null, "", [] and {} (absent reads the same to the model, and costs no tokens). */
+function terse(value: any): any {
+	if (Array.isArray(value)) return value.map(terse);
+	if (value && typeof value === "object") {
+		const out: Record<string, any> = {};
+		for (const [k, v] of Object.entries(value)) {
+			const t = terse(v);
+			const empty = t === null || t === undefined || t === "" || (Array.isArray(t) && !t.length) || (typeof t === "object" && !Array.isArray(t) && !Object.keys(t).length);
+			if (!empty) out[k] = t;
+		}
+		return out;
+	}
+	return value;
+}
+
+/** workflow_check's result without what the model already has: identity key maps, the active run again as last_run, the root. */
+function slimCheck(res: any) {
+	const s = res?.summary;
+	if (!s) return res;
+	const out = { ...s };
+	if (out.workflow_keys && Object.entries(out.workflow_keys).every(([k, v]) => v === k)) delete out.workflow_keys;
+	if (out.run && out.last_run?.id === out.run.id) delete out.last_run;
+	if (out.workflow) out.workflow = { ...out.workflow, root: undefined };
+	return { ...res, summary: out };
+}
+
+/** The text a model reads for a script's JSON: compact and without empty fields (the full data stays in `details`). */
+const compact = (data: any) => JSON.stringify(terse(data));
+
+/** Tool result carrying a script's JSON (or `format` of it); throws when the script produced no JSON. */
+function toolResult(r: ScriptResult, what: string, format?: (data: any) => string | undefined) {
 	if (r.data === undefined) throw new Error(`${what} failed (exit ${r.code}): ${(r.stderr || r.stdout).trim().slice(0, 2000)}`);
-	return { content: [{ type: "text" as const, text: JSON.stringify(r.data, null, 2) }], details: r.data };
+	const text = format?.(r.data) ?? compact(r.data);
+	return { content: [{ type: "text" as const, text }], details: r.data };
 }
 
 /** True for any run's state file, and the plan unless it is open for a change. */
@@ -233,18 +271,21 @@ function isProtected(root: string, file: string, planOpen: boolean): boolean {
 
 /** What only a reviewed branch changes once a run exists: gates, stage programs, agents, packages. */
 const BRANCH_FILES = /^(gates|scripts|\.pi[\\/]agents)[\\/]|^(pyproject\.toml|uv\.lock)$/;
+const SESSION_FILES = /[\\/]\.pi[\\/]agent[\\/]sessions[\\/]/;
 const PACKAGE_COMMAND = /\buv\s+(add|remove)\b/;
 
-/** run/… and change/… branches (loose and packed refs): ones waiting for review. */
+/** run/, revise/, improve/ (and older change/) branches (loose and packed refs): ones waiting for review. */
+const REVIEW_KINDS = ["run", "revise", "improve", "change"];
+const isChangeBranch = (b: string) => /^(revise|improve|change)\//.test(b);
 function reviewBranches(root: string): string[] {
 	const names = new Set<string>();
-	for (const kind of ["run", "change"]) {
+	for (const kind of REVIEW_KINDS) {
 		try {
 			for (const d of fs.readdirSync(path.join(root, ".git", "refs", "heads", kind))) names.add(`${kind}/${d}`);
 		} catch {}
 	}
 	try {
-		for (const m of fs.readFileSync(path.join(root, ".git", "packed-refs"), "utf8").matchAll(/refs\/heads\/((?:run|change)\/\S+)/g))
+		for (const m of fs.readFileSync(path.join(root, ".git", "packed-refs"), "utf8").matchAll(/refs\/heads\/((?:run|revise|improve|change)\/\S+)/g))
 			names.add(m[1]);
 	} catch {}
 	return [...names].sort();
@@ -299,6 +340,7 @@ async function check(pi: ExtensionAPI, root: string, signal?: AbortSignal) {
 		errors: v.data?.errors ?? [v.stderr.trim()],
 		warnings: v.data?.warnings ?? [],
 		summary: v.data?.summary,
+		state: v.data?.state, // where the workflow stands and the legal moves (workflow_state.py)
 		compiles: c.data?.ok ?? false,
 		compile_errors: c.data?.compile_errors ?? {},
 	};
@@ -315,6 +357,12 @@ export default function workflowAgent(pi: ExtensionAPI) {
 			return {
 				block: true,
 				reason: "The workflow scripts commit this workflow's git repo (compile, replan, critique); do not run git commands that change it. Read-only git (log, diff, show, status) is fine.",
+			};
+		// a session's JSONL has lines too long for the read tool, so a model writes a parser: point it at the tool
+		if (SESSION_FILES.test(input.path ?? "") || ((event.toolName === "bash" || event.toolName === "powershell") && SESSION_FILES.test(input.command ?? "")))
+			return {
+				block: true,
+				reason: "Pi's session files are read with the workflow_sessions tool (action list, then show with from/to or around), which returns a compact, clipped transcript. Do not open or parse the JSONL yourself.",
 			};
 		const envFile = input.path
 			? ENV_FILE.test(path.basename(input.path))
@@ -343,7 +391,7 @@ export default function workflowAgent(pi: ExtensionAPI) {
 			}
 		}
 		// the plan is open for direct edits only on a change branch (/workflow-revise) with no run active
-		const planOpen = !runActive(root) && (currentBranch(root) ?? "").startsWith("change/");
+		const planOpen = !runActive(root) && isChangeBranch(currentBranch(root) ?? "");
 		const touches =
 			event.toolName === "write" || event.toolName === "edit"
 				? !!input.path && isProtected(root, path.resolve(ctx.cwd, input.path), planOpen)
@@ -410,7 +458,7 @@ export default function workflowAgent(pi: ExtensionAPI) {
 	});
 
 	/** Open (or continue) the change branch for a command that edits the workflow; undefined after telling the user why not. */
-	const beginChange = async (ctx: ExtensionContext) => {
+	const beginChange = async (ctx: ExtensionContext, kind: "revise" | "improve") => {
 		const root = findRoot(ctx.cwd);
 		if (!root) {
 			ctx.ui.notify("Not inside a workflow folder (no plan.yaml).", "error");
@@ -420,7 +468,7 @@ export default function workflowAgent(pi: ExtensionAPI) {
 			ctx.ui.notify("The agent is busy; wait for it to finish, then run the command again.", "warning");
 			return;
 		}
-		const r = await runScript(pi, root, "workflow_git.py", ["begin-change"]);
+		const r = await runScript(pi, root, "workflow_git.py", ["begin-change", "--kind", kind]);
 		if (!r.data?.ok) {
 			ctx.ui.notify(r.data?.error ?? `workflow_git.py begin-change failed: ${(r.stderr || r.stdout).trim().slice(0, 500)}`, "error");
 			return;
@@ -431,7 +479,7 @@ export default function workflowAgent(pi: ExtensionAPI) {
 	pi.registerCommand("workflow-revise", {
 		description: "Change this workflow's plan on a branch you review before it reaches main (no run active): /workflow-revise [change]",
 		handler: async (args, ctx) => {
-			const change = await beginChange(ctx);
+			const change = await beginChange(ctx, "revise");
 			if (!change) return;
 			activateSubagent(pi); // the critic
 			pi.sendUserMessage(REVISE_PROMPT(args.trim(), change.branch, change.mode));
@@ -439,15 +487,25 @@ export default function workflowAgent(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("workflow-improve", {
-		description: "Propose improvements from this workflow's sessions and runs, applied on a change branch you review (no run active): /workflow-improve [focus]",
+		description: "Propose improvements from this workflow's sessions and runs, applied on an improve/ branch you review (no run active): /workflow-improve [focus]",
 		handler: async (args, ctx) => {
-			const change = await beginChange(ctx);
-			if (!change) return;
-			const d = await runScript(pi, change.root, "session_digest.py", ["--workflow", change.root]);
+			const root = findRoot(ctx.cwd);
+			if (!root) {
+				ctx.ui.notify("Not inside a workflow folder (no plan.yaml).", "error");
+				return;
+			}
+			// the digest first: with nothing new to learn from, no branch is opened (and none left to review)
+			const d = await runScript(pi, root, "session_digest.py", ["--workflow", root]);
 			if (!d.data?.ok) {
 				ctx.ui.notify(d.data?.error ?? `session_digest.py failed: ${(d.stderr || d.stdout).trim().slice(0, 500)}`, "error");
 				return;
 			}
+			if (!d.data.sessions?.length && !d.data.runs?.length && !args.trim() && currentBranch(root) === "main") {
+				ctx.ui.notify("Nothing new since the last /workflow-improve: no unreviewed sessions or runs. Give a focus to improve anyway: /workflow-improve <focus>.", "info");
+				return;
+			}
+			const change = await beginChange(ctx, "improve");
+			if (!change) return;
 			activateSubagent(pi); // the critic
 			pi.sendUserMessage(IMPROVE_PROMPT(args.trim(), change.branch, JSON.stringify(d.data)));
 		},
@@ -470,6 +528,7 @@ export default function workflowAgent(pi: ExtensionAPI) {
 			const s = chk.summary ?? {};
 			const pf = next.data?.preflight ?? {};
 			const lines = [
+				`state: ${chk.state?.state ?? "unknown"}${chk.state?.hint ? ` (${chk.state.hint})` : ""}`,
 				`goal: ${b.goal || "(none yet)"}`,
 				`status: ${b.status}   revision: ${b.revision}   runs: ${b.runs ?? 0}`,
 				b.active_run
@@ -490,6 +549,7 @@ export default function workflowAgent(pi: ExtensionAPI) {
 				const approvals = (pf.approvals_needed ?? []).map((a: any) => a.stage);
 				if (decisions.length) lines.push(`decisions to collect: ${decisions.join(", ")}`);
 				if (approvals.length) lines.push(`approvals needed: ${approvals.join(", ")}`);
+				if (pf.review_needed) lines.push(`waiting for your review of wave ${pf.review_needed.wave} before the next one`);
 				if (next.data?.error) lines.push(`next wave: ${next.data.error}`);
 			}
 			lines.push(`plan valid: ${chk.valid}   compiles: ${chk.compiles}`);
@@ -513,7 +573,7 @@ export default function workflowAgent(pi: ExtensionAPI) {
 			parameters: Type.Object({}),
 			async execute(_id, _params, signal, _onUpdate, ctx) {
 				const res = await check(pi, mustRoot(ctx), signal);
-				return { content: [{ type: "text" as const, text: JSON.stringify(res, null, 2) }], details: res };
+				return { content: [{ type: "text" as const, text: compact(slimCheck(res)) }], details: res };
 			},
 		}),
 	);
@@ -528,21 +588,57 @@ export default function workflowAgent(pi: ExtensionAPI) {
 		parameters: P;
 		script: string;
 		args: (params: Static<P>) => string[];
+		format?: (data: any) => string | undefined;
 	}) => {
-		const { script, args, ...definition } = tool;
+		const { script, args, format, ...definition } = tool;
 		pi.registerTool(
 			defineTool({
 				...definition,
 				async execute(_id, params, signal, _onUpdate, ctx) {
 					const argv = args(params);
 					const what = argv[0] && !argv[0].startsWith("-") ? `${script} ${argv[0]}` : script;
-					return toolResult(await runScript(pi, mustRoot(ctx), script, argv, signal), what);
+					return toolResult(await runScript(pi, mustRoot(ctx), script, argv, signal), what, format);
 				},
 			}),
 		);
 	};
 	/** [flag, value] when the value is given, else nothing. */
 	const opt = (flag: string, value: string | undefined): string[] => (value ? [flag, value] : []);
+
+	scriptTool({
+		name: "workflow_sessions",
+		label: "Sessions",
+		description:
+			"Read this workflow's earlier Pi sessions (their JSONL files have lines too long for the read tool). action list: the sessions, newest first. action show: a bounded transcript of one (file from list): per record its number i, time, role, text, tool calls and results, each clipped. One line per record: number, time, U (user) / A (assistant, then -> tool(args)) / R (result; R! failed). Select records with from/to (record numbers) or around (a timestamp, e.g. a failure's `at` in the improve digest; window records each side); it stops at a size cap and ends with [more: next_from N].",
+		promptSnippet: "List or read this workflow's earlier sessions",
+		promptGuidelines: [
+			"To look into an earlier session, use workflow_sessions; do not read the session JSONL files with read or bash, or write a parser for them.",
+		],
+		parameters: Type.Object({
+			action: Type.Union([Type.Literal("list"), Type.Literal("show")]),
+			file: Type.Optional(Type.String({ description: "show: a session file name from list, or the start of one" })),
+			from: Type.Optional(Type.Integer({ description: "show: first record number" })),
+			to: Type.Optional(Type.Integer({ description: "show: last record number" })),
+			around: Type.Optional(Type.String({ description: "show: a timestamp to centre the window on" })),
+			window: Type.Optional(Type.Integer({ description: "show with around: records on each side (default 6)" })),
+			chars: Type.Optional(Type.Integer({ description: "show: characters kept of each message, argument or result (default 300)" })),
+		}),
+		script: "session_read.py",
+		// plain lines, not indented JSON: a session transcript is read for its text
+		format: (d) => (d.ok && typeof d.text === "string" ? (d.next_from ? `${d.text}\n[more: next_from ${d.next_from}]` : d.text) : undefined),
+		args: (p) =>
+			p.action === "list"
+				? ["list"]
+				: [
+						"show",
+						p.file ?? "",
+						...opt("--from", p.from?.toString()),
+						...opt("--to", p.to?.toString()),
+						...opt("--around", p.around),
+						...opt("--window", p.window?.toString()),
+						...opt("--text-chars", p.chars?.toString()),
+					],
+	});
 
 	scriptTool({
 		name: "workflow_new_run",
@@ -572,7 +668,7 @@ export default function workflowAgent(pi: ExtensionAPI) {
 		name: "workflow_merge",
 		label: "Merge branch",
 		description:
-			"Finish the review of the checked-out run or change branch and switch back to main: merge (into main; tags the revision), keep (the branch stays for later) or discard (delete it). Refuses while a run is active.",
+			"Finish the review of the checked-out run or change branch and switch back to main: merge (one commit on main, however many the branch made; tags the revision; deletes the branch), keep (the branch stays for later) or discard (delete it). Refuses while a run is active.",
 		promptGuidelines: [
 			"Call workflow_merge only with the action the user chose after seeing the branch's changes (git diff main...<branch>).",
 		],
@@ -587,17 +683,19 @@ export default function workflowAgent(pi: ExtensionAPI) {
 		name: "workflow_compile",
 		label: "Compile wave",
 		description:
-			"Compile the active run's next wave into the exact pi-subagents call. Returns {ok, run, wave, stages, ends_with, call, children} when it can launch, or {ok: false, preflight} listing params to set (missing_params), secrets the user must add to .env (missing_secrets), decisions to collect and approvals to get.",
+			"Compile the active run's next wave into the exact pi-subagents call. Returns {ok, run, wave, stages, ends_with, call, children} when it can launch, or {ok: false, preflight} listing params to set (missing_params), secrets the user must add to .env (missing_secrets), decisions to collect, approvals to get, and review_needed when the last wave ended with a review the user has not answered yet. Only the launched wave's plan is committed; children that completed in a failed launch of the same wave, unchanged since, are not run again (notes say which).",
 		promptSnippet: "Compile the next workflow wave into a subagent call",
 		promptGuidelines: [
-			"Never write a workflowScript by hand; use workflow_compile and pass its `call` to the subagent tool unchanged. `call.workflowScriptPath` is a path (pi-subagents reads it itself): pass it as-is, do not open the file or paste its contents into the tool call.",
+			"Never write a wave script by hand; use workflow_compile and pass its `call` to the subagent tool unchanged. `call.workflow` is a script path (pi-subagents reads it itself): pass it as-is, do not open the file or paste its contents into the tool call.",
 			"Only list a stage in `approve` after the user explicitly approved that stage's side effect in this session.",
+			"Pass `reviewed: true` only after the user saw the last wave's outputs (preflight review_needed) and said to go on.",
 		],
 		parameters: Type.Object({
 			approve: Type.Optional(Type.Array(Type.String(), { description: "side-effect stage keys the user explicitly approved" })),
+			reviewed: Type.Optional(Type.Boolean({ description: "the user reviewed the last wave's outputs and said to go on" })),
 		}),
 		script: "compile_wave.py",
-		args: (p) => opt("--approve", p.approve?.join(",")),
+		args: (p) => [...opt("--approve", p.approve?.join(",")), ...(p.reviewed ? ["--reviewed"] : [])],
 	});
 
 	scriptTool({
@@ -633,7 +731,7 @@ export default function workflowAgent(pi: ExtensionAPI) {
 		name: "workflow_log_finish",
 		label: "Log wave result",
 		description:
-			"Record a finished wave in the active run. Pass only the wave: the outcome (the workflow script's return value, status, cost) is read from pi-subagents. `done` marks its stages done (and the run done after the last wave); failed, blocked or stopped put them back to pending so the wave can be fixed and relaunched. Commits files the wave wrote into the workflow on the run's branch. Returns the wave's ends_with (what to do next), a summary of its children and, when the run is done, its branch for review, the plan's `done_when` for the final report, and `mission_close` (pass it to the subagent tool unchanged).",
+			"Record a finished wave in the active run. Pass only the wave: the outcome (the workflow script's return value, status, cost) is read from pi-subagents. `done` marks its stages done (and the run done after the last wave); failed, blocked or stopped put them back to pending so the wave can be fixed and relaunched. Commits files the wave wrote into the workflow on the run's branch. Returns the wave's ends_with (what to do next), a summary of its children, next_wave (with `preflight`: the decisions, approvals, params or secrets its compile needs first, to ask for before compiling) and, when the run is done, its branch for review, the plan's `done_when` for the final report, and `mission_close` (pass it to the subagent tool unchanged).",
 		promptGuidelines: [
 			"After a wave's completion notice, call workflow_log_finish with just the wave; do not look up the run's status or assemble its result yourself.",
 		],

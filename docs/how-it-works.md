@@ -78,7 +78,7 @@ Start Pi in the workflow directory and invoke `/workflow-run`. A run proceeds th
 5. **Continue, pause, or replan.** The derived wave boundary tells the session whether to proceed, show results for review, report an approved side effect, or replan after discovery.
 6. **Finish and review changes.** When all stages are done, report the outcomes and deliverable locations. If the run changed the workflow plan or scripts, show the branch diff and ask whether to merge, keep, or discard it.
 
-A workflow run is therefore not a single model response: it has durable state, possibly multiple subagent launches, and explicit human control points. The full state machine and operator instructions are in [`run-protocol.md`](../.pi/skills/workflow/references/run-protocol.md). When something is refused, see [Troubleshooting](troubleshooting.md).
+A workflow run is therefore not a single model response: it has durable state, possibly multiple subagent launches, and explicit human control points. The full state machine and operator instructions are in [`run-protocol.md`](../.pi/skills/workflow/references/run-protocol.md), with replanning in [`replanning.md`](../.pi/skills/workflow/references/replanning.md) and branch review and plan changes in [`changing.md`](../.pi/skills/workflow/references/changing.md), which the agent reads only when it needs them. When something is refused, see [Troubleshooting](troubleshooting.md).
 
 ## State, Git, and safety
 
@@ -92,7 +92,7 @@ runs/<id>/
   .compiled/     compiled waves and their results
 ```
 
-Each workflow is also its own Git repository. `main` is the reviewed baseline. A replan during a run is made on `run/<id>`; `/workflow-revise` starts a `change/<date>-<n>` branch when no run is active. Plan and script changes reach `main` only after the user reviews and merges them. Run data and `.env` are excluded from Git.
+Each workflow is also its own Git repository. `main` is the reviewed baseline. A replan during a run is made on `run/<id>`; `/workflow-revise` starts a `revise/<date>-<n>` branch and `/workflow-improve` an `improve/<date>-<n>` one when no run is active. Plan and script changes reach `main` only after the user reviews and merges them, as one commit per branch (`r<revision>: <branch>`, listing the branch's commits); the branch is then deleted. Run data and `.env` are excluded from Git.
 
 Only the scripts commit, never the model: when the workflow is created or refreshed, when a run starts, when a wave compiles, around a replan or recorded critique, and after a wave for files it wrote. A commit made while the plan is `ready` moves the tag `r<revision>` to it, and runs and launches record their commit, so `git show <commit>:plan.yaml` (or `r<N>`) shows exactly what ran. Nothing commits while a wave runs: pi-subagents compares the repo's staged index before and after each writer child.
 
@@ -108,7 +108,7 @@ The implementation keeps the Pi extensions thin; the Python scripts hold most wo
 | [`.pi/skills/workflow/SKILL.md`](../.pi/skills/workflow/SKILL.md) | Planning procedure used to turn a request into a plan. |
 | [`.pi/skills/workflow/references/`](../.pi/skills/workflow/references/) | Plan schema, classification, clarification, critic contract, agent profiles, and run protocol. |
 | [`.pi/skills/workflow/scripts/`](../.pi/skills/workflow/scripts/) | Python implementation for plan validation, wave compilation, run state, parameters, workflow Git, exports, and map batching. See [What the Python scripts do](python-scripts.md) for the role of each script. |
-| [`.pi/skills/workflow/templates/workflow/`](../.pi/skills/workflow/templates/workflow/) | Files copied into each new workflow: its extension, skill, plan skeleton, agents, settings, and instructions. |
+| [`templates/workflow/`](../templates/workflow/) | Files copied into each new workflow: its extension, skill, plan skeleton, agents, settings, and instructions. |
 | [`.pi/agents/plan-critic.md`](../.pi/agents/plan-critic.md) | Fresh-context, read-only critic profile used while planning. |
 | [`tests/`](../tests/) | Validator and parameter tests, mock subagent runs, and extension harnesses. |
 

@@ -57,6 +57,7 @@ CASES = [
     ("absolute out path", INV, lambda p: st(p, "compare")["out"][0].__setitem__("path", "~/report.xlsx"), "path is absolute", "error"),
     ("path param after path text", INV, lambda p: st(p, "compare")["out"][0].__setitem__("path", "../${report_dir}/r.xlsx"), "compiles to an absolute path", "error"),
     ("deterministic work in a worker", INV, lambda p: (st(p, "extract").pop("script"), st(p, "extract").pop("run"), st(p, "extract").__setitem__("pattern", "worker")), "deterministic work in a worker child", "warning"),
+    ("side effect on an app with a builtin agent", INV, lambda p: None, "has no connector tools", "warning"),
     ("undefined param", INV, lambda p: st(p, "compare")["out"][0].__setitem__("path", "${nope}/r.xlsx"), "undefined param", "error"),
     ("user-scoped agent", INV, lambda p: (p["agents"]["available"].append({"name": "x-parser", "source": "user"}), st(p, "extract").__setitem__("agent", "x-parser")), "user-scoped", "error"),
     ("asked finding without question", INV, lambda p: p["questions"][2].pop("from_finding"), "marked asked", "error"),
@@ -163,3 +164,18 @@ def test_gate_with_packages_must_run_with_uv_and_not_declare_its_own(tmp_path):
     errors, _warnings, _summary = validate_plan.validate(copy.deepcopy(INV), workflow_root=tmp_path)
     assert any("check_lines.py would fail" in e and "pyproject.toml instead" in e for e in errors), errors
     assert any("check_report.py would fail" in e and "`uv run`" in e for e in errors), errors
+
+
+def test_a_side_effect_agent_must_reach_its_target(tmp_path):
+    # Gmail drafts need a connector (mcp:) or a CLI (bash); an agent with neither cannot make them
+    (tmp_path / ".pi" / "agents").mkdir(parents=True)
+    plan = copy.deepcopy(INV)
+    plan["agents"]["available"].append({"name": "drafter", "source": "project"})
+    st(plan, "drafts")["agent"] = "drafter"
+    agent = tmp_path / ".pi" / "agents" / "drafter.md"
+    agent.write_text("---\nname: drafter\ntools: read, write\n---\nbody\n", encoding="utf-8")
+    errors, _warnings, _summary = validate_plan.validate(plan, workflow_root=tmp_path)
+    assert any("'drafter' cannot reach Gmail drafts" in e for e in errors), errors
+    agent.write_text("---\nname: drafter\ntools: [read, mcp:gmail/create_draft]\n---\nbody\n", encoding="utf-8")
+    errors, warnings, _summary = validate_plan.validate(plan, workflow_root=tmp_path)
+    assert not any("cannot reach" in e for e in errors) and not any("connector" in w for w in warnings), (errors, warnings)

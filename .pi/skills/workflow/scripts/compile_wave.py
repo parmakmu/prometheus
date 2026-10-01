@@ -11,6 +11,7 @@ runs/<id>/, and the result is also saved to runs/<id>/.compiled/<wave>.json.
 Gate commands name their scripts as ../gates/<script>; the compiler points
 that at the workflow's gates/ folder.
 
+It refuses a wave already launched but not recorded (see unrecorded_launch).
 Before compiling, it commits pending changes to the workflow's plan
 (workflow_git.py) and returns the commit, so the launch is reproducible; that is
 the only change it makes to the workflow. Git is required.
@@ -28,7 +29,7 @@ a user review, a replan).
 Prints one JSON object. When the wave can launch:
 
   {"ok": true, "wave": "w1", "stages": [...], "ends_with": "review",
-   "call": {"async": true, "mission"|"missionId": …, "workflowScriptPath": "…/.compiled/w1.js"},
+   "call": {"async": true, "mission"|"missionId": …, "workflow": "…/.compiled/w1.js"},
    "children": [...], "notes": [...]}
 
 The generated script is the wave as data (`const W = {...};`) followed by
@@ -43,7 +44,7 @@ environment variables the user must set for secrets (missing_secrets), or plan e
 
 The compiler never launches anything.
 """
-import importlib.util
+import hashlib
 import json
 import re
 import shlex
@@ -55,8 +56,10 @@ from typing import Annotated
 import typer
 import workflow_git
 import workflow_params
-from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
+from runs import RUNS, active_run
+from utils import emit, load_yaml, read_json, refuse, report_state, subagent_records
+from validate_plan import check_ready, project_agents, validate
 
 HERE = Path(__file__).resolve().parent
 PARAM_RE = re.compile(r"\$\{([^}]*)\}")
@@ -66,11 +69,27 @@ SINGLE = {"script", "worker", "scout", "reviewer"}
 RUNNER = HERE / "wave_runner.js"  # appended to every compiled wave
 
 
-def load_validator():
-    spec = importlib.util.spec_from_file_location("validate_plan", HERE / "validate_plan.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+def unrecorded_launch(run_dir, state, wave_id):
+    """(pi-subagents run id, its state) of a launch of the wave's compiled script that run.yaml does
+    not record, or None. The wave is launched between compile and workflow_log_start (which needs
+    the launch's id): a session that ends in between leaves a launch nobody recorded, which a
+    recompile would launch again. pi-subagents keeps the sha256 of each workflow run's script
+    (status.json `workflow.scriptDigest`); the compiled file holds the script that was passed."""
+    script = Path(run_dir) / ".compiled" / f"{wave_id}.js"
+    if not script.is_file():
+        return None
+    digest = hashlib.sha256(script.read_bytes()).hexdigest()
+    recorded = {r.get("subagent_run_id") for r in state.get("launches") or []}
+    # a launch of the script is newer than it: older records are skipped unread
+    for rid, st in subagent_records(newer_than=script.stat().st_mtime):
+        if rid not in recorded and (st.get("workflow") or {}).get("scriptDigest") == digest:
+            return st.get("runId") or rid, st.get("state")
+    return None
+
+
+def canonical(value):
+    """A stable text form of JSON-like data, to compare items across launches."""
+    return json.dumps(value, sort_keys=True, default=str)
 
 
 def expand_schema(s):
@@ -114,6 +133,7 @@ class Compiler:
         self.uses_uv = False  # a program or gate runs with `uv run` (the workflow's environment)
         self.errors = []
         self.notes = []
+        self.spliced = set()  # keys whose result a later child's task splices in (reuse_finished)
 
     # --- paths ---------------------------------------------------------------
     def resolve_text(self, text):
@@ -209,6 +229,7 @@ class Compiler:
                 lit(text)
                 if result:
                     parts.append({"result": result})
+                    self.spliced.add(result)
                 lit("\n")
         writes = [o for o in st.get("out") or [] if isinstance(o, dict) and o.get("path")]
         if writes:
@@ -288,15 +309,7 @@ class Compiler:
 
     def project_writers(self):
         """Project agents whose frontmatter declares acceptanceRole: writer."""
-        names = set()
-        agents_dir = self.workflow / ".pi" / "agents"
-        for path in sorted(agents_dir.iterdir()) if agents_dir.is_dir() else []:
-            text = path.read_text(encoding="utf-8")
-            end = text.find("\n---", 3) if path.suffix == ".md" and text.startswith("---") else -1
-            meta = YAML(typ="safe").load(text[3:end]) if end != -1 else None
-            if isinstance(meta, dict) and meta.get("acceptanceRole") == "writer":
-                names.add(meta.get("name") or path.stem)
-        return names
+        return {name for name, meta in project_agents(self.workflow).items() if meta.get("acceptanceRole") == "writer"}
 
     def script_path(self, st):
         """The stage's program in the workflow's scripts/ (kept across runs), or None."""
@@ -418,11 +431,42 @@ class Compiler:
                 + "Set blocking to true only if the output is wrong or incomplete in a way the next stages would build on.")
         schema = {"type": "object", "required": ["blocking", "findings"],
                   "properties": {"blocking": {"type": "boolean"}, "findings": {"type": "array", "items": {"type": "string"}}}}
+        if not outs:
+            self.spliced.add(key)  # the reviewer reads the returned result
         return {"review": {"key": f"{key}-review", "agent": (st.get("verify") or {}).get("review"), "label": f"Review: {key}",
                            "cwd": str(self.work), "context": "fresh",
                            "task": task if outs else [{"text": task + "\n"}, {"result": key}], "outputSchema": schema}}
 
     # --- wave ------------------------------------------------------------------------
+    def reuse_finished(self, wid, steps):
+        """Mark the layer children that completed in the wave's last (failed or blocked) launch with
+        `reuse`, so a relaunch runs only the rest; returns their keys. A child is reused only when its
+        item is unchanged since that launch (.compiled/<wave>.wave.json), every stage it needs in this
+        wave is reused too (else its input may change), and, when a later child splices in its result,
+        it has a structured output (a child's text output is not kept between launches)."""
+        last = next((r for r in reversed(self.launches) if r.get("wave") == wid), None)
+        before = read_json(self.run_dir / ".compiled" / f"{wid}.wave.json")
+        outcome = read_json(self.run_dir / ".compiled" / f"{wid}-result.json")
+        if not (last and last.get("status") in ("failed", "blocked", "stopped") and isinstance(before, dict) and isinstance(outcome, dict)):
+            return []
+        previous = {it["key"]: canonical({k: v for k, v in it.items() if k != "reuse"})
+                    for step in before.get("steps") or [] for it in step.get("layer") or []}
+        children = outcome.get("children") or {}
+        reused, rerun = [], set()
+        for step in steps:
+            if "map" in step:
+                rerun.add(step["map"]["key"])  # a map stage always runs again whole
+            for it in step.get("layer") or []:
+                key, done = it["key"], children.get(it["key"]) or {}
+                if (previous.get(key) == canonical(it) and done.get("status") == "completed"
+                        and not set((self.stages.get(key) or {}).get("needs") or []) & rerun
+                        and (key not in self.spliced or done.get("structuredOutput") is not None)):
+                    it["reuse"] = {k: done.get(k) for k in ("runId", "outputReference", "structuredOutput")}
+                    reused.append(key)
+                else:
+                    rerun.add(key)
+        return reused
+
     def compile(self, wave):
         members = [s for s in wave.get("stages") or [] if s in self.stages]
         decisions = [s for s in members if self.stages[s].get("kind") == "decision" or self.stages[s].get("pattern") == "approval"]
@@ -502,6 +546,8 @@ class Compiler:
 
         wid = wave.get("id")
         revision = self.plan.get("revision", 1)
+        if reused := self.reuse_finished(wid, steps):
+            self.notes.append(f"relaunch: {', '.join(reused)} completed in the last launch and are unchanged: not run again")
         # the wave as data, then the fixed runner (JSON is a valid JS literal)
         spec = {"wave": wid, "revision": revision, "max_parallel": int(max_parallel), "steps": steps}
         script = (f"// Compiled from plan.yaml revision {revision}, run {self.run_id}, wave {wid}. Do not edit; recompile instead.\n"
@@ -518,12 +564,13 @@ class Compiler:
         call["workflowScript"] = script
         return {"ok": True, "run": self.run_id, "wave": wid, "stages": members, "ends_with": wave.get("ends_with"),
                 "revision": revision, "call": call, "children": children,
-                "approved": sorted(self.approvals), "notes": self.notes}
+                "approved": sorted(self.approvals), "notes": self.notes, "spec": spec}
 
 
 def main(
     workflow: Annotated[str, typer.Option(help="workflow root")] = ".",
     approve: Annotated[str, typer.Option(help="side-effect stage keys the user approved, comma-separated")] = "",
+    reviewed: Annotated[bool, typer.Option("--reviewed", help="the user has seen the last wave's outputs and said to go on (it ended with review)")] = False,
     out: Annotated[str | None, typer.Option(help="also write the result JSON to this file")] = None,
     no_commit: Annotated[bool, typer.Option("--no-commit", help="report only (e.g. for a status view): do not commit the plan")] = False,
     check: Annotated[bool, typer.Option("--check", help="planning check: compile every concrete pending wave, ignore status and preflight, report errors only")] = False,
@@ -532,22 +579,20 @@ def main(
     workflow = Path(workflow).resolve()
     plan_path = workflow / "plan.yaml"
     if not plan_path.is_file():
-        print(json.dumps({"ok": False, "error": f"{workflow} is not a workflow"}))
-        raise typer.Exit(2)
-    validator = load_validator()
+        refuse(f"{workflow} is not a workflow", 2)
+    report_state(workflow)
     try:
-        plan = validator.load_yaml(plan_path.read_text(encoding="utf-8")) or {}
+        plan = load_yaml(plan_path.read_text(encoding="utf-8")) or {}
     except YAMLError as exc:
-        print(json.dumps({"ok": False, "error": f"cannot read plan: {exc}"}))
-        raise typer.Exit(2)
-    errors, _warnings, summary = validator.validate(plan, None, None, workflow)
+        refuse(f"cannot read plan: {exc}", 2)
+    errors, _warnings, summary = validate(plan, None, None, workflow)
 
     params = workflow_params.load(workflow, plan.get("params") or {})
-    act = validator.active_run(workflow)
+    run = active_run(workflow)
     if check:
         results = {}
         provisional = set(summary.get("provisional") or [])
-        run_dir, state = (act[1], act[2]) if act else (workflow / validator.RUNS / "(next)", {})
+        run_dir, state = (run.dir, run.state) if run else (workflow / RUNS / "(next)", {})
         for w in summary.get("waves") or []:
             if any(s in provisional for s in w["stages"]):
                 continue
@@ -556,53 +601,56 @@ def main(
             # a resume across waves cannot be resolved before the earlier wave has run
             results[w["id"]] = [e for e in c.errors if "has no finished run" not in e]
         compile_errors = {k: v for k, v in results.items() if v}
-        print(json.dumps({"ok": not errors and not compile_errors, "plan_errors": errors,
-                          "compile_errors": compile_errors, "waves_checked": sorted(results)}, indent=2))
-        raise typer.Exit(0 if not errors and not compile_errors else 1)
-    if plan.get("status") != "ready":
-        errors = [f"plan status is {plan.get('status')}, not ready"] + errors
+        emit({"ok": not errors and not compile_errors, "plan_errors": errors,
+              "compile_errors": compile_errors, "waves_checked": sorted(results)}, 0 if not errors and not compile_errors else 1)
+    if (why := check_ready(plan)) and why not in errors:
+        errors.insert(0, why)
     if errors:
-        result = {"ok": False, "preflight": {"plan_errors": errors}}
-        print(json.dumps(result, indent=2))
-        raise typer.Exit(1)
+        emit({"ok": False, "preflight": {"plan_errors": errors}}, 1)
 
-    if act is None:
-        print(json.dumps({"ok": False, "error": "no active run: start one with workflow_new_run (run_log.py new)"}))
-        raise typer.Exit(1)
-    if summary.get("running"):
-        print(json.dumps({"ok": False, "error": f"a wave is running (stages {summary['running']}); check its run before launching again"}))
-        raise typer.Exit(1)
+    if run is None:
+        refuse("no active run: start one with workflow_new_run (run_log.py new)")
+    if run.wave_running:
+        refuse(f"a wave is running (stages {summary['running']}); check its run before launching again")
     waves = summary.get("waves") or []
     if not waves:
-        print(json.dumps({"ok": False, "error": "no wave to run: every stage is done"}))
-        raise typer.Exit(1)
+        refuse("no wave to run: every stage is done")
     wave = waves[0]
+    if launched := unrecorded_launch(run.dir, run.state, wave["id"]):
+        refuse(f"wave {wave['id']} was already launched as pi-subagents run {launched[0]} ({launched[1]}) and not "
+               f"recorded: do not launch it again. Record it with workflow_log_start (subagent_run_id {launched[0]}), "
+               "then wait for it or, if it has ended, workflow_log_finish")
+    last = (run.state.get("launches") or [None])[-1]
+    if isinstance(last, dict) and last.get("status") == "done" and last.get("ends_with") == "review" and not reviewed:
+        # the plan put a user review here: the next wave waits for the user's go, recorded by --reviewed
+        emit({"ok": False, "wave": wave["id"], "preflight": {"review_needed": {
+            "wave": last.get("wave"), "stages": last.get("stages"),
+            "do": "summarise this wave's outputs for the user (paths, counts), ask whether to go on, then compile with reviewed"}}}, 1)
     if not workflow_git.available():
-        print(json.dumps({"ok": False, "error": "git is required: pi-subagents checks each writer child's staged index with git, and the workflow's plan is versioned in its own repo. Ask the user to install git."}))
-        raise typer.Exit(1)
-    try:
-        commit, _note = (workflow_git.head(workflow), None) if no_commit else workflow_git.commit(workflow, f"r{plan.get('revision', 1)}: plan for run {act[0]}, wave {wave['id']}")
-    except RuntimeError as exc:
-        print(json.dumps({"ok": False, "error": f"cannot commit the plan: {exc}"}))
-        raise typer.Exit(1)
+        refuse("git is required: pi-subagents checks each writer child's staged index with git, and the workflow's plan is versioned in its own repo. Ask the user to install git.")
 
-    compiler = Compiler(workflow, plan, params, act[1], act[2], {a.strip() for a in approve.split(",") if a.strip()})
+    compiler = Compiler(workflow, plan, params, run.dir, run.state, {a.strip() for a in approve.split(",") if a.strip()})
     result = compiler.compile(wave)
-    result["commit"] = commit
-    if result.get("ok") and "workflowScript" in (result.get("call") or {}):
-        # a path, not the text: the model would otherwise have to re-emit the whole script
-        # as output tokens just to pass it back to the subagent tool (pi-subagents reads
-        # workflowScriptPath itself: src/runs/foreground/subagent-executor.js, loadWorkflowScriptPath)
-        script_path = Path(act[1]) / ".compiled" / f"{wave['id']}.js"
-        script_path.parent.mkdir(parents=True, exist_ok=True)
+    if result.get("ok"):
+        # committed only for a launch: a refused compile (params, approvals) leaves the branch alone
+        try:
+            result["commit"] = (workflow_git.head(workflow) if no_commit else
+                                workflow_git.commit(workflow, f"r{plan.get('revision', 1)}: plan for run {run.id}, wave {wave['id']}", to=run.branch)[0])
+        except RuntimeError as exc:
+            refuse(f"cannot commit the plan: {exc}")
+        # a path, not the text: the model would otherwise have to re-emit the whole script as output
+        # tokens just to pass it back (pi-subagents >= 0.74 reads a `workflow` value with "/" as a file)
+        compiled = run.dir / ".compiled"
+        compiled.mkdir(parents=True, exist_ok=True)
+        script_path = compiled / f"{wave['id']}.js"
         script_path.write_text(result["call"].pop("workflowScript"), encoding="utf-8")
-        result["call"]["workflowScriptPath"] = str(script_path)
+        (compiled / f"{wave['id']}.wave.json").write_text(canonical(result.pop("spec")), encoding="utf-8")  # for reuse_finished
+        result["call"]["workflow"] = str(script_path.resolve())
     text = json.dumps(result, indent=2, ensure_ascii=False)
-    for out_path in filter(None, (Path(act[1]) / ".compiled" / f"{wave['id']}.json", Path(out) if out else None)):
+    for out_path in filter(None, (run.dir / ".compiled" / f"{wave['id']}.json", Path(out) if out else None)):
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(text, encoding="utf-8")
-    print(text)
-    raise typer.Exit(0 if result.get("ok") else 1)
+    emit(result, 0 if result.get("ok") else 1)
 
 
 if __name__ == "__main__":

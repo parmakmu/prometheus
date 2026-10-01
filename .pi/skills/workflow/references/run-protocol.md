@@ -15,31 +15,49 @@ Each execution is a run, `runs/<id>/` (`run.yaml`: stage status and
 launches; `work/`: the children's files; `.compiled/`); at most one is
 active. The workflow is a git repo whose `main` holds the reviewed plan. A
 run's plan changes (replan, gates, stage programs) go to branch `run/<id>`;
-`/workflow-revise` works on `change/<date>-<n>`. Either reaches `main` only
+`/workflow-revise` works on `revise/<date>-<n>`, `/workflow-improve` on `improve/<date>-<n>`. Either reaches `main` only
 through **Reviewing a branch**. The scripts commit; never run git commands
 that change the repo (read-only `log`, `diff`, `show` are fine).
+
+Three parts are in their own files, read only when a route below sends you
+there (not before): **Replanning** is `<skill>/references/replanning.md`;
+**Reviewing a branch** and **Changing the plan** are
+`<skill>/references/changing.md`.
 
 ## Asking the user
 
 With a question tool (`ask_user_question` or similar), every question with a
 fixed set of answers goes through it, all of one moment's questions in one
 call: new run and changed input, decisions, approvals, what to do after a
-failed or blocked wave, merge / keep / discard. First write in chat what the
-user needs to answer (what a side effect will do, what failed and why).
+failed or blocked wave, merge / keep / discard. Every question must stand on
+its own, because the dialog may show it without the chat above it: the
+`question` text says what was observed (the evidence: a run, a file, a
+message), why it matters, and what the answer changes, and each option's
+`description` says what happens if it is chosen. Keep each `header` to 16 characters (the tool rejects longer). A bare "Apply or skip?" or
+"Keep approval?" is not enough. Also write the same context in chat first.
 Values (params, paths, what to change) are asked in plain chat. Without the
 tool, ask in chat and end the turn.
 
 ## Every start
 
-1. `workflow_check`. Read `summary`: `run`, `next_wave`, `waves` (each with
-   `stages`, `ends_with`), `running`, `provisional`, `last_run`,
-   `open_questions`, `workflow.missing_params`, `workflow.missing_secrets`.
-2. With an active run, read `runs/<id>/run.yaml`. If a launch is `running`,
-   check it with `subagent({ action: "status", id: "<subagent_run_id>" })`
-   first and, if it finished, go to **Running** step 5. Never relaunch a
-   running wave.
+1. `workflow_check`. Read `state` first: where the workflow stands
+   (`planning`, `planned`, `ready`, `between_waves`, `wave_running`, `replan_draft`,
+   `branch_review`, `change_draft`, `change_ready`, `main_draft`), its `hint`
+   and the `moves` the scripts accept from it. Every workflow tool's result
+   carries the same as `next`: when unsure what comes next, pick from
+   `next.moves`; anything else is refused. Then read `summary`: `run`,
+   `next_wave`, `waves` (each with `stages`, `ends_with`), `running`,
+   `provisional`, `last_run`, `open_questions`, `workflow.missing_params`,
+   `workflow.missing_secrets`.
+2. With an active run, `state.last_launch` says how its latest wave went
+   (no need to read `run.yaml`). `wave_running`: check that launch with
+   `subagent({ action: "status", id: "<subagent_run_id>" })` and, if it
+   finished, go to **Running** step 5; never relaunch a running wave.
+   `between_waves` with `last_launch.status` `failed`, `blocked` or `stopped`:
+   ask the question of **Running** step 5 for a failed wave first, and
+   compile only once the user chose to relaunch.
 3. Route:
-   - no active run and a `run/…` or `change/…` branch checked out
+   - no active run and a `run/…`, `revise/…`, `improve/…` or `change/…` branch checked out
      (`git branch --show-current`) → **Reviewing a branch**
    - `draft` or `needs_answers` with no run → planning: follow
      `<skill>/SKILL.md` on `main` (skip step 1; the plan file exists; if
@@ -79,6 +97,12 @@ tool, ask in chat and end the turn.
   `NAME=value` to the workflow's `.env` (or the environment). When they say
   it is done, compile again.
 - `decisions_needed`, `approvals_needed` — step 2.
+- `review_needed` — the last wave ended with a review: summarise its outputs
+  (paths, counts) and ask, with the question tool, whether to go on. On a go,
+  compile with `reviewed: true`; otherwise replan or stop as the user says.
+- error "already launched … and not recorded" — a session ended between a
+  launch and its record. Do not launch again: `workflow_log_start` with the
+  run id it names, then wait for it (or finish it if it has ended).
 
 ### 2. Collect what needs a human
 
@@ -98,7 +122,7 @@ never approve: stop and report what waits.
 ### 3. Launch
 
 Pass the compiled `call` to the subagent tool exactly as given
-(`workflowScriptPath` included; do not open or paste the script). If the wave
+(`workflow` path included; do not open or paste the script). If the wave
 is wrong, fix the plan and recompile. `/workflow-run` activates the subagent
 tool; enable it only if missing. No `subagent list` first.
 
@@ -115,7 +139,7 @@ user's decisions to the user. Launch nothing else for this wave.
 
 `workflow_log_finish` with just the wave. It reads the outcome and cost from
 pi-subagents, commits files the wave wrote into the workflow, and returns
-`wave_status`, a children summary, `ends_with` and `run_status`.
+`wave_status`, a children summary, `ends_with`, `run_status` and `next_wave`.
 Do not look the run up yourself; only if it says pi-subagents has no record,
 pass `status` and `result` from the completion notice.
 
@@ -124,46 +148,22 @@ pass `status` and `result` from the completion notice.
   `verify.check` has no gate or review, and then only counts or a few lines.
   Record external outcomes (drafts, pages) with `mission.update` receipts.
   Then by `ends_with`: `review` — summarise with paths, wait for the user's
-  go; `replan` — **Replanning**, then continue; `approval` — report what the
+  go (the next compile asks for it: `review_needed`, then `reviewed: true`); `replan` — **Replanning**, then continue; `approval` — report what the
   side effects did; `none` — continue. `run_status: done` → **Finish**.
+  To continue: if `next_wave.preflight` lists something, handle it first as
+  step 1 says (ask decisions and approvals in one question-tool call), then
+  `workflow_compile` with `approve`; otherwise go straight to
+  `workflow_compile`. Skip `workflow_check` and re-reading `run.yaml` between
+  waves of one session.
 - `failed` / `blocked` — the stages go back to pending. Report what failed
-  (`entry.stopped_at`, gate or review findings, or `error` and `failure_kind`), then ask:
-  relaunch the whole wave (at most `limits.max_retries`), change the plan
+  (`stopped_at`, gate or review findings, or `error` and `failure_kind`), then ask:
+  relaunch the wave (at most `limits.max_retries`; children that completed and
+  are unchanged are not run again, compile's `notes` say which), change the plan
   (**Replanning**), or stop (`workflow_stop_run`, then **Reviewing a
   branch**).
 
-Then start again at **Every start**.
-
-## Replanning
-
-After a wave that `ends_with: replan`, or when the user wants pending work
-changed. The plan changes only through `workflow_replan` and
-`workflow_record_critique`, committed on `run/<id>`. Stages done or running
-are history; request, goal, done_when, params, inputs, outputs and agents are
-locked (they change with `/workflow-revise` after the run). A side effect
-stays a side effect.
-
-Read the discovery outputs (or the user's request), `plan.yaml`, and
-`<skill>/references/plan-schema.md` ("Stages", "Waves"); `classify.md` only
-if a kind may change.
-
-1. Write gates for the stages you make concrete into `gates/` (a package
-   they import: `uv add <package>`), and new agents into `.pi/agents/`
-   (`<skill>/references/agent-profiles.md`).
-2. One `workflow_replan` call: `findings` for the resolved unknowns, and
-   each provisional stage whose `resolves_after` is done, in full and
-   without `provisional` / `resolves_after` (`pattern`, `agent`, `out`,
-   `batch` and `items` for maps, `verify`); for a user's change, the changed
-   stages and a `note`. It bumps the revision, sets `draft` and commits; fix
-   what its validation reports with another call.
-3. Run the critic on the changed stages (`<skill>/references/critic-contract.md`)
-   and record it with `workflow_record_critique`, which marks the plan ready
-   when it validates. At most two critic passes per replan, however many
-   revisions it takes (`workflow_record_critique` refuses a third): after
-   the second, reject what is left with a note (tell the user about a
-   blocking one) and continue.
-4. If the stage graph changed beyond filled-in details, or a side effect or
-   question appeared, show the user and ask before continuing.
+Then compile `next_wave` as above, or after a failure or a new session start
+again at **Every start**.
 
 ## Finish
 
@@ -172,36 +172,6 @@ not, with paths, from what gates and reviews checked. Pass `mission_close`
 to the subagent tool unchanged. Deliverables are at `outputs[].location`
 (relative values inside `runs/<id>/`). If it returns a `review`, go on to
 **Reviewing a branch**.
-
-## Reviewing a branch
-
-After a run ends with a `review`, after a change is ready, or whenever a
-`run/…` or `change/…` branch is checked out with no run active
-(`<python> <skill>/scripts/workflow_git.py review`, `<python>` being the
-nearest `.venv/bin/python`).
-
-1. Read `git diff main...<branch>` and summarise it in words, without
-   pasting it: stages filled in or changed, gates, stage programs in
-   `scripts/` (later runs execute them without a model, so they are worth a
-   look), agents, the revision, the commits; for a run, what it found.
-2. Ask: **merge** (future runs use it), **keep** (back to `main`, the branch
-   stays), **discard**. A draft plan can only be kept or discarded.
-3. `workflow_merge` with the choice.
-
-New runs and `/workflow-revise` refuse until this is done.
-
-## Changing the plan
-
-`/workflow-revise [change]`, no run active. The command creates or continues
-`change/<date>-<n>`, bumps the revision and sets `draft`.
-
-1. If no change was given, ask what should change.
-2. Edit `plan.yaml` (anything), `gates/`, stage programs in `scripts/` and
-   `.pi/agents/` directly (packages: `uv add <package>`), following
-   `<skill>/SKILL.md` for what you touch; `workflow_check`. Delete a program
-   to have the next run write it again.
-3. Critic and `workflow_record_critique`, as in **Replanning** step 3.
-4. **Reviewing a branch**.
 
 ## Failures
 

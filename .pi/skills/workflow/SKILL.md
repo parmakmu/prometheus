@@ -32,12 +32,13 @@ edits, never by rewriting the file.
    - `probe` — a child can check it cheaply (a folder only a child reaches, a
      web page, a connector; "how many, what shape"). One read-only `scout`
      per question, several in one `runs.all`, and record the `run_id`:
-     ```js
-     subagent({ async: true, mission: false, workflowScript:
-       `return runs.run("probe-u2", { agent: "scout", label: "Probe export folder",
-          task: "Read-only. In <location>: count files by extension and read the headers of 3. Return only the JSON.",
-          outputSchema: { type: "object", required: ["counts","samples"],
-            properties: { counts: { type: "object" }, samples: { type: "array", items: { type: "string" } } } } })` })
+     Write the script as one ```` ```js workflow ```` code block in the reply, then call
+     `subagent({ async: true, mission: false, workflow: true })` in that same reply:
+     ```js workflow
+     return runs.run("probe-u2", { agent: "scout", label: "Probe export folder",
+       task: "Read-only. In <location>: count files by extension and read the headers of 3. Return only the JSON.",
+       outputSchema: { type: "object", required: ["counts","samples"],
+         properties: { counts: { type: "object" }, samples: { type: "array", items: { type: "string" } } } } })
      ```
      A probe checks shape and presence; it never does the work.
    - `user` — a preference, scope, threshold, audience or permission; a
@@ -101,7 +102,7 @@ edits, never by rewriting the file.
 
 If the user says "just do it", finish the plan with defaults and tell them to
 start it; running is not planning. After the first run, plan changes happen
-inside the workflow (run-protocol "Replanning", "Changing the plan").
+inside the workflow (`references/replanning.md`, `references/changing.md`).
 
 ## Asking
 
