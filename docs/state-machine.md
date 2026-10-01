@@ -13,8 +13,8 @@ Four facts, each read from one place:
 
 | Fact | Values | Read from |
 |---|---|---|
-| plan status `P` | `draft`, `needs_answers`, `ready` | `plan.yaml` `status`; a `ready` plan edited after its critique was recorded fails validation (`critique.plan_digest`), so compile and merge treat it as not ready |
-| active run | none, or one run with status `active` (at most one) | `runs/*/run.yaml` (`validate_plan.active_run`) |
+| plan status `P` | `draft`, `needs_answers`, `ready` | `plan.yaml` `status`; a `ready` plan edited after its critique was recorded counts as not ready (`critique.plan_digest`); on a branch, so does one that differs from `main`'s without a critique of it (`validate_plan.check_ready`) |
+| active run | none, or one run with status `active` (at most one) | `runs/*/run.yaml` (`runs.active_run`) |
 | wave running | some stage of the active run is `running` | `run.yaml` `stages` (set by `log_start`, cleared by `log_finish`) |
 | branch `B` | `main`, `run/<id>`, `revise/<date>-<n>`, `improve/<date>-<n>` (older: `change/…`) | git (`workflow_git.branch`) |
 
@@ -102,7 +102,7 @@ stages need `--approve`; the preflight refuses provisional stages); `review` is 
 | `/workflow-revise`, `/workflow-improve` | `change_draft`, `change_ready` | same (continues the branch) | (same) |
 | `/workflow-revise` | `planning`, `planned` | same (mode `planning`, no branch) | (same); `/workflow-improve` is refused here: no run to learn from |
 | `workflow_merge` | `branch_review`, `change_ready` (merge, keep, discard); `change_draft` (keep, discard) | `ready` | `workflow_git merge`: an active run; `main` checked out; merge needs a ready, valid plan; a conflict with a `main` that moved leaves the branch checked out; a merge is one commit on `main` |
-| edit `plan.yaml` directly | `planning`, `planned`, `change_draft`, `change_ready` | same; after a critique, the plan fails validation until the critic is recorded again | the extension's `tool_call` hook (not the scripts) |
+| edit `plan.yaml` directly | `planning`, `planned`, `change_draft`, `change_ready` | `change_ready` → `change_draft` (and `planned` → `planning` once critiqued): not ready until the critic is recorded again | the extension's `tool_call` hook (not the scripts) |
 | edit `gates/`, `scripts/`, `.pi/agents/`, packages directly | as `plan.yaml`, plus `branch_review` and an active run | same | the extension's `tool_call` hook: blocked on `main` once a run exists and none is active |
 | `workflow_set_params`, `workflow_check`, `workflow_sessions` | any | same | none |
 
@@ -117,36 +117,7 @@ stages need `--approve`; the preflight refuses provisional stages); `review` is 
   not parse) are not refused; once a run exists, `workflow_new_run` and `begin-change` commit them
   on the new branch, so they still reach `main` only by a reviewed merge.
 
-## Fixed
-
-What this table showed, and how it is closed now:
-
-1. **`/workflow-improve` with no run yet** went on as planning while its prompt said "you are on the
-   improve branch". `begin-change --kind improve` refuses before the first run.
-2. **A run could start from a draft plan.** `run_log new` refuses unless `P` = ready.
-3. **Launched but not recorded.** The wave is launched between `workflow_compile` and
-   `workflow_log_start` (which needs the launch's id); a session that ended in between left
-   `between_waves`, and the next one launched the wave again. pi-subagents records the sha256 of
-   each workflow run's script (`status.json` `workflow.scriptDigest`); `compile` refuses when a
-   launch of the wave's compiled script is not in `run.yaml`, and names it for `workflow_log_start`.
-4. **A dead run that pi-subagents still calls running** got "wait for its completion notice". The
-   refusal now names the exit (`status` and `result {}`), and says when the run's process is gone.
-5. **A critic result was not tied to the plan it saw.** `workflow_record_critique` stores
-   `plan_digest` (the plan without `status` and `critique`); a `ready` plan whose content differs
-   fails validation, so compile and merge refuse it until the critic is recorded again.
-6. **Replan, critique and decisions during a wave** are refused, so the states are disjoint.
-7. **Commits on `main` outside a merge**: see "Allowed, outside the table". A critique on `main`
-   once a run exists committed straight to `main`; it is refused (the walk found it).
-8. **Whether the critic ran at all.** The model records the plan-critic child's run id (the one a
-   second pass resumes); `workflow_record_critique` looks it up in pi-subagents' records
-   (`status.json` `workflowChildren.children`) and refuses an unknown or unfinished one.
-9. **The `review` duty** after a wave that `ends_with: review` was advisory. `compile` now answers
-   `review_needed` until the model passes `reviewed`, the way approvals work.
-10. **A launch recorded late lost its mission.** `log_start` without a mission id finds the mission
-    that lists the launch (Pi's `missions/projects/*/<id>.json`).
-11. **`log_start` on a draft plan** was accepted (the walk found it); it is refused.
-
-## Still open
+## Limits
 
 - **pi-subagents' records are internal**, not an API (`scriptDigest`, `workflowChildren`, the
   missions store). If their shape changes, the launched-twice check and the mission lookup find

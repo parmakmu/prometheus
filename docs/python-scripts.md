@@ -1,13 +1,6 @@
 # What the Python scripts do
 
-Prometheus's extensions are intentionally thin: they expose Pi commands and tools, invoke Python scripts, and format the scripts' JSON results. The scripts contain most of the deterministic logic for creating, validating, compiling, and tracking workflows. The model still plans the work and coordinates with the user; pi-subagents launches the actual stage children.
-
-```text
-Pi command/tool → TypeScript extension → Python script → JSON result
-                                      ↘ subagent call (only after compile)
-```
-
-The scripts live in [`.pi/skills/workflow/scripts/`](../.pi/skills/workflow/scripts/). The Prometheus extension invokes them from the Prometheus root; a generated workflow's extension invokes its copy from that workflow. They are primarily internal implementation components, not commands users need to run by hand.
+One entry per script in [`.pi/skills/workflow/scripts/`](../.pi/skills/workflow/scripts/), grouped by when it runs. How they fit into Prometheus is in [Contributing](contributing.md#architecture). You don't run them by hand: the commands and the workflow tools do.
 
 ## By lifecycle stage
 
@@ -50,11 +43,4 @@ These responsibilities are split so that deterministic checks and state transiti
 
 ## Running and testing
 
-Most users should use `/workflow-*` commands rather than call these scripts manually. For contributors, set up the Python environment and run the regression suite from the repository root:
-
-```sh
-uv sync
-uv run pytest
-```
-
-The Python dependencies are declared in [`pyproject.toml`](../pyproject.toml). The extensions choose the nearest `.venv` automatically, or use `PI_WORKFLOW_PYTHON` when explicitly set.
+You don't run these scripts by hand: the `/workflow-*` commands and the workflow tools do. To set up, test and change them, see [Contributing](contributing.md).

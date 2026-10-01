@@ -10,12 +10,16 @@ the settled decisions and the reasons for them, so you don't re-litigate them.
 
 | Page | Covers |
 |---|---|
-| [`docs/how-it-works.md`](../docs/how-it-works.md) | lifecycle, stage kinds, waves, runs, git branches, implementation map, glossary |
+| [`docs/tutorial.md`](../docs/tutorial.md) | tutorial: a first workflow planned, run, reviewed and rerun |
+| [`docs/how-to.md`](../docs/how-to.md) | how-to guides: one goal each |
+| [`docs/design.md`](../docs/design.md) | why it is built this way (the decisions below, with their evidence) |
+| [`docs/how-it-works.md`](../docs/how-it-works.md) | explanation: the concepts, followed through one real workflow (emails-to-excel) |
 | [`docs/commands.md`](../docs/commands.md) | every command and model-facing tool |
 | [`docs/python-scripts.md`](../docs/python-scripts.md) | what each script does and how they fit together |
 | [`docs/params-and-secrets.md`](../docs/params-and-secrets.md) | params, `.env`, secrets, their validator rules |
 | [`docs/troubleshooting.md`](../docs/troubleshooting.md) | refusals a user meets, their causes and fixes |
 | [`docs/state-machine.md`](../docs/state-machine.md) | the states a workflow can be in, the legal moves and which script refuses the rest |
+| [`docs/contributing.md`](../docs/contributing.md) | architecture, where things are, tests, rules for a change, how these docs are written (Divio's four types) |
 | [`docs/worked-example.md`](../docs/worked-example.md) | emails-to-excel from request to reused stage programs |
 
 The model-facing rules are in the skill: `SKILL.md` (planning), `references/run-protocol.md` (running; the core, read every session), `references/replanning.md` and

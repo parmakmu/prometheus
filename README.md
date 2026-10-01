@@ -1,82 +1,33 @@
 # Prometheus
 
-A standalone Pi agent that turns requests into **workflows**: portable
-folders that are Pi agents themselves and run multi-step work with pi-subagents.
+A Pi agent that turns requests into **workflows**: portable folders that are Pi agents themselves and run multi-step work with [pi-subagents](https://github.com/nicobailon/pi-subagents).
 
-```
+```text
 cd prometheus
-pi                     # trust the folder when asked, so pi-subagents and the extension load
+pi                     # trust the folder when asked
 /workflow-new I want to read the emails in a folder and save them in an Excel file
 ```
 
-Prometheus plans the work (asking only questions that change the plan,
-sending read-only probes, getting a critic's review) and writes a workflow
-agent to `workflows/<slug>/`. It never does the work itself.
+Prometheus plans the work (asking only the questions that change the plan, sending read-only probes, getting a critic's review) and writes a workflow agent to `workflows/<slug>/`. It never does the work itself. You run the workflow in its own folder, with `/workflow-run`; changes it makes to itself land on a branch you review.
 
 ## Documentation
 
-| Page | For |
-|---|---|
-| [How Prometheus works](docs/how-it-works.md) | the lifecycle and architecture |
-| [Worked example](docs/worked-example.md) | one real workflow, from request to reused stage programs |
-| [Command and tool reference](docs/commands.md) | every command and model-facing tool |
-| [Params, `.env` and secrets](docs/params-and-secrets.md) | machine-specific values, and how secrets are kept out of the plan and logs |
-| [Troubleshooting](docs/troubleshooting.md) | refusals you may meet, and what to do |
-| [What the Python scripts do](docs/python-scripts.md) | the implementation, for contributors |
+The docs follow [Divio's four types](https://docs.divio.com/documentation-system/): each page is one type, so you can go straight to the kind of help you need.
 
-## Commands in Prometheus
-
-| command | what it does |
-|---|---|
-| `/workflow-new <request>` | plan a new workflow |
-| `/workflow-list [slug]` | list workflows and where they stand |
-| `/workflow-export <slug> <dest> [--keep-state]` | copy a workflow somewhere else to run |
-| `/workflow-refresh <slug \| --all>` | update workflows to Prometheus's skill version (`--all` skips current ones) |
-
-Commands are prefixed `workflow-` because Pi has built-in `/new` and `/export`.
-
-## Commands in a workflow
-
-Each workflow is its own Pi agent:
-
-```
-cd workflows/<slug>     # or wherever you exported it
-pi                     # trust the folder
-/workflow-run
-```
-
-| command | what it does |
-|---|---|
-| `/workflow-run [note]` | plan, continue or run from where it stands |
-| `/workflow-status` | report where it stands; changes nothing |
-| `/workflow-revise [change]` | change the workflow's plan on a branch you review and merge (no run active) |
-| `/workflow-improve [focus]` | propose improvements from the workflow's sessions and runs, applied on an `improve/` branch you review (no run active) |
-
-Machine-specific values (folders, pages, accounts, tokens) go in the
-workflow's `.env` (not in git) or the environment pi runs in; `/workflow-run`
-asks for missing ones, and for secrets tells you which variable to add. See
-[Params, `.env` and secrets](docs/params-and-secrets.md).
-
-Each run gets a folder `runs/<id>/`. The workflow is its own git repo: `main`
-holds the reviewed plan; changes a run makes to its plan (replans after
-discovery) and changes made with `/workflow-revise` go to a branch, and you choose
-to merge, keep or discard it after seeing the diff.
-
-## Layout
-
-```
-.pi/APPEND_SYSTEM.md                 Prometheus's role
-.pi/settings.json                    subagents config (pi-subagents is installed globally)
-.pi/extensions/prometheus/index.ts   the /workflow-* commands and workflow_scaffold / workflow_check tools
-.pi/agents/plan-critic.md            fresh-context critic for plans
-.pi/skills/workflow/                 the skill: planning and run rules, scripts, examples
-  templates/workflow/                everything a new workflow gets
-workflows/                           the workflows
-tests/                               pytest suite (`uv run pytest`; see docs/how-it-works.md)
-```
+| You want to… | Read | It is |
+|---|---|---|
+| **Learn** by doing | [Tutorial: your first workflow](docs/tutorial.md) | a lesson: plan, run, review and rerun a workflow |
+| **Do** a specific thing | [How-to guides](docs/how-to.md) | steps for one goal, such as running on new input |
+| | [Troubleshooting](docs/troubleshooting.md) | each refusal: the message, its cause, the fix |
+| **Understand** | [How Prometheus works](docs/how-it-works.md) | the concepts, followed through one real workflow |
+| | [Design decisions](docs/design.md) | why it is built this way, and what was tried first |
+| | [Worked example](docs/worked-example.md) | the history of one workflow, run by run |
+| **Look something up** | [Commands and tools](docs/commands.md) | every command and model-facing tool |
+| | [The state machine](docs/state-machine.md) | each state a workflow can be in, and its moves |
+| | [Params, `.env` and secrets](docs/params-and-secrets.md) | declaring params, where values come from, what is validated |
+| **Contribute** | [Contributing](docs/contributing.md) | architecture, tests, rules for a change |
+| | [What the Python scripts do](docs/python-scripts.md) | each script's job |
 
 ## Requirements
 
-Pi with pi-subagents (installed globally: `pi install npm:pi-subagents`), Python 3.14 with
-typer, pydantic, pydantic-settings and ruamel.yaml (run `uv sync` here; the extensions use `.venv`), and project trust for this
-folder and each workflow.
+Pi 0.99.2 with pi-subagents, Python 3.14 with uv, and git. See the [tutorial](docs/tutorial.md#before-you-begin).

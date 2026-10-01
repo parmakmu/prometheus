@@ -2,7 +2,7 @@
 
 A workflow is portable: everything that depends on the machine it runs on (a folder of input files, an output path, a database table, an API token) is a **param**, not a literal in the plan. The plan declares each param; the values live outside it, per machine.
 
-This page is for both people running workflows (how to set values, what happens to secrets) and contributors (how values are loaded and compiled). The formal rules are in [`plan-schema.md`](../.pi/skills/workflow/references/plan-schema.md), "Params and paths".
+The formal rules are in [`plan-schema.md`](../.pi/skills/workflow/references/plan-schema.md), "Params and paths"; how values are loaded is under [For contributors](#for-contributors).
 
 ## Declaring params in the plan
 

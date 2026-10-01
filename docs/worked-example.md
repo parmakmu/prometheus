@@ -75,7 +75,7 @@ Adding the programs to the plan is a change to the workflow, so it goes through 
 /workflow-revise give read-emails and build-workbook their programs (script:)
 ```
 
-1. The command created the branch `revise/2026-09-27-1` from `main`, bumped the plan to revision 3 and marked it draft.
+1. The command created the branch `revise/2026-09-27-1` from `main`, bumped the plan to revision 3 and marked it draft. (Today a change leaves the plan alone until it is edited; the critic's recorded result then gives it the next revision.)
 2. The workflow agent added `script: read_emails.py` and `script: build_workbook.py` and validated the plan.
 3. The critic's first pass asked for a fix: `build-workbook` named a program but kept `pattern: worker`. That combination is now a validator error, so the planner gets it right before the critic runs. After the fix, the second pass approved it.
 4. It showed the diff and asked: merge, keep or discard. After a merge, `main` moved to the new revision, tagged `r3`.
