@@ -62,6 +62,7 @@ Every result also carries `next`, the workflow's state and its legal moves (*fro
 | [`templates/workflow/`](../templates/workflow/) | what a new workflow gets: its extension, agents, settings, role. Outside the skill, so workflows don't carry a copy |
 | [`.pi/agents/plan-critic.md`](../.pi/agents/plan-critic.md) | the critic; must stay identical to the template's copy (a test checks) |
 | [`tests/`](../tests/) | the pytest suite |
+| [`ui/`](../ui/) | the web app: router, per-agent workers, the page; see its [README](../ui/README.md) |
 
 The skill's `SKILL.md` and `references/` are instructions for the model, not documentation for people. [`.claude/CLAUDE.md`](../.claude/CLAUDE.md) records the settled design decisions and the reasons for them.
 

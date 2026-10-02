@@ -1,5 +1,6 @@
 {
   "subagents": {
     "projectRootResolution": "nearest"
-  }
+  },
+  "sessionDir": ".pi/sessions"
 }

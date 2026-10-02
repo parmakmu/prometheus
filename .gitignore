@@ -8,3 +8,5 @@ workflows/*
 !workflows/.gitkeep
 .venv/
 .DS_Store
+# Pi conversations (sessionDir in .pi/settings.json)
+.pi/sessions/

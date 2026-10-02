@@ -8,7 +8,7 @@ This page is for contributors. It has one entry per script in [`.pi/skills/workf
 
 **`prometheus_version.py`** names the prometheus a workflow's skill copy came from: `<pyproject version>+<commit>`, plus `.dirty-<hash>` for uncommitted changes. The commit is the last one that touched the skill or the templates, so a docs or tests commit doesn't make workflows stale. Creating or refreshing a workflow writes the label to `.pi/skills/workflow/VERSION`; `/workflow-list` marks workflows with another label stale. Standard library only.
 
-**`export_workflow.py`** copies a workflow elsewhere and validates the copy. By default it leaves out runs and git history; `--keep-state` keeps them. It never copies `.env` or local installs, and gives the copy a `.env` that lists each variable, unset.
+**`export_workflow.py`** copies a workflow elsewhere and validates the copy. By default it leaves out runs, conversations (`.pi/sessions`) and git history; `--keep-state` keeps them. It never copies `.env` or local installs, and gives the copy a `.env` that lists each variable, unset.
 
 **`list_workflows.py`** summarises workflows for `/workflow-list` and `/workflow-status`: status, revision, active or last run, stage progress, next wave, open questions, project agents, unreviewed branches. It changes nothing.
 
@@ -28,7 +28,7 @@ This page is for contributors. It has one entry per script in [`.pi/skills/workf
 
 **`workflow_git.py`** does every git operation: creating the repository, committing the plan and the files runs write (`runs/` itself is not versioned), opening `run/`, `revise/` and `improve/` branches, and merging (as one squashed commit), keeping or discarding them.
 
-**`session_digest.py`** condenses what is new since the last `/workflow-improve` into evidence: user messages, failed tool results, repeated calls, cost, failed or relaunched waves, and the lessons already in `improvements.yaml`. It reads at most the newest 5 sessions and 3 runs, and skips improve and revise sessions themselves. It changes nothing.
+**`session_digest.py`** reads the workflow's conversations from its own `.pi/sessions` (else Pi's old per-path folder) and condenses what is new since the last `/workflow-improve` into evidence: user messages, failed tool results, repeated calls, cost, failed or relaunched waves, and the lessons already in `improvements.yaml`. It reads at most the newest 5 sessions and 3 runs, and skips improve and revise sessions themselves. It changes nothing.
 
 **`session_read.py`** is the `workflow_sessions` tool. `list` gives one line per session; `show` gives a clipped transcript of one, chosen by record numbers or around a timestamp. Session lines are too long for Pi's read tool, so without this a model writes its own parser.
 

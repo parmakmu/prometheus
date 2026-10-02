@@ -5,6 +5,7 @@ runs/
 .env.*
 .pi/npm/
 .pi/subagents/
+.pi/sessions/
 .venv/
 __pycache__/
 *.pyc

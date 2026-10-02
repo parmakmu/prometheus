@@ -21,6 +21,7 @@ We've kept the guides to the point, so they say what to do rather than why. If y
 - [How to make a stage use a connector](#how-to-make-a-stage-use-a-connector)
 
 **Managing workflows**
+- [How to use prometheus from a browser](#how-to-use-prometheus-from-a-browser)
 - [How to run a workflow on another machine](#how-to-run-a-workflow-on-another-machine)
 - [How to update workflows after updating prometheus](#how-to-update-workflows-after-updating-prometheus)
 
@@ -147,6 +148,14 @@ Use this for a side effect that writes to an app or sends a message. Built-in ag
 4. Review the diff and merge.
 
 ## Managing workflows
+
+### How to use prometheus from a browser
+
+1. In the prometheus folder, run `npm install` once, then `npm run ui:server` and, in a second terminal, `npm run ui:web`.
+2. Open the link `ui:server` prints (`http://localhost:3000/?token=…`).
+3. Plan with prometheus in the chat; click a workflow on the left to talk to its own agent, and *Files* to upload what it should read.
+
+For a team, the settings, sandboxes and limits are in [`ui/README.md`](../ui/README.md).
 
 ### How to run a workflow on another machine
 

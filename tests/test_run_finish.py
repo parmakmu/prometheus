@@ -461,3 +461,14 @@ def test_a_relaunch_runs_only_the_children_that_did_not_complete(tmp_path, run_p
     assert again.data["result"]["status"] == "done", again
     assert [e["key"] for e in again.data["log"]] == ["count2"]  # count's earlier result stands
     assert again.data["result"]["children"]["count"] == {**first["children"]["count"], "reused": True}
+
+
+def test_the_list_gives_each_workflow_its_state_and_recent_runs(tmp_path, run_py):
+    # the web UI's dashboard reads these: a state for the "needs you" badge, and runs with their cost
+    wf, k = ready_workflow(tmp_path, run_py, "listed")
+    assert run_py([k / "run_log.py", "new"], cwd=wf).data["ok"] and run_py([k / "run_log.py", "stop"], cwd=wf).data["ok"]
+    r = run_py([k / "list_workflows.py", "--root", tmp_path])
+    (item,) = [w for w in r.data if w["slug"] == "listed"]
+    assert item["state"] in ("ready", "branch_review"), item
+    (run,) = item["recent_runs"]
+    assert run["status"] == "stopped" and run["cost_usd"] == 0 and run["id"] == item["last_run"]["id"], run

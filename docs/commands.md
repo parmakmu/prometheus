@@ -67,7 +67,7 @@ Copies a workflow somewhere else, to run it there.
 
 **Runs in:** prometheus
 
-By default the copy has the plan, gates, stage programs and agents, without earlier runs or git history. `--keep-state` carries the runs and the history too. Neither copies `.env`: its values are per machine and may hold secrets. The copy gets a `.env` that lists each variable, unset.
+By default the copy has the plan, gates, stage programs and agents, without earlier runs, conversations (`.pi/sessions`) or git history. `--keep-state` carries them too. Neither copies `.env`: its values are per machine and may hold secrets. The copy gets a `.env` that lists each variable, unset.
 
 To run the copy, the destination machine needs Pi, pi-subagents and uv, and you trust the copied folder in Pi.
 

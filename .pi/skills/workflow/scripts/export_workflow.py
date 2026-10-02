@@ -8,7 +8,8 @@ Creates DEST_FOLDER/<slug>/ (or DEST_FOLDER/<SLUG>).
 Fresh export (default): a clean start. Copies the plan (as
 refined by any merged replan), agents, gates, prompts, settings and skill; leaves
 out the runs (runs/), the git history (.git; the copy starts its own repo
-with one commit) and pi-subagents runtime state (.pi/subagents/).
+with one commit), pi-subagents runtime state (.pi/subagents/) and the conversations
+(.pi/sessions/).
 
 Both modes leave out .venv (run `uv sync` there), .pi/npm (a project package
 install, if any; pi-subagents is expected to be installed globally) and .env:
@@ -16,7 +17,7 @@ param values are per machine and may hold secrets. The copy gets a .env that
 lists each param's variable, unset.
 
 --keep-state: an exact copy (minus caches and .env) that continues where the
-workflow stands: runs/, .git and .pi/subagents/.
+workflow stands: runs/, .git, .pi/subagents/ and .pi/sessions/.
 
 Validates the copy and prints one JSON object.
 """
@@ -80,10 +81,10 @@ def main(
             if rel == ".":
                 skip |= {".git"} & set(names)  # a fresh repo below
             if rel == ".pi":
-                skip |= {"subagents", "history"} & set(names)
+                skip |= {"subagents", "history", "sessions"} & set(names)
             return skip
         shutil.copytree(src, dst, ignore=ignore)
-        cleared = ["runs/", ".git history", ".pi/subagents/"]
+        cleared = ["runs/", ".git history", ".pi/subagents/", ".pi/sessions/"]
         source = workflow_git.head(src)
         try:
             workflow_git.commit(dst, f"Exported from {slug}" + (f" at {source[:12]}" if source else ""))

@@ -12,6 +12,8 @@ pi                     # trust the folder when asked
 
 prometheus plans the job, asks you only the questions whose answers would change the plan, and writes the workflow to `workflows/<slug>/`. It never does the work itself. When the job comes round, you start the workflow in its own folder and type `/workflow-run`.
 
+Prefer a browser? `npm install`, `npm run ui:server` and `npm run ui:web` start a web app with the same agents: chat, files, the workflows' state and results, and a terminal. It also serves a team, each person with their own sandboxed copy. See [`ui/README.md`](ui/README.md).
+
 ## Why a workflow
 
 The first time a workflow runs, it writes small programs for its mechanical steps, and you look them over. Every run after that reuses them, so the same input gives the same result, faster and for a fraction of the cost. Here's what that looked like in real runs of the example above:

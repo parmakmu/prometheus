@@ -116,3 +116,12 @@ def test_only_the_newest_runs_since_the_last_review_are_digested(tmp_path, run_p
     # run 1 predates the lesson; of the four after it, the newest three
     assert [r["id"] for r in data["runs"]] == ["2026-01-03-1", "2026-01-04-1", "2026-01-05-1"]
     assert "do not open the raw session files" in data["note"].lower()
+
+
+def test_digest_reads_the_workflows_own_sessions_folder(tmp_path, run_py):
+    # sessionDir ".pi/sessions" (the template's setting): conversations live in the workflow
+    workflow = tmp_path / "wf"
+    (workflow / ".pi" / "sessions").mkdir(parents=True)
+    (workflow / "plan.yaml").write_text("request: x\n")
+    data = run_py([SCRIPT, "--workflow", workflow]).data
+    assert data["sessions_dir"] == str(workflow / ".pi" / "sessions"), data

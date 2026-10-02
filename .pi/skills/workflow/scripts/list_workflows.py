@@ -4,7 +4,9 @@
 Usage: list_workflows.py [--root workflows] [--workflow DIR]
 
 Prints a JSON list, one object per workflow: slug, status, revision, goal,
-runs (count), last_run {id, status, started_at, finished_at, last_wave},
+state (workflow_state's name for where it stands), runs (count),
+last_run {id, status, started_at, finished_at, last_wave}, recent_runs (the last 5, newest
+first: id, status, started_at, finished_at, note, cost_usd summed over its launches),
 active_run, next_wave and stages_done/stages_total (of the active run),
 provisional, open_questions, custom_agents, prometheus_version (the skill copy's; stale when
 Prometheus here has another), branch (checked out) and unmerged
@@ -19,10 +21,22 @@ from typing import Annotated
 import prometheus_version
 import typer
 import workflow_git
-from runs import last_run, list_runs
+import workflow_state
+from runs import last_run, list_runs, read_run
 from utils import read_yaml as load
 from utils import refuse
 from validate_plan import validate
+
+
+def recent_runs(runs, n=5):
+    """The last n runs, newest first, with their cost summed over launches."""
+    out = []
+    for rid, d in reversed(runs[-n:]):
+        s = read_run(d)
+        cost = sum(x.get("cost_usd") or 0 for x in s.get("launches") or [] if isinstance(x, dict))
+        out.append({"id": rid, "status": s.get("status"), "started_at": s.get("started_at"),
+                    "finished_at": s.get("finished_at"), "note": s.get("note"), "cost_usd": round(cost, 6)})
+    return out
 
 
 def summarise(root, slug, current):
@@ -43,6 +57,7 @@ def summarise(root, slug, current):
     return {
         "slug": slug,
         "status": plan.get("status"),
+        "state": workflow_state.state(Path(root) / slug)["state"],
         "revision": plan.get("revision", 1),
         "goal": goal if len(goal) <= 120 else goal[:117] + "...",
         "runs": len(runs),
@@ -53,6 +68,7 @@ def summarise(root, slug, current):
         "provisional": [s.get("key") for s in stages if s.get("provisional") is True],
         "open_questions": [q.get("id") for q in questions if q.get("answer") in (None, "")],
         "last_run": last,
+        "recent_runs": recent_runs(runs),
         "custom_agents": [a for a in custom if a not in ("plan-critic", "workflow-batcher")],
         "prometheus_version": installed,
         "stale": bool(current and installed != current),

@@ -39,7 +39,10 @@ PLAN_SESSIONS = ("Improve this workflow from how it actually went", "Change this
 
 
 def default_sessions_dir(workflow: Path) -> Path:
-    return pi_agent_dir() / "sessions" / f"--{str(workflow).strip('/').replace('/', '-')}--"
+    """The workflow's Pi sessions: its own .pi/sessions (the template's `sessionDir`), else Pi's default
+    folder for its path, where workflows from before that setting keep theirs."""
+    own = workflow / ".pi" / "sessions"
+    return own if own.is_dir() else pi_agent_dir() / "sessions" / f"--{str(workflow).strip('/').replace('/', '-')}--"
 
 
 def moment(value):

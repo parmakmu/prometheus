@@ -220,6 +220,48 @@ Libraries: typer, pydantic (plan shape, in `validate_plan.py`; the cross-referen
   `.pi/agents/`. The two `plan-critic.md` copies (Prometheus, workflow template) must stay
   identical (tests check).
 
+## Web app (`ui/`, see `ui/README.md`)
+
+- **Router + one worker process per user and agent** (`router.ts`, `worker.ts`): the worker is the Pi
+  SDK (`createAgentSession`) in one folder, served as AG-UI on a unix socket. Why a process each, not
+  SDK sessions in one process: the workflow extension loads `.env` into `process.env`, params read the
+  environment first, and pi-subagents spawns children with it, so sessions sharing a process would read
+  each other's params and secrets.
+- **AG-UI to an assistant-ui page** (React, `ui/web`), no CopilotKit: its Vue SDK needs its runtime in
+  between; assistant-ui speaks AG-UI directly. Extension dialogs (`select`/`confirm`/`input`, which
+  `ask_user_question` falls back to) become AG-UI interrupts; the UI context passed to `bindExtensions`
+  must define every method (Pi copies them; a Proxy fallback is lost).
+- **Panels in the chat**: the worker binds with `mode: "tui"` and implements `ctx.ui.custom()` as pi-web
+  does: the component gets a stand-in TUI (`terminal.columns/rows`, `requestRender`), each frame is its
+  `render(width)`, sent whole; keys go to its `handleInput` (Pi's theme and `KeybindingsManager`, imported by
+  file: the package's `exports` leave them out). The page shows a `pi_panel` tool call as a live xterm card.
+  Why not pi-tui's `TuiAltScreen` on a virtual terminal (tried first): a cursor-move byte stream that the
+  page must receive whole and in order; the browser showed a black card. The worker wraps pi-tui's
+  `SettingsList`, `SelectList` and `Input` `render` to record the instances drawn in a frame; the frame
+  carries their state and the page draws native controls, acting through `updateValue` + `onChange`,
+  `onSelect`, `onSubmit`. Why: a panel's top component is a plain object with state in closures (nothing to
+  inspect), but it is built from these widgets; drawn text only made a terminal look-alike. While
+  `ask_user_question` runs, `custom()` returns undefined so it uses its dialogs (a clickable card).
+  Why: the owner wants the full pi experience in a chat, and `/ccstyle` refused ("requires TUI mode").
+- **A run with nothing new is a sync**: a `MESSAGES_SNAPSHOT` from Pi's session, then the agent's own work
+  while busy. Workers use `SessionManager.continueRecent`, so restarts keep the conversation.
+- **Who may call**: web app origin, loopback host names, and a token printed at start (Jupyter's model);
+  on a team, a login proxy's user header (`TRUST_USER_HEADER`). Why: CORS `*` let any website drive an
+  agent that has bash.
+- **Bubblewrap per worker, same paths inside**: planner sees its prometheus read-only, `workflows/`
+  read-write with every `.env` reading empty; a workflow sees only its folder. Per-user folders under
+  `USERS_ROOT` (`add-user.sh`). WSL needs `/etc/resolv.conf`'s target mounted; `--new-session` is left out
+  for terminals (they need their pty as controlling terminal). No memory/CPU limits without a systemd
+  user session (WSL).
+- **Conversations live in their folder**: `"sessionDir": ".pi/sessions"` in Prometheus's and the template's
+  `.pi/settings.json` (gitignored; a fresh export leaves them out). The web app runs one worker per
+  conversation (`/…/s/<id>/…`), lists and deletes them; the terminal's `pi --resume` sees the same ones;
+  `session_digest.py` reads them there, else Pi's old `~/.pi/agent/sessions/--<path>--`. Why: the owner
+  wanted per-folder sessions; they also move, refresh and get deleted with the workflow, and a workflow's
+  sandbox needs no extra mount for them.
+- **Terminal without native modules**: `pty_relay.py` (stdlib `pty`) runs `pi` in the sandbox; output as
+  SSE, input as POSTs. Why: `node-pty` has no prebuild for Node 26 and building needs `make`.
+
 ## Pi / pi-subagents facts relied on (verify if something breaks)
 
 Pi 0.87.1:
@@ -282,7 +324,7 @@ pi-subagents 0.73.1, with the `workflow` field from 0.74.0 (source in `~/.pi/age
 
 ## Status
 
-`uv run pytest`: 233 tests, including the validator's broken-variant cases, param tests, the
+`uv run pytest`: 237 tests, including the validator's broken-variant cases, param tests, the
 state machine's refusals and its walk (`tests/test_run_finish.py`, `tests/test_state_machine.py`), compiled
 waves run in a mock of `runs.run/runs.all` (real batch tool and gates, fake children), and both
 extensions type-checked and driven with Pi's real types. The 131 outside `tests/test_workflow.py`
@@ -305,11 +347,28 @@ Not yet verified live: the `<key>-fix` fallback for a failing program; the
 cross-wave resume; secret params; refresh refusing during a wave; everything in "Guards around the
 launch" and the state machine's `next` (tested against fake pi-subagents records and the mock only).
 
+Web app (`ui/`, status 2026-10-02; branch `feat/dev`). Tested at the protocol level (curl and
+node scripts against the router; no automated tests yet), and seen working in the owner's browser:
+the chat, `/workflow-list`, `/workflow-new` planning, `ask_user_question` as an inline card, `/ccstyle`
+as a native panel on the canvas, the status bar. Tested on the server only: per-user folders and
+sandboxes (`USERS_ROOT`, `TRUST_USER_HEADER`, `add-user.sh`, `sandbox-run`), history sync and attaching
+to background work, files and outputs, the terminal tab, conversations as Pi sessions (new, open, delete),
+the built-in commands (`/model`, `/thinking`, `/compact`, `/session`, `/name`, `/reload`). Not run yet: a
+workflow run (`/workflow-run`) from the page, a team setup behind oauth2-proxy, the other extensions'
+panels (`/goal…`, `/subagents…`). During development the router runs from a terminal; tests used
+`PORT=8798 PROMETHEUS_TOKEN=t0k node ui/router.ts`.
+
 ## Next steps (suggested order)
 
 1. A new plan with a map stage, to exercise `workflow-batcher`.
 2. A live run that fails a wave and relaunches it (reuse), stops after a `review` wave
    (`review_needed`), and records a real critic (the `workflowChildren` lookup).
+3. Web app: a workflow run from the page end to end (approval card, results download); the other
+   extensions' panels (more pi-tui widgets to hijack?); `/export`, `/fork`, `/clone`, `/tree`; tests for
+   the router and worker (no automated coverage yet); remove the template leftovers `ui/web/README.md`
+   and `ui/web/.env.example` (the scaffold's Python echo agent).
+4. Web app, team: a model proxy (the key is readable in each user's `pi-agent`) with a network
+   allow-list for sandboxes; a Linux user per person; memory/CPU limits need a systemd user session.
 
 ## How to test
 
