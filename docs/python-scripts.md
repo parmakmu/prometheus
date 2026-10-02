@@ -1,46 +1,49 @@
 # What the Python scripts do
 
-One entry per script in [`.pi/skills/workflow/scripts/`](../.pi/skills/workflow/scripts/), grouped by when it runs. How they fit into Prometheus is in [Contributing](contributing.md#architecture). You don't run them by hand: the commands and the workflow tools do.
+This page is for contributors. It has one entry per script in [`.pi/skills/workflow/scripts/`](../.pi/skills/workflow/scripts/), grouped by when the script runs. You never run them by hand: the commands and the workflow tools do. How they fit into Prometheus is in [Contributing](contributing.md#architecture).
 
-## By lifecycle stage
+## Create and maintain workflows
 
-### Create and maintain workflows
+**`scaffold_workflow.py`** creates a workflow from `templates/workflow/`. It fills in the slug and request, writes a draft plan, starts the workflow's git repository, and runs `uv lock`. With `--refresh`, it rewrites the files a workflow got from Prometheus and keeps the workflow's own: its plan, runs, programs, agents, packages, and the lessons section of `.pi/APPEND_SYSTEM.md`. `workflow_scaffold` and `/workflow-refresh` use it. A workflow's own copy refuses to run, because the templates belong to Prometheus.
 
-- **`scaffold_workflow.py`** — creates a new workflow from `templates/workflow/`, substitutes its slug and request, initializes the workflow's Git repository, and writes a draft plan. With `--refresh`, updates the copied template files and skill in an existing workflow while preserving its plan, the lessons section of `.pi/APPEND_SYSTEM.md` and run-specific/user-authored files. The Prometheus `/workflow-new` tool and `/workflow-refresh` command use this script. The templates are Prometheus's, not part of the skill, so a workflow's own copy of this script refuses to run.
-- **`prometheus_version.py`** — names the Prometheus a workflow's skill copy came from: `<pyproject version>+<commit>`, the commit being the last one that changed the skill or the templates (so a docs or tests commit leaves workflows current), plus `.dirty-<hash>` for uncommitted changes to them. A create or refresh writes it to the workflow's `.pi/skills/workflow/VERSION`; `/workflow-refresh --all` skips workflows already at it, and `/workflow-list` marks the others stale. Stdlib only.
-- **`export_workflow.py`** — copies a workflow to another location and validates the copy. A fresh export leaves out run state and Git history; `--keep-state` carries them over. Both modes leave out local installs and `.env` values, and the exported workflow gets an unset parameter file for its new machine.
-- **`list_workflows.py`** — reads plan and run state to produce summaries such as status, revision, active or last run, stage progress, next wave, open questions, custom agents, and unmerged branches. It does not change the workflow. Both `/workflow-list` and `/workflow-status` use it.
+**`prometheus_version.py`** names the Prometheus a workflow's skill copy came from: `<pyproject version>+<commit>`, plus `.dirty-<hash>` for uncommitted changes. The commit is the last one that touched the skill or the templates, so a docs or tests commit doesn't make workflows stale. Creating or refreshing a workflow writes the label to `.pi/skills/workflow/VERSION`; `/workflow-list` marks workflows with another label stale. Standard library only.
 
-### Validate and prepare a run
+**`export_workflow.py`** copies a workflow elsewhere and validates the copy. By default it leaves out runs and git history; `--keep-state` keeps them. It never copies `.env` or local installs, and gives the copy a `.env` that lists each variable, unset.
 
-- **`validate_plan.py`** — loads and validates `plan.yaml`: field types and required fields, cross-references, stage dependencies, portability and workflow-specific rules. It also derives the waves from stages and run status, and returns a summary that includes open questions, missing params/secrets, approvals, and the next wave. It does not run stages.
-- **`compile_wave.py`** — turns the active run's next derived wave into the exact pi-subagents call, expanding parameters, gates, schemas, dependencies, and any map batching. The generated script is the wave as data (its layers, children, map batching and reviews) followed by `wave_runner.js` unchanged, so every wave runs the same hand-written runner. It is saved to `runs/<id>/.compiled/<wave>.js`, and the call refers to it by path, so the model passes a short path to pi-subagents instead of retyping the script. It returns preflight requirements when input values, decisions, approvals, or plan fixes are needed. `--check` compile-checks pending concrete waves during planning without starting a run. Even a successful compile only prepares a call; the model must pass that call to pi-subagents to launch it.
+**`list_workflows.py`** summarises workflows for `/workflow-list` and `/workflow-status`: status, revision, active or last run, stage progress, next wave, open questions, project agents, unreviewed branches. It changes nothing.
 
-### Track and edit a run
+## Validate and compile
 
-- **`workflow_state.py`** — where a workflow stands: its state (`planning`, `planned`, `ready`, `between_waves`, `wave_running`, `replan_draft`, `branch_review`, `change_draft`, `change_ready`, `main_draft`) from whether the plan can run (`validate_plan.check_ready`), the active run, a running wave and the checked-out branch, and the moves the scripts accept from it (`MOVES`; [state-machine.md](state-machine.md)). The workflow tools' scripts add it to every result as `next` (`utils.report_state`); `validate_plan.py` returns it as `state`. `tests/test_state_machine.py` walks every state and move with the real scripts.
-- **`run_log.py`** — owns durable run state in `runs/<id>/run.yaml`. Its operations create or stop a run, record a wave launch, record a user's decision, and finish a wave. Finishing reads the child workflow outcome from pi-subagents, updates stage and run status, saves wave results, and commits workflow files written by children on the run branch.
-- **`session_digest.py`** — condenses a workflow's Pi session logs (`~/.pi/agent/sessions/`) and `runs/*/run.yaml` into evidence: user messages, failed tool results, repeated calls, cost, unfinished or relaunched waves, plus the saved lessons in `improvements.yaml`. Only what is new: sessions and runs that started after the newest lesson's timestamp, the newest 5 sessions and 3 runs, and never the sessions of `/workflow-improve` or `/workflow-revise` themselves. `/workflow-improve` hands it to the model. It changes nothing.
-- **`session_read.py`** — the `workflow_sessions` tool: `list` gives one line per session (from `session_digest.py`'s per-session digest), `show` a bounded transcript of one, one clipped line per record, chosen by record numbers or around a timestamp. A session's JSONL lines are too long for Pi's read tool, so without it a model writes its own parser. It changes nothing.
-- **`plan_edit.py`** — performs checked changes that should not be made by directly editing protected state. It applies a replan to pending stages, records the plan critic's findings and disposition, or writes non-secret parameter values to `.env`. Replans preserve completed/running history and locked plan fields, validate the result, bump its revision, and commit it on the run branch.
-- **`workflow_git.py`** — centralizes workflow Git operations: ensuring the workflow repository exists, committing the plan and the files runs write into the workflow (gate scripts, stage programs; run state in `runs/` is not versioned), creating/reviewing branches, and merging, keeping, or discarding a reviewed branch. `main` remains the reviewed baseline; run and change branches keep proposed edits separate until the user chooses what to do.
+**`validate_plan.py`** loads `plan.yaml` and checks it: shape and types with pydantic, then the cross-reference rules (one `Checker` method per group), dependencies, portability and params. It derives the waves from the stages and the run's progress, and returns a summary with open questions, missing params and secrets, approvals and the next wave. It never runs a stage.
 
-### Resolve values and batch work
+**`compile_wave.py`** turns the active run's next wave into the exact pi-subagents call. The compiled script is the wave as JSON data followed by `wave_runner.js` unchanged, saved to `runs/<id>/.compiled/<wave>.js`; the call names that path. When something is missing first (a param, a decision, an approval, a review, a plan fix), it returns a `preflight` instead. `--check` compile-checks the concrete pending waves during planning, without a run. A compile only prepares the call: the model launches it.
 
-- **`workflow_params.py`** — shared parameter logic used by validation, compilation, and plan editing. It loads values from the process environment, `.env`, or a plan default; validates and resolves `path`, `text`, and `secret` parameters; and keeps secrets out of persisted run values. It is a Python module imported by the other scripts, not a user-facing CLI.
-- **`batch_tool.py`** — splits a map stage's file or list input into deterministic batches, merges the batch outputs, and runs a stage's program with its `run:` arguments followed by its gate. It is run by the workflow's `workflow-batcher` command-runner agent, so no model is needed to divide or join files or to run a reviewed program. When the program or its gate fails, it exits with the reason on stderr, and the wave hands that reason to the stage's `<key>-fix` child.
+## Track and edit a run
 
-### Shared helpers
+**`workflow_state.py`** works out the workflow's [state](state-machine.md) from four facts (the plan's readiness, the active run, a running wave, the checked-out branch) and lists the moves the scripts accept from it (`MOVES`). Every workflow tool's result carries it as `next`.
 
-- **`runs.py`** — a workflow's runs (`runs/<id>/`, its layout in the docstring): `Run` (id, folder, state; `.wave_running`, `.branch`, `.save()`), `list_runs`, `active_run`, `last_run`. Every script reads runs through it.
-- **`utils.py`** — the small helpers the other scripts share: results (`emit`, `refuse` with one shape `{ok: false, error}`, `report_state` so results carry `next`), YAML (`rt_yaml` in the plans' house style, `load_yaml` that raises, `read_yaml` that falls back to a default, an atomic `write_yaml`), `read_json`, and Pi's and pi-subagents' records (`pi_agent_dir`, `mission_of`, `subagents_runs_root`, `subagent_records`, `subagent_child`, `process_alive`).
+**`run_log.py`** owns `runs/<id>/run.yaml`. It starts and stops runs, records launches and decisions, and finishes waves. Finishing reads the outcome and cost from pi-subagents, updates the stages, and commits the files the wave wrote into the workflow (stage programs, say) on the run's branch.
+
+**`plan_edit.py`** makes the plan changes that must be checked: a replan of pending stages, a critic's result with its dispositions, and param values written to `.env`. A replan keeps the stages that ran and the locked fields, validates the result, raises the revision and commits on the run's branch.
+
+**`workflow_git.py`** does every git operation: creating the repository, committing the plan and the files runs write (`runs/` itself is not versioned), opening `run/`, `revise/` and `improve/` branches, and merging (as one squashed commit), keeping or discarding them.
+
+**`session_digest.py`** condenses what is new since the last `/workflow-improve` into evidence: user messages, failed tool results, repeated calls, cost, failed or relaunched waves, and the lessons already in `improvements.yaml`. It reads at most the newest 5 sessions and 3 runs, and skips improve and revise sessions themselves. It changes nothing.
+
+**`session_read.py`** is the `workflow_sessions` tool. `list` gives one line per session; `show` gives a clipped transcript of one, chosen by record numbers or around a timestamp. Session lines are too long for Pi's read tool, so without this a model writes its own parser.
+
+## Values and batches
+
+**`workflow_params.py`** is the param logic the other scripts import. It loads values from the environment, `.env` or the plan's default; resolves `path`, `text` and `secret` params; masks secrets for `run.yaml`; and writes `.env`, refusing secrets. It is a module, not a command.
+
+**`batch_tool.py`** is run by the `workflow-batcher` command runner, so no model is needed for mechanical steps. It splits a map stage's input into batches and merges their outputs, and it runs a stage program with its `run:` arguments, then its gate. On failure it exits with the reason, which the wave hands to the stage's `<key>-fix` child. Standard library only, since the batcher runs it with plain `python3`.
+
+## Shared helpers
+
+**`runs.py`** is how every script reads runs: `Run` (id, folder, state, `.wave_running`, `.branch`, `.save()`), `list_runs`, `active_run`, `last_run`. Its docstring describes a run folder's layout.
+
+**`utils.py`** holds the small shared helpers: results (`emit`, `refuse`, `report_state`), YAML in the plans' house style (`rt_yaml`, `load_yaml`, `read_yaml`, an atomic `write_yaml`), `read_json`, and access to Pi's and pi-subagents' records (`pi_agent_dir`, `mission_of`, `subagents_runs_root`, `subagent_records`, `subagent_child`, `process_alive`).
 
 ## How they fit together
 
-A typical new workflow calls `scaffold_workflow.py`, then the planning process uses `validate_plan.py` and `compile_wave.py --check` to make sure the proposed plan is valid and concrete waves can compile. `/workflow-run` uses `run_log.py` to start a run; `compile_wave.py` prepares each wave; and the extension passes its returned call to pi-subagents. After a wave completes, `run_log.py` records its result. Discovery may cause `plan_edit.py` to revise pending stages; `workflow_git.py` preserves that proposal on the run branch for later user review. When finished, `export_workflow.py` can copy the workflow elsewhere.
-
-These responsibilities are split so that deterministic checks and state transitions are implemented as testable Python code, while the model focuses on interpreting the request, making judgment calls, and communicating with the user. The tests in [`tests/`](../tests/) exercise the scripts directly and in a mock workflow run.
-
-## Running and testing
-
-You don't run these scripts by hand: the `/workflow-*` commands and the workflow tools do. To set up, test and change them, see [Contributing](contributing.md).
+`/workflow-new` calls `scaffold_workflow.py`, then planning uses `validate_plan.py` and `compile_wave.py --check` until the plan is valid and its waves compile. `/workflow-run` starts a run with `run_log.py`. For each wave, `compile_wave.py` prepares the call, the model launches it, and `run_log.py` records the result. After discovery, `plan_edit.py` replans, and `workflow_git.py` keeps the change on the run's branch until you review it.

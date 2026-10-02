@@ -1,11 +1,8 @@
 # Workflow state machine
 
-What a workflow can be doing, and the moves between those states, as the scripts enforce them. A
-move the table does not list is refused by a script, except the few noted under "Allowed, outside
-the table". `workflow_state.py` computes the state and its legal moves (`MOVES`); every workflow
-tool's result carries them as `next`, `workflow_check` as `state`, and `/workflow-status` shows
-them. `tests/test_state_machine.py` walks every state and move with the real scripts and checks
-the rules below.
+This page is for contributors. It lists what a workflow can be doing (its **state**) and the moves between states, as the scripts enforce them. If you only run workflows, `/workflow-status` tells you the state you are in and what you can do next; you don't need this page.
+
+A move the table doesn't list is refused by a script, except the few under "Allowed, outside the table". `workflow_state.py` computes the state and its legal moves (`MOVES`). Every workflow tool's result carries them as `next`, `workflow_check` returns them as `state`, and `/workflow-status` shows them. `tests/test_state_machine.py` walks every state and move with the real scripts and checks the rules below.
 
 ## What defines a state
 
@@ -18,10 +15,7 @@ Four facts, each read from one place:
 | wave running | some stage of the active run is `running` | `run.yaml` `stages` (set by `log_start`, cleared by `log_finish`) |
 | branch `B` | `main`, `run/<id>`, `revise/<date>-<n>`, `improve/<date>-<n>` (older: `change/…`) | git (`workflow_git.branch`) |
 
-One more, used by the extension's guard and by `begin-change`: whether the workflow has had a run
-yet (`runs/` has a `run.yaml`). Before the first run the plan is edited directly on `main`. `runs/`
-is not in git, so this fact is per machine: a fresh clone, or a deleted `runs/`, counts as "no run
-yet" and opens `main` to direct edits again.
+One more, used by the extension's guard and by `begin-change`: whether the workflow has had a run yet (`runs/` has a `run.yaml`). Before the first run the plan is edited directly on `main`. `runs/` is not in git, so this fact is per machine: a fresh clone, or a deleted `runs/`, counts as "no run yet" and opens `main` to direct edits again.
 
 ## States
 
@@ -67,21 +61,13 @@ stateDiagram-v2
     main_draft --> change_draft: /workflow-revise
 ```
 
-Moves that stay in their state are left out of the diagram: `workflow_compile` while a preflight
-waits, `workflow_record_decision`, a second `workflow_replan`, a critique that makes a stopped
-run's draft replan mergeable in `branch_review`, and the read-only tools. `workflow_stop_run` goes
-to `ready` instead of `branch_review` when the run committed nothing. `main_draft` is reached only
-by workflows from before runs needed a ready plan.
+Moves that stay in their state are left out of the diagram: `workflow_compile` while a preflight waits, `workflow_record_decision`, a second `workflow_replan`, a critique that makes a stopped run's draft replan mergeable in `branch_review`, and the read-only tools. `workflow_stop_run` goes to `ready` instead of `branch_review` when the run committed nothing. `main_draft` is reached only by workflows from before runs needed a ready plan.
 
 The states are disjoint: a replan, a critique and a decision all wait for a running wave.
 
-A run that ends with no commits has no branch, so it goes straight back to `ready`. A `run/…`
-branch whose plan is not ready (a run stopped after a replan) cannot be merged until the critic's
-result for that replan is recorded; until then it can be kept or discarded.
+A run that ends with no commits has no branch, so it goes straight back to `ready`. A `run/…` branch whose plan is not ready (a run stopped after a replan) cannot be merged until the critic's result for that replan is recorded; until then it can be kept or discarded.
 
-`ends_with` (`review`, `replan`, `approval`) is not a state: it is recorded at launch and tells the
-parent what to do after the wave. `approval` and `replan` are enforced by `compile` (side-effect
-stages need `--approve`; the preflight refuses provisional stages); `review` is not.
+`ends_with` (`review`, `replan`, `approval`) is not a state: it is recorded at launch and tells the parent what to do after the wave. `approval` and `replan` are enforced by `compile` (side-effect stages need `--approve`; the preflight refuses provisional stages); `review` is not.
 
 ## Moves
 
@@ -108,23 +94,14 @@ stages need `--approve`; the preflight refuses provisional stages); `review` is 
 
 ## Allowed, outside the table
 
-- **`workflow_record_critique` in `between_waves`.** It records the critic again for an unchanged
-  plan, spending one of the replan's two passes. Harmless, so not refused (the walk tolerates it).
-- **Direct edits to `gates/`, `scripts/` and `.pi/agents/` in `branch_review`.** They are committed
-  on the branch at the review, so they reach `main` only through it.
+- **`workflow_record_critique` in `between_waves`.** It records the critic again for an unchanged plan, spending one of the replan's two passes. Harmless, so not refused (the walk tolerates it).
+- **Direct edits to `gates/`, `scripts/` and `.pi/agents/` in `branch_review`.** They are committed on the branch at the review, so they reach `main` only through it.
 - **Commits on `main` before the first run.** That is planning: `workflow_new_run` commits it.
-- **Changes made outside the extension's guard** (the user's editor, a shell command the guard does
-  not parse) are not refused; once a run exists, `workflow_new_run` and `begin-change` commit them
-  on the new branch, so they still reach `main` only by a reviewed merge.
+- **Changes made outside the extension's guard** (the user's editor, a shell command the guard does not parse) are not refused; once a run exists, `workflow_new_run` and `begin-change` commit them on the new branch, so they still reach `main` only by a reviewed merge.
 
 ## Limits
 
-- **pi-subagents' records are internal**, not an API (`scriptDigest`, `workflowChildren`, the
-  missions store). If their shape changes, the launched-twice check and the mission lookup find
-  nothing (they fail open); the critic check fails closed (every critique refused), which the first
-  live planning session would show. The tests use fake records of the current shape.
-- **The walk explores each state once**, from the first history that reaches it; a bug that needs
-  a particular history to show (two replans, say) can still slip past it.
+- **pi-subagents' records are internal**, not an API (`scriptDigest`, `workflowChildren`, the missions store). If their shape changes, the launched-twice check and the mission lookup find nothing (they fail open); the critic check fails closed (every critique refused), which the first live planning session would show. The tests use fake records of the current shape.
+- **The walk explores each state once**, from the first history that reaches it; a bug that needs a particular history to show (two replans, say) can still slip past it.
 
-Not in scope: blocking tools in the extension by state (the scripts refuse the unsafe moves), and
-anything about the quality of a stage's output.
+Not in scope: blocking tools in the extension by state (the scripts refuse the unsafe moves), and anything about the quality of a stage's output.

@@ -1,26 +1,22 @@
 # How Prometheus works
 
-A **workflow** is a folder that holds a plan for a piece of work and a Pi agent that can carry the plan out. Prometheus is the agent that writes workflows. You describe what you want, Prometheus turns it into a plan, and from then on the workflow runs by itself, as many times as you like, asking you only for what a person has to decide.
+You probably have a job like this one. Once a month, someone hands you a folder of emails, and you copy the sender, the date, the subject and the body into a spreadsheet. It isn't hard, but it is tedious, and it never quite goes away.
 
-Some work that suits a workflow:
+You could ask a model to do it each month. That works, but every month it starts from scratch: it reads every email afresh, works out again how to parse them, and lays out the spreadsheet slightly differently from last time. You pay for the same thinking over and over, and you check the result over and over.
 
-* Reading a folder of emails each month and saving the interesting fields in a spreadsheet.
-* Producing a report from files that change every week, where a person approves it before it is sent.
-* Any job you would otherwise explain to a model again each time, where doing it differently on Tuesday would be a bug.
+Prometheus is built for jobs like that. You describe the job once, and it turns your description into a **workflow**: a folder holding a plan for the job and an agent that carries the plan out. The first time the workflow runs, it writes small programs for the mechanical parts, and you look them over. From then on those programs do the routine work in a fraction of a second, a model is called only for the parts that genuinely need judgment, and nothing with real consequences happens until you've said yes.
 
-You can think of a workflow as a mix between a script and a task you hand to a team. Like a script, it does the same thing every time, and most of its steps are programs that run in a fraction of a second without a model. Like a team, the parts that need judgment go to model agents, a separate agent reviews the work, and a person approves anything with consequences.
+On this page we'll follow one real workflow, `emails-to-excel`, from the one-line request that created it to its second run. Everything shown in a code block was copied from its actual runs, so what you see is what you'll get.
 
-This page follows one real workflow, `emails-to-excel`, and shows what each idea looks like in it. The output blocks were copied from its runs. For the exact command syntax see the [reference](commands.md); for how to do a specific thing, the [how-to guides](how-to.md).
+## The short version
 
-## Two agents
+It all starts with a single command:
 
-You use two Pi agents, each started in its own folder.
+```text
+/workflow-new I want to read the emails in a folder and save them in an Excel file
+```
 
-**Prometheus** is started in this repository. It plans: it creates a workflow folder, drafts the plan, has the plan checked, and asks the questions whose answers change the plan. It does not do your work, and it doesn't act on a plain message at all: it plans only when you run `/workflow-new`. The planning skill is hidden from the model's automatic skill selection, and the tool that creates a workflow refuses unless that command ran. This is deliberate: a casual sentence about documentation once led an earlier version to scaffold a workflow nobody had asked for.
-
-**The workflow agent** is started inside `workflows/<slug>/`. It carries out the plan, one wave at a time, using [pi-subagents](https://github.com/nicobailon/pi-subagents) to launch the children that do the work. It talks to you, but it does very little thinking about *how* to run: the Python scripts around it decide what is allowed next, and it follows them.
-
-The workflow folder is self-contained. It has its own plan, its own extension, its own copy of the planning skill and its own git repository, so you can copy it to another machine and run it there without Prometheus.
+Prometheus asks you a few questions, and when it's done, your request has become a folder:
 
 ```text
 workflows/emails-to-excel/
@@ -32,9 +28,50 @@ workflows/emails-to-excel/
   runs/           one folder per run (not in git)
 ```
 
-## The plan
+You run that folder whenever the job comes round again. Here's what the difference looked like for emails-to-excel, between a run where models did everything and one where the reviewed programs did the routine work:
 
-`plan.yaml` is the whole definition of the work. It records the request in your words, the goal, what counts as done, the inputs and outputs, the machine-specific values it needs, and the stages. In emails-to-excel it begins:
+| | Every stage done by a model | Programs run as commands |
+|---|---|---|
+| Model cost | $0.016 | $0.004 |
+| Whole run | under 4 minutes | 77 seconds |
+
+The diagram below shows the whole cycle. Don't worry if some of the boxes don't mean much yet; we'll go through each one in turn.
+
+```mermaid
+flowchart LR
+    A["/workflow-new<br/>your request"] --> B["Plan<br/>stages, gates, params"]
+    B --> C["Critic reviews<br/>you answer questions"]
+    C --> D["/workflow-run<br/>waves of stages"]
+    D --> E{"Side effect?"}
+    E -- "you approve" --> D
+    D --> F["Review the branch<br/>merge, keep or discard"]
+    F --> G["Next run reuses<br/>the merged programs"]
+    G --> D
+```
+
+## Two agents, two jobs
+
+The first thing to know is that you'll be talking to two different agents, and each one has a single job. You start them in different folders:
+
+```text
+~/prometheus $ pi                              ~/prometheus/workflows/emails-to-excel $ pi
+> /workflow-new <request>                      > /workflow-run
+```
+
+**Prometheus**, on the left, is the planner. It works out how the job should be done, writes that down as a plan, and then steps back. It never reads your emails or touches your spreadsheet. It's also careful about when it starts: only `/workflow-new` sets it planning. If you just describe a job in conversation, it will talk it through with you, but it won't build anything.
+
+> [!NOTE]
+> We learned that one the hard way. An early version took a passing remark, "I want to create documentation with docs in md", as a request, and cheerfully built a workflow nobody had asked for.
+
+**The workflow agent**, on the right, is the one that gets the work done. It hands the actual tasks to background agents through [pi-subagents](https://github.com/nicobailon/pi-subagents) and keeps you informed as they finish. It doesn't have to remember the rules about what's allowed when, either: a set of Python scripts keeps track of that, and the agent simply follows their lead.
+
+Once a workflow exists, it no longer needs Prometheus at all. The folder carries everything it needs, so you can copy it to another machine with `/workflow-export` and run it there.
+
+## Planning
+
+### The plan
+
+Everything the workflow knows about your job lives in one file, `plan.yaml`. It starts with your request in your own words, followed by the goal and a list of what "done" means, written so you can check each line yourself:
 
 ```yaml
 request: I want to read emails and save them in Excel
@@ -46,32 +83,37 @@ done_when:
   - The workbook contains one row per email and its columns match the confirmed extraction scope.
 ```
 
-The plan holds no run state. That is why the same plan can run again on new input: everything a particular execution produces goes in a run's own folder instead. The plan is versioned. Its `revision` goes up with each reviewed change, and `status` says whether it is a `draft`, still has questions (`needs_answers`), or is `ready`.
+Those `done_when` lines matter: at the end of every run, the agent goes through them one by one and tells you which were met, and how it knows.
 
-## Stages and their kinds
+Notice that the plan describes the job, not any particular occasion of doing it. There's no "March" in it, and no folder path. That's deliberate, and it's what lets the same plan run next month on next month's emails.
 
-A **stage** is one unit of work. The interesting thing about a stage is its **kind**, because the kind decides how it is done and how it is checked. Prometheus gives each stage one of four kinds, trying them in this order, so that the most dangerous interpretation wins:
+### Stages, and who does each one
 
-1. **`side_effect`**: changes something outside the run, such as sending a message or writing to a service. Needs your explicit approval before every launch.
-2. **`decision`**: a choice that belongs to you. It is collected before its wave starts and is never left to a child.
-3. **`deterministic`**: work a program can get right. It is done by a program and checked by a gate.
-4. **`judgment`**: work that needs a reader, such as classifying or summarising. It is done by a model child and, where it matters, reviewed by another.
-
-Irreversibility comes first on purpose. A stage that writes to your CRM and also happens to be mechanical is a side effect, and is treated as one.
-
-The three stages of emails-to-excel are one of each of the interesting kinds:
+A plan breaks the job into **stages**. Emails-to-excel has three, and they're worth a close look, because each one is done in a different way:
 
 ```text
-discover         judgment        a scout reads sample emails and reports the formats and fields
+discover         judgment        a model reads sample emails and reports the formats and fields
 read-emails      deterministic   a program extracts the fields; a gate checks every file is accounted for
 build-workbook   side_effect     a program writes the .xlsx; you approve it first
 ```
 
-Work that is mostly mechanical but has a messy tail is split. A deterministic stage handles the regular cases and writes the leftovers to a file; a small judgment stage handles only those. That keeps the model away from the thousand ordinary cases.
+The middle column is the stage's **kind**, and it's the most important thing about a stage, because it decides who does the work and how carefully it's watched:
 
-## Gates and stage programs
+| Kind | What it means | Who does it |
+|---|---|---|
+| `side_effect` | it changes something outside the run | an agent, but only after you approve it, every single time |
+| `decision` | it's a choice that belongs to you | you, before that part of the run starts |
+| `deterministic` | a program can get it right | a stage program, checked by a gate |
+| `judgment` | it needs someone to read and think | a model, often checked by a second model |
 
-The reason a deterministic stage is cheap is that no model does it. It has a **stage program** in `scripts/`, named in the plan with its arguments:
+When Prometheus classifies a stage, it asks these questions in that order and stops at the first "yes". So a stage that writes to your CRM counts as a side effect even if the work itself is entirely mechanical. The first question is always "can this be undone?", and only after that, "who's best placed to do it?".
+
+> [!TIP]
+> Real work is rarely all one kind. Often most of it is mechanical, with a few awkward cases at the end. Prometheus splits that into two stages: a program handles the regular cases and writes the awkward ones to a file, and a small judgment stage looks at just those. That way a model spends its time on the handful of odd emails rather than every ordinary one.
+
+### Stage programs and gates
+
+This is where the savings come from. A deterministic stage is simply a program and the arguments to run it with:
 
 ```yaml
 - key: read-emails
@@ -81,13 +123,84 @@ The reason a deterministic stage is cheap is that no model does it. It has a **s
   run: "${email_folder} discovery.md email-rows.json unparsed-emails.json"
 ```
 
-The first run writes the program, a model child doing so once, and you review it with that run's branch. Every later run executes it as a plain command, which takes about a tenth of a second. A model is brought back only if the program or its gate fails, and then it is shown the error and asked to fix the program.
+The first time the workflow runs, a model writes `read_emails.py`. You review it along with everything else the run produced, and from then on the workflow just runs it, which takes about a tenth of a second. Here's one row of what it extracted from the tutorial's sample emails:
 
-A **gate** is a program in `gates/` that checks what a stage produced. For `read-emails` it checks that every `.eml` file has exactly one parsed row or a machine-readable error. Gates are written while planning, never by the stage they check, so a stage can't mark its own homework.
+```json
+{
+  "file": "01-status.eml",
+  "from": "Ada Lovelace <ada@example.test>",
+  "to": "team@example.test",
+  "cc": "",
+  "date": "Wed, 02 Sep 2026 10:00:00 +0000",
+  "subject": "Weekly status",
+  "body": "Hi all,\n\nDeploy is done. Next: invoice export.\n\nAda\n"
+}
+```
 
-## Waves
+Of course, a program that runs without anyone watching needs checking, and that's the job of a **gate**. For `read-emails`, the gate makes sure every `.eml` file in the folder ended up either as a row like the one above or in `unparsed-emails.json` with a reason. Nothing slips through silently.
 
-Stages are launched in **waves**. You never write them: they are derived from the stages. A wave is the stretch of work between two points where the workflow agent has to act, to ask you something, or to look at a result. The validator reports the waves it derived:
+Gates are written while the plan is being made, before the stage has ever run, and never by the stage they check. It's the same reason you wouldn't let someone mark their own exam.
+
+> [!NOTE]
+> If a program does fail one day, perhaps because an email arrives in a format it has never seen, the workflow doesn't just retry. It calls a model, shows it the exact error, and asks it to fix the program, so the fix is there for every run after.
+
+### Params: values that belong to your machine
+
+A workflow should run anywhere, so the plan never contains anything specific to one computer. The input folder, an output path, a database table, an API token: each of these is a **param**. The plan says the param exists and what it's for, and its actual value lives in a file called `.env` next to the plan:
+
+```yaml
+params:
+  email_folder:
+    description: Folder containing the user's exported .eml email files
+    required: true
+  output_file:
+    description: Where to save the completed Excel workbook
+    default: outputs/emails.xlsx
+```
+
+```sh
+# .env: this machine's values, never committed
+EMAIL_FOLDER='/Users/me/Mail/export'
+```
+
+You'll notice that planning never asks where your emails are. That's not an oversight: the answer depends on whose machine the workflow is running on, so `/workflow-run` asks instead, when it actually needs to know.
+
+> [!IMPORTANT]
+> Secrets get extra care. The model can't read `.env` at all, so a token's value never appears in a chat, a log or a task. When a secret is missing, the agent tells you the name of the variable to set and waits for you. The details are in [Params, `.env` and secrets](params-and-secrets.md).
+
+### When you can't know everything up front
+
+Here's an honest problem with planning: when emails-to-excel was planned, nobody had seen the emails yet. Would they be plain text or HTML? Would they have attachments? A planner that had to write down every detail anyway would simply make things up, and made-up detail is worse than none.
+
+So instead, the plan begins with a **discovery stage**. `discover` is a model whose only job is to look at a sample of the real input and report back. The stages that depend on what it finds are left as **provisional** outlines until it has. On emails-to-excel's first run, `discover` read eight sample messages and found quite a mix:
+
+- plain text, and HTML only
+- multipart with an attachment
+- non-ASCII headers
+- a reply and a newsletter
+- an empty subject
+
+The run then paused to **replan**: it wrote the details of `read-emails`, and its gate, from what `discover` had actually seen.
+
+### A second pair of eyes
+
+Before any plan can run, a second agent, the **plan critic**, reads it through. We do this because a model checking its own work tends to miss exactly the things it missed while writing it. The critic starts fresh, sees only the plan file and none of the planner's reasoning, and asks the awkward questions: does the goal really match what you asked for? Is each stage the right kind? Is anything with a side effect hiding where it shouldn't be?
+
+It earns its keep. When emails-to-excel's stages were given their programs, the critic noticed that `build-workbook` named a program but was still set up for a model to do the work by hand. The planner fixed it, and the critic's second pass approved the change.
+
+The planner has to answer every finding the critic raises, either by accepting it, by rejecting it with a reason, or by turning it into a question for you.
+
+### The questions you'll be asked
+
+You might expect a planner to start by quizzing you. Prometheus does the opposite. It drafts the plan first, lets the critic review it, and only then asks you anything, because by that point it knows which answers would actually change the plan. It asks only where a wrong guess would change the stages, a side effect, where data comes from or goes to, or what counts as done, and it keeps it short: at most three questions at a time, and two rounds.
+
+## Running
+
+With a plan in place, you start the workflow agent and type `/workflow-run`. Here's what happens next.
+
+### Waves
+
+The agent doesn't launch the stages one at a time. It groups them into **waves**: as much work as it can hand off in one go before it needs to stop and check in with you. You never write waves yourself; they're worked out from the stages. For emails-to-excel there are two:
 
 ```json
 "waves": [
@@ -96,23 +209,30 @@ Stages are launched in **waves**. You never write them: they are derived from th
 ]
 ```
 
-`discover` and `read-emails` run together because nothing between them needs a person. `build-workbook` is a side effect, so it gets its own wave, and the agent stops to ask for your approval before launching it. A wave can also end with a `review` (you look at the outputs first) or a `replan` (the plan is filled in from what was found).
+When the first wave starts, the agent lets you know. From a real run:
 
-Outputs that a later wave needs must be files. A result a stage merely returns doesn't cross a wave boundary.
+> Run `2026-10-01-3` has started. Wave `w1` is reading and discovering the selected emails; it launched three children. I'll continue when the wave finishes.
 
-## Runs
+The three **children** are the background agents doing the work: `discover`, a reviewer that double-checks `discover`'s report, and `read-emails`. Nothing between them needs you, so they run as one wave, and you're free to get on with something else.
 
-Each execution is a **run**, in its own folder:
+`build-workbook` is different. It writes a file that you'll keep, so it gets a wave of its own, and the run stops to ask your permission before launching it. That permission isn't something the model can talk its way around: the code simply refuses to launch a side-effect stage you haven't approved.
+
+> [!NOTE]
+> One thing to keep in mind if you write plans by hand: only files carry over from one wave to the next. If a later stage needs something, an earlier stage has to write it down.
+
+### Every run gets its own folder
+
+Each run lives in its own folder, so one run can never overwrite another's results:
 
 ```text
 runs/2026-10-01-3/
   run.yaml        what happened
-  work/           the children's working folder and their file outputs
-  outputs/        where relative output paths resolve
-  .compiled/      each wave as compiled, and its result
+  work/           the children's working files
+  outputs/        the results: here, emails.xlsx
+  .compiled/      each wave as launched
 ```
 
-At most one run is active at a time. `run.yaml` is the durable record: if the session ends and you come back tomorrow, the state is on disk. After the run above, it holds, for example:
+`run.yaml` is the run's memory, and it's what makes it safe to walk away. Close Pi halfway through, come back tomorrow, type `/workflow-run`, and it picks up exactly where it left off. Here's part of it after a finished run:
 
 ```yaml
 id: 2026-10-01-3
@@ -125,144 +245,84 @@ stages:
 launches:
   - wave: w1
     stages: [discover, read-emails]
-    ends_with: none
     status: done
-    subagent_run_id: d1ff16c7-0573-4648-bb1f-1b04540b10a4
     params:
       email_folder: /Users/musaparmaksiz/projects/prometheus/scratch/emails
       output_file: outputs/emails.xlsx
     cost_usd: 0.00377
-    started_at: '2026-10-01T23:45:18+02:00'
-    finished_at: '2026-10-01T23:46:08+02:00'
 ```
 
-Each launch records the plan's commit and revision, so `git show r4:plan.yaml` shows exactly what ran. Param values appear here, but a secret is recorded only as `(secret, set)`.
+Because each launch records which revision of the plan it used, you can always see exactly what ran: `git show r4:plan.yaml`.
 
-### What a launch looks like
+### When something goes wrong
 
-The workflow agent doesn't write the code for a wave. A compiler turns the wave into data, a JSON description of its stages and checks, saved next to a fixed runner program, and hands pi-subagents only the path:
+Sooner or later a wave will fail. A gate might reject an output, a reviewer might find a serious problem, or the wave might not start at all. When that happens, the agent tells you plainly what went wrong and asks what you'd like to do: try the wave again, change the plan, or stop the run.
 
-```json
-{
-  "async": true,
-  "missionId": "f7a80a96-6b5a-473c-9768-9956d5e557fe",
-  "workflow": "/…/runs/2026-10-01-3/.compiled/w2.js"
-}
-```
+> [!TIP]
+> Trying again doesn't mean starting over. Any child that already finished, and whose inputs haven't changed, is skipped.
 
-When the wave ends, the agent asks for just the wave's id and gets back a summary, not the outputs:
+### Changing the plan mid-run
 
-```json
-"children": {
-  "discover":        { "status": "completed", "output": "…/work/discovery.md" },
-  "discover-review": { "status": "completed", "output": null },
-  "read-emails":     { "status": "completed", "output": null }
-}
-```
+Sometimes, as with `discover`, a run learns something that changes the plan. When that happens it **replans**, filling in the stages that haven't run yet. A replan is deliberately limited, though. It can't touch your request, the goal, what counts as done, the params, the inputs, the outputs or the agents, and it can never quietly turn a side effect into something that no longer needs your approval. If you want a bigger change, that waits until the run is over, and you make it with `/workflow-revise`.
 
-The outputs were already checked by the gates and the reviewer, so the agent reads one only when you need to see it.
+## Reviewing what a run changed
 
-## Params
+By now the first run has done more than produce a spreadsheet. It has written two programs and filled in part of the plan. That raises a fair question: should next month's run just start using all that?
 
-Anything that depends on the machine is a **param**: an input folder, an output path, a table name, a token. The plan declares them and never contains their values:
-
-```yaml
-params:
-  email_folder:
-    description: Folder containing the user's exported .eml email files
-    required: true
-  output_file:
-    description: Where to save the completed Excel workbook
-    default: outputs/emails.xlsx
-```
-
-Values live in `.env`, which is not in git, or in the environment Pi runs in. A param is a `path`, `text` or `secret`. A secret's value is never written to the plan, a compiled wave, a child's task or a run log, and the model is blocked from reading `.env`: when one is missing, the agent names the variable and waits for you to add it. Paths from outside the workflow must be absolute.
-
-Planning never asks for these values, since they belong to whoever runs the workflow. `/workflow-run` asks.
-
-## The plan critic
-
-Before a plan can run, a separate agent reviews it. The **plan critic** is read-only and starts with a fresh context: it sees the plan file and none of the planner's reasoning, because a model grading its own plan tends to miss what it missed while writing it. It checks that the goal and `done_when` match the request, that stages are classified correctly, that nothing with a side effect is hidden, and that no question is missing.
-
-Every finding gets a disposition: accepted, rejected with a note, or asked of you. A plan gets at most two critic passes per revision.
-
-The critic's result is tied to the exact plan it saw, by a digest. Edit the plan afterwards and it is no longer ready until the critic has seen the new version.
-
-## Discovery and replanning
-
-Sometimes a plan can't responsibly describe a later stage until an earlier one has looked at the real data. In emails-to-excel, nobody knew at first what the emails looked like: plain text or HTML, with attachments or without. The plan then has a **discovery** stage, and the stages that depend on it stay **provisional**, just an outline. After discovery the run **replans**: it fills those stages in from what was found, the critic reviews the change, and the run continues.
-
-A replan is deliberately narrow. It can change only pending stages. The request, goal, `done_when`, params, inputs, outputs and agents are locked, stages that already ran are history, and a side effect stays a side effect. Anything wider is a change you make between runs.
-
-## Branches and review
-
-Each workflow is its own git repository, and `main` holds the reviewed plan. The rule is that `main` changes only through a merge you chose, apart from planning before the first run. So a run's discoveries, such as a replan or a program it wrote, go to a branch:
+Our answer is: not until you've had a look. Each workflow is its own git repository, and its `main` branch holds only what you've reviewed. Anything new waits on a branch of its own:
 
 | Branch | Opened by | Holds |
 |---|---|---|
-| `run/<id>` | a run's first commit | its replans and the stage programs it wrote |
+| `run/<id>` | a run's first commit | its replans and the programs it wrote |
 | `revise/<date>-<n>` | `/workflow-revise` | a change you asked for |
-| `improve/<date>-<n>` | `/workflow-improve` | fixes drawn from earlier sessions and runs |
+| `improve/<date>-<n>` | `/workflow-improve` | fixes drawn from earlier runs |
 
-A branch can have many commits as it goes. When a run ends or a change is ready, the agent shows you the diff and you choose: **merge** (the whole branch becomes one commit on `main`, tagged with the revision), **keep**, or **discard**. A run that changes nothing opens no branch.
+When a run or a change finishes, the agent walks you through what's on the branch and asks what you'd like to do with it:
 
-After a few reviewed changes, emails-to-excel's `main` carries the tags `r2`, `r3`, `r4` and `r5`, one per revision, so `git show r4:plan.yaml` is the plan as it was then.
+- **merge** it, and it becomes one commit on `main`, tagged with the new revision (`r2`, `r3`, and so on). Every run from then on uses it.
+- **keep** it for later, and you go back to `main` with the branch still there.
+- **discard** it, and it's gone.
 
-Only scripts commit, never the model, and never while a wave is running: pi-subagents compares the repository's staged files before and after each child that writes, and a commit in the middle would fail that check.
+And if a run didn't change anything, there's nothing to review, so it won't ask.
 
-## States
+## The second run: where it pays off
 
-At any moment a workflow is in one of ten **states**, worked out from four facts: whether the plan is ready, whether a run is active, whether a wave is running, and which branch is checked out. Each state allows certain moves, and the scripts refuse the rest, so the agent never has to guess what it may do next. Every tool result carries the answer:
+This is the moment the whole design is built around. Here are emails-to-excel's real runs, side by side:
 
-```json
-{
-  "state": "ready",
-  "moves": ["workflow_new_run", "/workflow-revise", "/workflow-improve"],
-  "hint": "start a run, or change the plan on a branch"
-}
-```
+| Run | What happened | Model cost | Whole run |
+|---|---|---|---|
+| 2 | every stage done by a model | $0.016 | under 4 min |
+| 3 | the models also wrote the two programs, once | $0.021 | |
+| 4 | the programs reused, but run by a model | $0.0105 | about 2.5 min |
+| later | the programs run as plain commands | $0.004 | 77 s |
 
-This is emails-to-excel between runs. During a run the same block would say `between_waves` or `wave_running`, with `workflow_compile` or `workflow_log_finish` as the only legal moves.
+You'll notice run 3 actually cost more than run 2. That's the investment. Writing a program that can be reused (214 and 129 lines here, taking arguments rather than fixed paths) is more work than doing the job once. But you only pay for it once. After that, each program takes a tenth of a second where a model used to take fifteen or twenty, and the only stage still using a model is `discover`.
 
-## Planning
+> [!TIP]
+> Once your emails always arrive in the same format, you may not need `discover` either: see [How to drop a discovery stage](how-to.md#how-to-drop-a-discovery-stage-once-the-input-is-stable).
 
-`/workflow-new` plans in six steps. It creates the folder from a template, with a draft plan holding your request. It then resolves what can be checked cheaply, and a read-only `scout` may look at facts the planner can't see; an unknown only the work can settle becomes a discovery stage. It drafts the plan, turning every folder, URL, account and token into a param. It classifies each stage and checks the plan, including that each concrete wave can compile. The critic reviews the draft. And only then does it ask questions, at most three per round and two rounds, and only where a wrong guess would change the stages, a side effect, a source or destination, or what counts as done.
+Two other things affect what a run costs, if you're designing your own plans. The agent does its bookkeeping once per wave, so a plan with fewer waves is cheaper than one with fewer stages. And a `map` stage, which splits a large input into batches, launches one child per batch, so its cost grows with the size of the input.
 
-## Running
+## Words used on this page
 
-`/workflow-run` runs. It checks the plan and the next wave, asks for missing values, collects the wave's decisions and approvals in one question, compiles and launches, and records the outcome from pi-subagents when the wave ends. Between waves it follows what the last one ended with: on to the next wave, show you the outputs, or replan. At the end it reports each `done_when` line against what the gates and reviews checked, and shows the branch if the run changed the workflow.
+| Word | Means |
+|---|---|
+| **workflow** | a folder `workflows/<slug>/` with a plan, its programs and an agent that runs it |
+| **plan** | `plan.yaml`: the job, what counts as done, and the stages |
+| **stage** | one step of the work, such as "extract the fields from every email" |
+| **kind** | whether a stage is a side effect, a decision, deterministic or judgment |
+| **stage program** | the code that does a deterministic stage, in `scripts/` |
+| **gate** | a program that checks a stage's output, written before the stage runs |
+| **param** | a value that depends on the machine; it lives in `.env` |
+| **run** | one execution of the plan, in its own folder `runs/<id>/` |
+| **wave** | the stages launched together before the agent next needs you |
+| **child** | one background agent doing a stage, or part of one |
+| **side effect** | a stage that changes something outside the run |
+| **replan** | filling in later stages during a run, from what discovery found |
+| **branch** | where a run's or a change's edits wait for your review |
 
-A failed wave doesn't lose work. Its stages go back to pending, and when it is relaunched, children that completed and haven't changed are not run again.
+## Where to go from here
 
-## Performance
-
-What a run costs depends mostly on how much of it is model work. In emails-to-excel's real runs:
-
-| Run | What happened | Children's cost |
-|---|---|---|
-| 2 | every stage done by model children | $0.016 |
-| 3 | the two programs written (once) | $0.021 |
-| 4 | the programs reused | $0.0105 |
-| later | same plan, after a plan change | $0.004 |
-
-A reused program takes about a tenth of a second; the model children that did the same work took 15 to 20 seconds each. What is left is `discover`, the one stage that still needs a model.
-
-The orchestrating session, the agent that talks to you, costs about as much again as the children. That is why the scripts hand it summaries and a path to the compiled wave rather than outputs and script text: retyping a script had been about half of its output.
-
-Two more things about cost. A plan with many stages makes a compile and a record per wave, not per stage, so waves matter more than stage counts. And a `map` stage runs one child per batch, which is as costly as the batches are many.
-
-## Alternatives
-
-A workflow is more than most jobs need. Consider something simpler when:
-
-* **The job is a one-off.** A single Pi session, or one subagent, is quicker than planning, a critic and a review. A workflow's plan, gates and programs are reused from the second run on.
-* **The whole job is mechanical.** If no step needs judgment, a plain script with a test may be all you need. A workflow adds a plan, a gate and a review around the same program.
-* **You don't want a human in the loop.** Approvals and reviews are the point of a workflow. For fully unattended work, the workflow agent refuses to approve a side effect itself.
-
-## Learn more
-
-* [Tutorial: your first workflow](tutorial.md) runs the example above yourself.
-* [Design decisions](design.md) explains why each part is the way it is, and what was tried first.
-* [The state machine](state-machine.md) lists every state and move.
-* [Worked example](worked-example.md) is the history of emails-to-excel: what each run showed, and what changed because of it.
-* [`plan-schema.md`](../.pi/skills/workflow/references/plan-schema.md) documents the plan format; [`run-protocol.md`](../.pi/skills/workflow/references/run-protocol.md) is the workflow agent's own instructions.
+- If you'd like to try all this yourself, the [tutorial](tutorial.md) walks you through this exact workflow in about fifteen minutes.
+- If you're curious why a rule is the way it is, [Design decisions](design.md) tells the story behind each one, including what went wrong first.
+- If you're writing or editing plans, [`plan-schema.md`](../.pi/skills/workflow/references/plan-schema.md) describes the format field by field.

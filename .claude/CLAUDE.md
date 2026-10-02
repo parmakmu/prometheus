@@ -12,15 +12,14 @@ the settled decisions and the reasons for them, so you don't re-litigate them.
 |---|---|
 | [`docs/tutorial.md`](../docs/tutorial.md) | tutorial: a first workflow planned, run, reviewed and rerun |
 | [`docs/how-to.md`](../docs/how-to.md) | how-to guides: one goal each |
-| [`docs/design.md`](../docs/design.md) | why it is built this way (the decisions below, with their evidence) |
-| [`docs/how-it-works.md`](../docs/how-it-works.md) | explanation: the concepts, followed through one real workflow (emails-to-excel) |
-| [`docs/commands.md`](../docs/commands.md) | every command and model-facing tool |
+| [`docs/design.md`](../docs/design.md) | why each rule exists: what went wrong before it (the *why*; no concept explanations) |
+| [`docs/how-it-works.md`](../docs/how-it-works.md) | explanation: glossary, lifecycle diagram, the concepts in the order a workflow lives them (the *what*) |
+| [`docs/commands.md`](../docs/commands.md) | every command, then the model-facing tools |
 | [`docs/python-scripts.md`](../docs/python-scripts.md) | what each script does and how they fit together |
 | [`docs/params-and-secrets.md`](../docs/params-and-secrets.md) | params, `.env`, secrets, their validator rules |
-| [`docs/troubleshooting.md`](../docs/troubleshooting.md) | refusals a user meets, their causes and fixes |
-| [`docs/state-machine.md`](../docs/state-machine.md) | the states a workflow can be in, the legal moves and which script refuses the rest |
+| [`docs/troubleshooting.md`](../docs/troubleshooting.md) | refusals a user meets, their causes and fixes; agent-recovered ones under "Handled by the agent" |
+| [`docs/state-machine.md`](../docs/state-machine.md) | contributor reference: the states, the legal moves and which script refuses the rest |
 | [`docs/contributing.md`](../docs/contributing.md) | architecture, where things are, tests, rules for a change, how these docs are written (Divio's four types) |
-| [`docs/worked-example.md`](../docs/worked-example.md) | emails-to-excel from request to reused stage programs |
 
 The model-facing rules are in the skill: `SKILL.md` (planning), `references/run-protocol.md` (running; the core, read every session), `references/replanning.md` and
 `references/changing.md` (replanning; reviewing a branch and changing the plan: read only when a route needs them, to keep a plain run cheap),
@@ -284,7 +283,7 @@ waves run in a mock of `runs.run/runs.all` (real batch tool and gates, fake chil
 extensions type-checked and driven with Pi's real types. The 131 outside `tests/test_workflow.py`
 pass without Node or uv; that file's 102 (the scenario and the extensions) need `npm install` and uv.
 
-Verified in live runs of emails-to-excel (see `docs/worked-example.md`): planning with the
+Verified in live runs of emails-to-excel (see `docs/design.md` and "The second run" in `docs/how-it-works.md`): planning with the
 critic and questions; discovery + replan; explicit acceptance; derived waves and run folders;
 side-effect approval; `.env` loading; `workflow_log_finish` reading `status.json` and returning
 `mission_close`; stage programs written and committed at finish; the end-of-run review (keep);

@@ -1,10 +1,10 @@
 # Tutorial: your first workflow
 
-In this tutorial you will plan a workflow that reads emails and saves them in an Excel file, run it, look at what it produced, and run it again. It takes about fifteen minutes. You need no emails of your own: you will create three sample ones.
+In this tutorial we'll build a workflow together that copies a folder of emails into an Excel file. You'll plan it, run it, approve the one step that writes a file, look over what the run taught the workflow, and then run it a second time. That second run is the real payoff: it does the same job with almost no model work at all.
 
-Along the way you will meet the main ideas: a **plan**, **stages**, a **run**, an **approval**, and a **branch** you review. This page doesn't explain them; each step links to the page that does, for later.
+It takes about fifteen minutes, and you don't need any emails of your own. We'll make three small samples in step 2.
 
-> The agent's wording, and the questions it asks, differ from session to session, because a model writes them. The commands, the files and the results below are what you should see. Output marked *from a real run* was copied from one.
+> A model writes the agent's replies, so their wording and its questions vary between sessions. The commands, files and results below are what you should see. Output marked *from a real run* was copied from an actual session.
 
 ## Before you begin
 
@@ -19,20 +19,20 @@ You also need a model configured in Pi, as for any Pi session.
 
 ## 1. Set up Prometheus
 
-In the folder where you cloned this repository:
+Prometheus is the agent that plans workflows. Start it in the folder where you cloned this repository:
 
 ```sh
 uv sync
 pi
 ```
 
-`uv sync` installs the Python packages the scripts use. When Pi starts, it asks whether to trust the folder. **Accept.** Until you do, none of the `/workflow-*` commands exist.
+`uv sync` installs the Python packages the scripts use. When Pi starts, it asks whether to trust the folder. **Accept**: the `/workflow-*` commands exist only in a trusted folder.
 
 Check: type `/workflow-list`. It answers that there are no workflows yet.
 
 ## 2. Create some emails to read
 
-Open a second terminal and create a folder with three small emails:
+The workflow needs something to read, so make three small emails. Each is different on purpose: one is plain text, one is HTML with a copy recipient, and one has an empty subject. Open a second terminal and run:
 
 ```sh
 mkdir -p ~/tutorial-emails && cd ~/tutorial-emails
@@ -75,29 +75,29 @@ EOF
 ls
 ```
 
-You should see the three files. Note the folder's full path (`echo ~/tutorial-emails` prints it): you will need it in step 5.
+You should see the three files. Note the folder's full path, which `echo ~/tutorial-emails` prints, because the run will ask for it in step 5.
 
 ## 3. Plan the workflow
 
-Back in the Prometheus terminal:
+With the emails in place, go back to the Prometheus terminal and describe the job:
 
 ```text
 /workflow-new I want to read the emails in a folder and save them in an Excel file
 ```
 
-Prometheus now plans. You will see it look at what it can check, draft a plan, have a separate agent (the plan critic) review it, and ask you a few questions. Answer them. Typical ones are which fields to extract (choose sender, recipients, date, subject and body) and what to do about attachments.
+Prometheus now plans. You will see it look at what it can, draft a **plan**, and have a second agent, the plan critic, review the draft. Then it asks you a few questions. Typical ones ask which fields to extract (choose sender, recipients, date, subject and body) and what to do about attachments.
 
-It will not ask where your emails are. That value belongs to your machine, and the run asks for it.
+It won't ask where your emails are. That depends on the machine the workflow runs on, so the run asks instead.
 
-When it finishes, it says the workflow is ready. Look at what it made:
+When Prometheus says the workflow is ready, look at what it made:
 
 ```sh
-ls workflows/emails-to-excel
+ls -a workflows/emails-to-excel
 ```
 
-You should see at least `plan.yaml`, `gates` and `scripts`, plus the workflow's own `.pi` and `.git` (hidden).
+You should see at least `plan.yaml`, `gates` and `scripts`, plus the workflow's own `.pi` and `.git`.
 
-Open `workflows/emails-to-excel/plan.yaml`. Near the top you will find the goal and what counts as done:
+The plan is the part to look at now. Open `workflows/emails-to-excel/plan.yaml`: near the top are the goal and what counts as done (*from a real run*):
 
 ```yaml
 goal: >-
@@ -108,7 +108,7 @@ done_when:
   - The workbook contains one row per email and its columns match the confirmed extraction scope.
 ```
 
-*From a real run.* Further down are the **stages**, the steps of the work. A plan like this one has three:
+Further down are the **stages**, the steps of the work. A plan like this one has three:
 
 ```text
 discover         look at sample emails and report what formats and fields exist
@@ -116,46 +116,50 @@ read-emails      extract the fields from every email
 build-workbook   write the .xlsx
 ```
 
-Yours may use other names or add a stage; the idea is the same. Ask `/workflow-list emails-to-excel` to see its waves and what it needs before it can run.
+Yours may name them differently or add a stage, but the shape is the same: look at the input, extract, write. To see what the workflow still needs before it can run, type `/workflow-list emails-to-excel`.
 
 ## 4. Start the workflow agent
 
-The workflow is a Pi agent of its own. In a new terminal:
+Prometheus only plans. The workflow is a Pi agent of its own, and it does the work. Open a third terminal in the Prometheus folder and start it:
 
 ```sh
 cd workflows/emails-to-excel
 pi
 ```
 
-Accept the trust prompt again: this is a different folder, so it needs its own.
+Accept the trust prompt: Pi asks once per folder, and this is a new one.
 
 Check: `/workflow-status` reports that the plan is ready and that no run has started.
 
 ## 5. Run it
 
+Start the run:
+
 ```text
 /workflow-run
 ```
 
-The agent asks you to confirm starting a run, and then asks for the one value it doesn't have: the folder of emails. Give it the absolute path from step 2, such as `/Users/you/tutorial-emails`.
+The agent asks you to confirm the new run, then asks for the one value it doesn't have: the folder of emails. Give it the absolute path from step 2, such as `/Users/you/tutorial-emails`.
 
-It then launches the first wave and tells you what it is doing. *From a real run:*
+It then launches the first **wave**: a group of stages handed off together, each done by a **child** agent working in the background. *From a real run:*
 
 > Run `2026-10-01-3` has started. Wave `w1` is reading and discovering the selected emails; it launched three children. I'll continue when the wave finishes.
 
-Wait. When the wave ends, the agent wakes up by itself. The first wave takes about a minute.
+You don't need to do anything while it works. After about a minute the wave ends and the agent picks up by itself.
+
+On a brand-new plan, the agent may also stop after `discover` to fill in the stages that depend on it. This is a **replan**: it writes the details of `read-emails` from what `discover` found in your emails, has the critic check them, and carries on. You may be asked to confirm.
 
 ### Approve the side effect
 
-Next the agent stops and asks for your approval. Writing the workbook is the one step that changes something outside the work folder, so it never goes ahead without a yes. It tells you what will be created, where, and from which input. *From a real run:*
-
-> The completed workflow run `2026-10-01-3` is ready to create an Excel workbook. Approve the `build-workbook` stage to …
+Writing the workbook is a **side effect**: it creates something outside the run's working folder. The agent never takes such a step without your yes. It stops, says what will be created, where, and from which input, and asks you to approve `build-workbook`.
 
 Choose **Approve**. The workbook is written in a couple of seconds.
 
-The agent finishes by going through each of the plan's `done_when` lines and saying, with the file paths, whether it was met.
+The agent then checks each `done_when` line from the plan, and tells you whether it was met, with file paths as evidence.
 
 ## 6. Look at the result
+
+The agent now asks you to review what the run changed. Leave that question open for a moment and check the result first. In the workflow's folder, the workbook is in the run's `outputs` folder:
 
 ```sh
 ls runs/*/outputs
@@ -165,9 +169,9 @@ ls runs/*/outputs
 emails.xlsx
 ```
 
-Open `emails.xlsx` in Excel or any spreadsheet program. You should see a header row (From, To, Cc, Date, Subject, Body) and one row per email: three rows for the three emails you created.
+Open `emails.xlsx` in Excel or any spreadsheet program. You should see a header row (From, To, Cc, Date, Subject, Body) and one row for each of the three emails you created.
 
-Two more things are in the run's folder. Look at them:
+The workbook was built from intermediate files, which stay in the run's `work` folder:
 
 ```sh
 ls runs/*/work
@@ -177,11 +181,11 @@ ls runs/*/work
 discovery.md  email-rows.json  unparsed-emails.json
 ```
 
-`email-rows.json` is what was extracted, one object per email. *From a real run:*
+`email-rows.json` holds what was extracted, one object per email. *From a real run:*
 
 ```json
 {
-  "file": "01-plain.eml",
+  "file": "01-status.eml",
   "from": "Ada Lovelace <ada@example.test>",
   "to": "team@example.test",
   "cc": "",
@@ -191,13 +195,15 @@ discovery.md  email-rows.json  unparsed-emails.json
 }
 ```
 
-`unparsed-emails.json` lists any email the program couldn't read. For your three it contains `[]`.
+`unparsed-emails.json` lists any email the program couldn't read. For your three emails it contains `[]`.
 
 ## 7. Review what the run wrote
 
-A first run usually writes small programs into the workflow so that later runs don't have to: one that reads the emails, one that builds the workbook. They are on a branch of the workflow's own git repository, not yet on `main`, and the agent now shows you what is on the branch and asks you to **merge**, **keep** or **discard** it.
+Back to the agent's question. The run wrote two small programs, one that reads the emails and one that builds the workbook, so later runs can reuse them instead of writing them again.
 
-Choose **merge**. Check:
+Nothing a run writes reaches the workflow until you have seen it. So the programs wait on a **branch** of the workflow's own git repository, not yet on `main`. The agent summarises what is on the branch and asks you to **merge**, **keep** or **discard** it.
+
+Choose **merge**. The programs are now part of the workflow:
 
 ```sh
 ls scripts
@@ -207,30 +213,39 @@ ls scripts
 build_workbook.py  read_emails.py
 ```
 
+And the branch is gone: it was squashed into one commit on `main`, which you can see with:
+
 ```sh
 git log --oneline main
 ```
 
-The branch became one commit on `main`, and the branch is gone.
-
 ## 8. Run it again
+
+Now see what the merge bought you. Start a second run:
 
 ```text
 /workflow-run
 ```
 
-The agent asks whether to start a new run and whether the input changed. Say yes to the first, and no to the second.
+The agent asks whether to start a new run (yes) and whether the input changed (no).
 
-This time nothing is written: the two stages that needed programs now just run them. They take about a tenth of a second each, with no model involved, and the run has nothing to commit, so the agent has no branch to show you.
+Watch how it differs. `read-emails` and `build-workbook` now run the programs you merged, as plain commands, in about a tenth of a second each, with no model involved. Only `discover` still uses a model. The run writes no programs, so there is no branch to review at the end.
 
-*From real runs of this workflow:* the run that wrote the programs cost $0.021 in model calls for its children. The next run cost $0.0105, and a later one, with the discovery stage unchanged, $0.004 and 77 seconds from start to finish.
+*From real runs of this workflow:*
+
+| | First run | A later run |
+|---|---|---|
+| Model cost of the children | $0.021 | $0.004 |
+| Stages done by a model | all three | only `discover` |
+| Branch to review | yes | none |
+| Whole run | a few minutes | 77 seconds |
 
 ## What you have done
 
-You planned a workflow with `/workflow-new`, ran it with `/workflow-run`, approved a side effect, reviewed what a run changed, and ran it again.
+Well done: that's the whole cycle. You planned a workflow with `/workflow-new`, ran it with `/workflow-run`, approved a side effect, reviewed and merged what the first run wrote, and watched the second run reuse it at a fifth of the cost. Every workflow you build from here works the same way, however different the job.
 
 ## Where to go next
 
-- To see why the second run was cheaper, and how the pieces fit: [How Prometheus works](how-it-works.md).
+- To see why the second run was cheaper, and how the pieces fit together: [How Prometheus works](how-it-works.md).
 - To do something specific, such as running on a new folder of emails or changing the plan: [How-to guides](how-to.md).
 - If a command refuses: [Troubleshooting](troubleshooting.md).

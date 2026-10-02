@@ -1,38 +1,23 @@
 # Commands and tools
 
-Every command you type and every tool the model calls, one entry each.
+**Commands** start with `/`, and you type them in Pi. Prometheus's commands run in the Prometheus folder; the others run in a workflow's folder.
 
-- **Commands** start with `/`. You type them in Pi.
-- **Tools** have no slash. Pi gives them to the model, which calls them to carry out the mechanical steps of planning and running. You don't call them, but you see their results, and their refusals are listed in [Troubleshooting](troubleshooting.md).
-
-Each entry gives the syntax, where it runs and, inside a workflow, the [states](state-machine.md) it is accepted in. In any other state it is refused, with a message that says why.
-
-| Entry | Kind | Runs in | Summary |
-|---|---|---|---|
-| [`/workflow-new`](#workflow-new) | command | Prometheus | plan a new workflow for a request |
-| [`/workflow-list`](#workflow-list) | command | Prometheus | list workflows and where each stands |
-| [`/workflow-export`](#workflow-export) | command | Prometheus | copy a workflow somewhere else to run it |
-| [`/workflow-refresh`](#workflow-refresh) | command | Prometheus | update workflows to this Prometheus's template and skill |
-| [`workflow_scaffold`](#workflow_scaffold) | tool | Prometheus | create the folder for the workflow being planned |
-| [`workflow_check (Prometheus)`](#workflow_check-prometheus) | tool | Prometheus | check a workflow's plan from Prometheus |
-| [`/workflow-run`](#workflow-run) | command | Workflow | plan, continue or run, from wherever it stands |
-| [`/workflow-status`](#workflow-status) | command | Workflow | show where it stands; changes nothing |
-| [`/workflow-revise`](#workflow-revise) | command | Workflow | change the plan on a branch you review |
-| [`/workflow-improve`](#workflow-improve) | command | Workflow | propose fixes from past sessions and runs |
-| [`workflow_check`](#workflow_check) | tool | Workflow | check the plan and say where the workflow stands |
-| [`workflow_new_run`](#workflow_new_run) | tool | Workflow | start a run |
-| [`workflow_compile`](#workflow_compile) | tool | Workflow | turn the next wave into a pi-subagents call, or say what must happen first |
-| [`workflow_log_start`](#workflow_log_start) | tool | Workflow | record that a wave was launched |
-| [`workflow_log_finish`](#workflow_log_finish) | tool | Workflow | record how a wave ended |
-| [`workflow_record_decision`](#workflow_record_decision) | tool | Workflow | record your answer for a decision stage |
-| [`workflow_replan`](#workflow_replan) | tool | Workflow | change pending stages during a run |
-| [`workflow_record_critique`](#workflow_record_critique) | tool | Workflow | record the plan critic's result |
-| [`workflow_stop_run`](#workflow_stop_run) | tool | Workflow | stop the active run |
-| [`workflow_merge`](#workflow_merge) | tool | Workflow | end the review of a run or change branch |
-| [`workflow_set_params`](#workflow_set_params) | tool | Workflow | set param values in `.env` |
-| [`workflow_sessions`](#workflow_sessions) | tool | Workflow | read the workflow's earlier Pi sessions |
+| Command | Runs in | Does |
+|---|---|---|
+| [`/workflow-new`](#workflow-new) | Prometheus | plan a new workflow for a request |
+| [`/workflow-list`](#workflow-list) | Prometheus | list workflows and where each stands |
+| [`/workflow-export`](#workflow-export) | Prometheus | copy a workflow somewhere else to run it |
+| [`/workflow-refresh`](#workflow-refresh) | Prometheus | update workflows to this Prometheus's template and skill |
+| [`/workflow-run`](#workflow-run) | Workflow | plan, continue or run, from wherever it stands |
+| [`/workflow-status`](#workflow-status) | Workflow | show where it stands; changes nothing |
+| [`/workflow-revise`](#workflow-revise) | Workflow | change the plan on a branch you review |
+| [`/workflow-improve`](#workflow-improve) | Workflow | propose fixes from past sessions and runs |
 
 Commands are prefixed `workflow-` because Pi has built-in `/new` and `/export`.
+
+**Tools** have no slash. The model calls them to carry out the mechanical steps of planning and running; you never call them, but you see their results. They are listed [after the commands](#tools-the-model-calls).
+
+Inside a workflow, each entry names the [states](state-machine.md) it is accepted in. In any other state it is refused, with a message that says why; the refusals are in [Troubleshooting](troubleshooting.md).
 
 ## Prometheus commands
 
@@ -110,32 +95,6 @@ Rewrites the files a workflow got from Prometheus: its extension, the skill and 
 
 **Refusals:** [a run is active, or a branch is checked out](troubleshooting.md#refresh-during-a-run-or-review)
 
-## Prometheus tools
-
-### workflow_scaffold
-
-Creates the folder for the workflow being planned.
-
-```text
-workflow_scaffold({ slug, request })
-```
-
-**Called during:** `/workflow-new`
-
-Creates `workflows/<slug>/` from the workflow template: a draft plan holding the request, the workflow's extension, a copy of the skill, its agents and its own git repository. It refuses unless `/workflow-new` ran in this session, and allows one workflow per `/workflow-new`. Running `scaffold_workflow.py` from the shell is blocked, so the tool can't be bypassed.
-
-### workflow_check (Prometheus)
-
-Checks a workflow's plan from Prometheus.
-
-```text
-workflow_check({ slug })
-```
-
-**Called during:** planning · changes nothing
-
-Validates the plan and compile-checks each concrete pending wave. Returns errors, warnings and a summary. It never launches a wave.
-
 ## Workflow commands
 
 Start Pi in the workflow's folder for these.
@@ -196,7 +155,7 @@ Without a change, it asks what to change.
 
 **Refusals:** [a run is active](troubleshooting.md#change-while-a-run-is-active) · [an improve is open](troubleshooting.md#another-change-is-open) · [a branch is not reviewed](troubleshooting.md#branch-not-reviewed)
 
-**See also:** [`/workflow-improve`](#workflow-improve) · [Branches and review](how-it-works.md#branches-and-review)
+**See also:** [`/workflow-improve`](#workflow-improve) · [Branches and review](how-it-works.md#reviewing-what-a-run-changed)
 
 ### /workflow-improve
 
@@ -226,6 +185,53 @@ Nothing runs it automatically: only you type it.
 **Refusals:** [no run yet](troubleshooting.md#nothing-to-improve-from-yet) · [nothing new](troubleshooting.md#nothing-new-to-improve-from) · [a run is active](troubleshooting.md#change-while-a-run-is-active) · [a revise is open](troubleshooting.md#another-change-is-open)
 
 **See also:** [`/workflow-revise`](#workflow-revise) · [`workflow_sessions`](#workflow_sessions)
+
+## Tools the model calls
+
+You don't call these. They are here so you can read a tool result or a refusal the agent shows you.
+
+| Tool | Runs in | Does |
+|---|---|---|
+| [`workflow_scaffold`](#workflow_scaffold) | Prometheus | create the folder for the workflow being planned |
+| [`workflow_check (Prometheus)`](#workflow_check-prometheus) | Prometheus | check a workflow's plan from Prometheus |
+| [`workflow_check`](#workflow_check) | Workflow | check the plan and say where the workflow stands |
+| [`workflow_new_run`](#workflow_new_run) | Workflow | start a run |
+| [`workflow_compile`](#workflow_compile) | Workflow | turn the next wave into a pi-subagents call, or say what must happen first |
+| [`workflow_log_start`](#workflow_log_start) | Workflow | record that a wave was launched |
+| [`workflow_log_finish`](#workflow_log_finish) | Workflow | record how a wave ended |
+| [`workflow_record_decision`](#workflow_record_decision) | Workflow | record your answer for a decision stage |
+| [`workflow_replan`](#workflow_replan) | Workflow | change pending stages during a run |
+| [`workflow_record_critique`](#workflow_record_critique) | Workflow | record the plan critic's result |
+| [`workflow_stop_run`](#workflow_stop_run) | Workflow | stop the active run |
+| [`workflow_merge`](#workflow_merge) | Workflow | end the review of a run or change branch |
+| [`workflow_set_params`](#workflow_set_params) | Workflow | set param values in `.env` |
+| [`workflow_sessions`](#workflow_sessions) | Workflow | read the workflow's earlier Pi sessions |
+
+## Prometheus tools
+
+### workflow_scaffold
+
+Creates the folder for the workflow being planned.
+
+```text
+workflow_scaffold({ slug, request })
+```
+
+**Called during:** `/workflow-new`
+
+Creates `workflows/<slug>/` from the workflow template: a draft plan holding the request, the workflow's extension, a copy of the skill, its agents and its own git repository. It refuses unless `/workflow-new` ran in this session, and allows one workflow per `/workflow-new`. Running `scaffold_workflow.py` from the shell is blocked, so the tool can't be bypassed.
+
+### workflow_check (Prometheus)
+
+Checks a workflow's plan from Prometheus.
+
+```text
+workflow_check({ slug })
+```
+
+**Called during:** planning · changes nothing
+
+Validates the plan and compile-checks each concrete pending wave. Returns errors, warnings and a summary. It never launches a wave.
 
 ## Workflow tools
 

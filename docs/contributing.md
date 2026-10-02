@@ -17,7 +17,39 @@ Pi command or tool → extension (TypeScript) → Python script → one JSON obj
 
 The extensions run scripts with `$PI_WORKFLOW_PYTHON`, else the nearest `.venv/bin/python` upwards (a workflow inside Prometheus uses Prometheus's), else `python3`.
 
-**Learn more:** [What the Python scripts do](python-scripts.md) · [The state machine](state-machine.md)
+### What a launch looks like
+
+The workflow agent orchestrates a wave but never writes its code. `workflow_compile` saves the wave as data plus the shared runner in one file, and the agent hands pi-subagents only that file's path (*from a real run*):
+
+```json
+{
+  "async": true,
+  "missionId": "f7a80a96-6b5a-473c-9768-9956d5e557fe",
+  "workflow": "/…/runs/2026-10-01-3/.compiled/w2.js"
+}
+```
+
+When the wave ends, `workflow_log_finish` gets the wave's id and returns a summary of the children, not their outputs:
+
+```json
+"children": {
+  "discover":        { "status": "completed", "output": "…/work/discovery.md" },
+  "discover-review": { "status": "completed", "output": null },
+  "read-emails":     { "status": "completed", "output": null }
+}
+```
+
+Every result also carries `next`, the workflow's state and its legal moves (*from a real run*, between runs):
+
+```json
+{
+  "state": "ready",
+  "moves": ["workflow_new_run", "/workflow-revise", "/workflow-improve"],
+  "hint": "start a run, or change the plan on a branch"
+}
+```
+
+**Learn more:** [What the Python scripts do](python-scripts.md) · [The state machine](state-machine.md) · [Design decisions](design.md)
 
 ## Where things are
 
@@ -63,12 +95,19 @@ The docs follow [Divio's four types](https://docs.divio.com/documentation-system
 |---|---|---|---|
 | Tutorial | [Tutorial](tutorial.md) | teaches by doing, with a result at every step that works every time; tells the reader what they should see | explain, offer options, or assume knowledge |
 | How-to guide | [How-to guides](how-to.md), [Troubleshooting](troubleshooting.md) | gives the steps to a goal the reader already has; the title says what it achieves ("How to …") | teach, or explain why |
-| Explanation | [How Prometheus works](how-it-works.md), [Design decisions](design.md), [Worked example](worked-example.md) | gives context, the why, and alternatives, read at leisure | instruct, or list every option |
-| Reference | [Commands and tools](commands.md), [The state machine](state-machine.md), [Params, `.env` and secrets](params-and-secrets.md) | describes accurately and completely, in one consistent form | explain or opine |
+| Explanation | [How Prometheus works](how-it-works.md), [Design decisions](design.md) | gives context, the why, and alternatives, read at leisure | instruct, or list every option |
+| Reference | [Commands and tools](commands.md), [Params, `.env` and secrets](params-and-secrets.md), and for contributors [The state machine](state-machine.md), [What the Python scripts do](python-scripts.md) | describes accurately and completely, in one consistent form | explain or opine |
 
 - A page that needs another type's content links to it.
 - Output in a doc is copied from a real run, and labelled as such. Where it can't be, don't invent it.
 - A reason in an explanation comes from a recorded decision or an observed failure, as in [Design decisions](design.md). Otherwise leave it out.
 - One word per concept: workflow, plan, stage, wave, launch, child, run, gate, stage program, project agent, replan, change.
 - A command or tool entry follows the form in [Commands and tools](commands.md): summary, syntax, where it runs and in which states, what it does, an example, its refusals, see also.
-- Each fact lives on one page. Operator text comes first; implementation detail goes in a marked "For contributors" section.
+- Each fact lives on one page. Operator text comes first; implementation detail goes in a marked "For contributors" section, or on a contributor page.
+- How Prometheus works says *what* a thing is; Design decisions says *why*, starting from what went wrong. Don't explain a concept on both.
+- Define a term where a reader first meets it, or link it to the glossary at the top of [How Prometheus works](how-it-works.md#words-used-on-this-page).
+- Write like a person explaining to a colleague: "you" for the reader, "we" for the people who built Prometheus. Say why something matters to the reader before what it is, link sections with a sentence that says where we're going next, and admit trade-offs and past mistakes plainly. Vary sentence length; clipped fragments read as cold. Clarity still wins: split a sentence when it carries more than one colon or semicolon, or buries its point behind a qualification.
+- Show, then tell: open a section with one line on what the thing does for the reader, then the real artifact (a command, a file, output from a run), then the explanation of what it shows. A number from a real run, or what went wrong, beats an abstract reason.
+- Put tips, warnings and asides in GitHub callouts (`> [!TIP]`, `> [!NOTE]`, `> [!IMPORTANT]`), one short paragraph each, so the main text stays on its path.
+- In Troubleshooting, a refusal the agent recovers from by itself goes under "Handled by the agent"; the other sections are for what needs the reader.
+- Don't hard-wrap lines: one paragraph per line, so diffs stay small when a sentence changes.

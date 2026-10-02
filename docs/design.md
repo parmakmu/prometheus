@@ -1,112 +1,129 @@
 # Design decisions
 
-Why Prometheus is built the way it is. Most of these decisions replaced something that was tried first and went wrong, so each entry says what happened. This page is for people who wonder why a rule exists, or who want to change one; to use Prometheus you don't need it. The settled decisions are also recorded in [`CLAUDE.md`](../.claude/CLAUDE.md).
+Very few of Prometheus's rules were designed up front. Most of them are there because we tried something simpler first, ran it for real, and watched it go wrong. This page tells those stories: what happened, what it taught us, and the rule we ended up with.
 
-## The model does the judging, scripts do the rest
+You don't need any of this to use Prometheus. It's here for the moment you look at a rule and think "surely that's unnecessary", and especially before you change one, so you know what it's quietly preventing. The ideas themselves are explained in [How Prometheus works](how-it-works.md), and the same decisions are recorded more tersely in [`CLAUDE.md`](../.claude/CLAUDE.md).
 
-The Python scripts decide everything that can be decided by rules: whether the plan is valid, what the next wave is, what a move is allowed, how a run is recorded, when to commit. The model plans, talks to you and does the judgment stages. The extensions that connect them are thin: they run a script and format its JSON.
+If there's one lesson running through nearly every story below, it's this: **a model is good at judgment and poor at bookkeeping.** Again and again, the fix was to take a decision that could be made by a rule away from the model and put it in code, where it can be tested and costs nothing to run.
 
-The reason is testability, and cost. A script can be tested without Pi, in a loop over every state. And when the model did the bookkeeping, it was most of the bill: in an early run's log, about 12 of 26 turns of the orchestrating session went on looking up outcomes and reading files the gates had already checked. Now `workflow_log_finish` takes just the wave's id, and returns a summary.
+## Who does what
 
-## Stages are classified irreversibility first
+### The model judges; scripts keep the books
 
-A stage is a side effect, a decision, deterministic or judgment, tried in that order. A stage that both writes to a service and is mechanical is a side effect: the first question is what can't be undone, and only then who should do the work. Approval is enforced in code, not asked of the model: the compiler refuses to compile a side-effect stage that isn't in the approved list.
+In an early run, 12 of the orchestrating session's 26 turns went on bookkeeping: looking up a wave's outcome, reading files the gates had already checked, finding the plan's `done_when` for the final report.
 
-## Deterministic work is a program plus a gate
+Now Python scripts decide everything that can be decided by rule: whether the plan is valid, what the next wave is, which moves are allowed, how a run is recorded, when to commit. The agent passes `workflow_log_finish` a wave's id and gets back a summary of the children, what the next wave needs approved and, at the end, the `done_when` lines. The extensions between Pi and the scripts are thin: each runs a script and formats the JSON it prints.
 
-The first real runs had a model write the extraction program from scratch every run, which was about 70% of the children's output. So a deterministic stage now names a program in `scripts/`. The first run writes it and you review it; later runs run it as a command.
+This also made the logic testable. A script runs without Pi, so the tests can drive it through every state; a model's behaviour can't be tested that way.
 
-The gate is written during planning and never by the stage it checks.
+### The orchestrator gets paths and summaries, not text
 
-A program that fails isn't retried blindly. A `<key>-fix` child is launched only then, shown the error.
+The session that talks to you costs about as much as the children it launches: $0.021 in run 2, $0.0135 in run 4. Retyping a compiled wave's script into the `subagent` call was about half of its output tokens. So the compiled wave is saved to a file and passed by path, and a finished wave comes back as a summary of the children rather than their outputs. The gates and reviewers have already checked the outputs, so the agent opens one only when you need to see it.
 
-Stage programs run as commands (through the `workflow-batcher` runner) after a run in which two model children had spent 35 seconds on two reviewed programs that take about a second as commands.
+### The state machine is code
 
-## A workflow's packages live in one place
+The model used to work out where a workflow stood by combining the plan check with `run.yaml`, which is bookkeeping again. Now the legal moves are a table in code (`workflow_state.MOVES`), and every tool result names the current state and its moves, so the agent never has to guess. A test walks every state and move. On its first walk, it found two holes the hand-written table had missed: a critique that could commit straight to `main`, and a launch accepted on a draft plan. See [the state machine](state-machine.md).
 
-Programs and gates use the packages in the workflow's `pyproject.toml`, installed by `uv` and locked in `uv.lock`. The validator rejects an import `pyproject.toml` doesn't list, and a script with its own `# /// script` package block.
+### Choices are asked with the question tool
 
-The rule was added after models, told to use "the standard library or what is installed", wrote their own XLSX readers and writers of about 100 lines each instead of using openpyxl. Per-script package headers were tried and rejected: dependencies should be visible, and reviewable, in one file. Creating and refreshing a workflow run `uv lock`, so the lock file is committed up front; otherwise the first `uv run` wrote it in the middle of a wave, and every run left a branch to review.
+The rule first said only approvals had to use `ask_user_question`. One run then asked whether to start, and what to do after a failure, in plain chat, where the answer is easy to fumble. Now every question with fixed answers goes through the tool: start a run, decisions, approvals, after a failed wave, merge/keep/discard. Values with no fixed set of answers, such as paths, are still asked in chat.
 
-## Waves are derived, not written
+## Planning
 
-A workflow script can't pause in the middle for a person. A wave is therefore the stretch between two points where the parent has to act, and the validator works those points out from the stages.
+### Only a command starts planning
 
-## The compiler writes data, not code
+A user typed "I want to create documentation with docs in md" as an ordinary message. Prometheus took it as a request and created a workflow nobody had asked for. Now the planning skill can't be invoked by the model, and `workflow_scaffold` refuses unless `/workflow-new` ran in the session. Starting a plan is something only you can do.
 
-A compiled wave is `const W = {…}` followed by one hand-written runner program that every wave shares. Python assembling JavaScript strings had caused two bugs (list commas, a `status` field) and was hard to read. The data is also passed by file path, not text: retyping the compiled script cost about half of the orchestrator's output tokens. It can't go through pi-subagents' `args` either, which caps them at 16 KiB; the example plan's first wave is 19.6 KB.
+### Stages are classified irreversibility first
 
-## Commands start planning; plain messages never do
+The first question about any stage is what can't be undone; only then, who should do it. So the kinds are tried in the order side effect, decision, deterministic, judgment, and a stage that writes to a service is a side effect even when its work is mechanical. Approval is enforced in code, not asked of the model: the compiler refuses a side-effect stage that isn't in the approved list.
 
-The planning skill can't be invoked by the model, and `workflow_scaffold` refuses unless `/workflow-new` ran in the session. A plain message once ("I want to create documentation with docs in md") was taken as a request and scaffolded a workflow nobody asked for.
+### Unknowns are staged, not guessed
 
-## Choices are asked with the question tool
+A planner made to fill in every stage before seeing any data invents the detail it can't know. So each unknown names how it will be settled (by the planner, a read-only probe, you, or a discovery stage), and stages that depend on discovery stay provisional until it has run.
 
-Every question with fixed answers, such as starting a new run, decisions, approvals, what to do after a failure, or merge/keep/discard, goes through `ask_user_question` when it exists. One run asked its start and failure questions in plain chat, because the rule covered approvals only. Values, such as paths, are asked in chat.
+### The critic is a separate agent
 
-## Few questions, asked late
+A model grading its own plan misses the same things it missed writing it. So the critic is another agent, with a fresh context, that reads the plan only as a file. Every finding gets a disposition, and the critic's result is tied by a digest to the plan it saw, so a plan edited afterwards can't run unreviewed.
 
-The planner drafts first, and asks only if a wrong guess would change the stages, a side effect, a source or destination, or what counts as done: at most three per round and two rounds, after the critic. It never asks for param values, which belong to the machine.
+The second pass is for checking fixes. When emails-to-excel's stages were given their programs, the first pass caught that `build-workbook` named a program but kept `pattern: worker`; the second approved the fix. That combination is now a validator error, so the planner catches it before the critic runs.
 
-## Unknowns are staged, not guessed
+### Few questions, asked late
 
-An unknown gets a way to be resolved: the planner decides, a read-only probe, you, or a discovery stage. Stages that depend on a discovery stage are provisional outlines, which makes the run replan. This prevents the planner from inventing detail it has no way to know.
+Questions asked before drafting are guesses about what matters. So the planner drafts first, lets the critic run, and only then asks, where a wrong guess would change the stages, a side effect, a source or destination, or what counts as done. It never asks for param values, which belong to the machine.
 
-## The critic is a separate agent
+## Doing the work
 
-Self-grading misses the same things the plan-writing missed. The critic starts fresh, reads the plan as a file, and every finding gets a disposition. It has at most two passes per revision, and its result is tied to the plan it saw, so an edit afterwards needs it again.
+### Deterministic work is a program plus a gate
 
-## A producer is told who reads its output
+In the first real runs, a model child wrote the extraction program from scratch on every run, and that program was about 70% of the children's output. So a deterministic stage now names a program in `scripts/`. The first run writes it, you review it, and later runs reuse it. If it fails, a `<key>-fix` child is launched and shown the error; it isn't retried blindly.
 
-A stage whose outputs other stages consume gets a "Used next by" section, and so does its reviewer. In one run `discover`, told only to "report available fields", left out `Cc`, which appears in one email of eight. Its reviewer read the plan, saw that `read-emails` extracts `Cc`, and blocked the wave. The two children had judged the report by different standards.
+Reusing the program still left a model child to run it. In run 7, two children spent 35 seconds running two reviewed programs that take about a second as commands. So stage programs now run as plain commands, through the `workflow-batcher` runner, with no model involved. In run 8, `read-emails` and `build-workbook` took 0.1 s each, at no cost, and the whole run fell from 2 min 22 s to about a minute.
 
-## Acceptance is explicit
+### A workflow's packages live in one place
 
-Every writing child and every gated stage carries an explicit acceptance (`level`, `preserveStagedIndex`, `review`, `verify`). With pi-subagents' inferred acceptance, an asynchronous writer demands no staged files and an independent review, and the first real run failed on it with correct output.
+Told to use "the standard library or what is installed", models hand-wrote their own XLSX readers and writers, about 100 lines each, instead of using openpyxl. Now programs and gates use the packages in the workflow's `pyproject.toml`, locked in `uv.lock`, and the validator rejects an import that `pyproject.toml` doesn't list. Per-script package headers (`# /// script`) were tried and rejected: dependencies should be reviewable in one file.
 
-## Runs are folders, and the plan holds no run state
+Creating or refreshing a workflow runs `uv lock` up front. Before that, the first `uv run` wrote the lock file in the middle of a wave, and every run left a branch to review.
 
-A run is `runs/<id>/`, so the plan can be reused on new input and relative output paths resolve inside the run instead of overwriting each other's. At most one run is active, and each has one pi-subagents mission.
+### A producer is told who reads its output
 
-## `main` changes only by a reviewed merge
+In run 5, `discover` was told only to "report available fields". It left out `Cc`, which appears in one email of eight. Its reviewer read the plan, saw that `read-emails` extracts `Cc`, and blocked the wave. The two children had judged the same report by different standards, because only one knew what it was for. Now a stage whose output others read gets a "Used next by" section naming each reader, what it reads and how that is checked, and its reviewer gets the same section.
 
-A run's discoveries are a proposal, not a silent change to every later run. So a run's first commit creates `run/<id>`, and a change you ask for goes to `revise/` or `improve/`. At the end you see the diff and choose. A merge is one commit, because a branch's commits are the working steps of one change, and `main`'s history should read as one entry per reviewed change.
+### Acceptance is explicit
 
-New runs and changes refuse while another branch is checked out, so a review can't be skipped.
+The first real run failed with correct output. Left to infer how to accept a child, pi-subagents expected an asynchronous writer to leave no staged files and to have an independent review. Now every child that writes files, and every gated stage, carries an explicit acceptance (`level`, `preserveStagedIndex`, `review`, `verify`).
 
-The workflow owns its plan: an earlier design had an outside revise command with no locks, and it was removed.
+## Launching waves
 
-## Plan edits during a run go through a tool
+### Waves are derived, not written
 
-Once a run starts, plan changes go through `workflow_replan` and `workflow_record_critique`, with the locked fields listed in [How Prometheus works](how-it-works.md#discovery-and-replanning). The first replan's direct edits misfired.
+A workflow script can't pause in the middle for a person, so the work has to stop wherever a person or the agent must act. A wave is the stretch between two such points. The validator works them out from the stages, so a plan never states its waves and can't get them wrong.
 
-The plan is round-tripped YAML in a house style (quotes kept, no wrapping), so that load and dump change only the lines you edited. Repeated keys are an error: a loader that keeps the last one would let an edit that drops a `- id:` line silently merge two list items.
+### The compiler writes data, not code
 
-## The state machine is code
+Python used to assemble each wave's JavaScript as strings. That caused two bugs (list commas, and a `status` field) and was hard to read. Now a compiled wave is `const W = {…}` followed by one hand-written runner, `wave_runner.js`, that every wave shares. The data can't go through pi-subagents' `args` instead: those are capped at 16 KiB, and the example plan's first wave is 19.6 KB.
 
-The legal moves are a table (`workflow_state.MOVES`), and every workflow tool's result carries the state and the moves. The model used to work out where it stood from the plan check and `run.yaml`. A test walks every state and move and found two holes a hand-written table had missed: a critique that could commit straight to `main`, and `log_start` accepted on a draft plan. See [the state machine](state-machine.md).
+### Guards sit around the launch
 
-## Guards sit around the launch
+A session can end at any moment, and the model can skip a step, so every point where that would leave a run in a bad state has a guard. A run starts only from a ready, valid plan. Compiling commits only a wave that can launch. It refuses a wave that was launched but never recorded (pi-subagents keeps the script's digest, which gives it away), and holds the next wave after a `review` until you say go on. A relaunch reuses the children that completed and haven't changed.
 
-A run starts only from a ready, valid plan. Compile commits only a wave that can launch, refuses one that was launched but never recorded (pi-subagents records the script's digest), and holds the next wave after a `review` until you say to go on. A relaunch reuses the children that completed and haven't changed. A critique must name a completed plan-critic child. Each of these closes a gap where a session ended at the wrong moment, or a step was skipped.
+## Keeping runs and changes apart
 
-## Params are typed, and values live in `.env`
+### Runs are folders, and the plan holds no run state
 
-Params can be tokens and table names. An earlier `.pi/params.yaml` turned every value into a path, and would have put secrets in chat, compiled waves, child tasks and run logs. Now a secret appears only as `${ENV_NAME}`, the model can't read `.env`, and the agent asks you to add a secret rather than asking for it.
+The plan has to be reusable on new input. So each run lives in `runs/<id>/`, relative output paths resolve inside it, and runs never overwrite each other's files. At most one run is active at a time.
 
-## One self-contained `index.ts` per agent
+### `main` changes only by a reviewed merge
 
-Each agent has one extension file, with no re-export layers: the owner pushes back on indirection and duplicate folders. The duplication between the two extensions is accepted. Prometheus is standalone: you start Pi in its folder, and it is not installed into `~/.pi/agent/`.
+What a run discovers is a proposal, not a silent change to every later run. So a run's first commit opens a `run/<id>` branch, a change you ask for opens a `revise/` or `improve/` branch, and you see the diff and choose. A merge is one commit, because a branch's commits are working steps, and `main` should read as one entry per reviewed change. New runs and changes refuse while another branch is checked out, so a review can't be skipped.
 
-## Contributor notes aren't where Pi can read them
+An earlier design let Prometheus revise a workflow's plan from outside, with no locks. It was removed: the workflow owns its plan.
 
-Pi loads the first of `AGENTS.override.md`, `AGENTS.md` and `CLAUDE.md` from every folder above its working directory. A `CLAUDE.md` at the repository root put about 5,000 tokens of contributor notes into every turn, about a fifth of a planning session's tokens. So the notes are in `.claude/CLAUDE.md`, which Claude Code reads and Pi doesn't. For the same reason, roles live in `.pi/APPEND_SYSTEM.md`: `AGENTS.md` from parent folders would leak Prometheus's role into workflows.
+### Only scripts commit, and never during a wave
 
-## Alternatives that were tried or rejected
+pi-subagents compares the repository's staged files before and after each child that writes. A commit in the middle of a wave would fail that check. So the model never commits, and the scripts commit only between waves.
 
-* **An LLM per item for deterministic work.** What the first runs did; replaced by a program plus a gate.
-* **Per-script dependency headers.** Rejected by the owner: dependencies belong in one visible place.
-* **Passing a compiled wave through pi-subagents' `args`.** Not possible at the size of real waves (the cap is 16 KiB).
-* **Python assembling the wave's JavaScript.** Replaced by data plus one fixed runner, after two bugs.
-* **An outside revise command, with no locks.** Removed: the workflow owns its plan.
-* **Releases and tags for Prometheus itself.** Skipped. A workflow's skill copy is labelled `<version>+<commit>[.dirty-<hash>]` instead, and `/workflow-refresh --all` updates only stale ones.
+### Plan edits during a run go through a tool
+
+The first replan edited the plan directly, and the edits misfired. Now, once a run starts, plan changes go through `workflow_replan` and `workflow_record_critique`, which refuse to touch the [locked fields](how-it-works.md#changing-the-plan-mid-run).
+
+Those tools save the plan as round-tripped YAML in a house style (quotes kept, no wrapping), so a save changes only the edited lines. Repeated keys are an error: a loader that keeps the last one would let an edit that drops a `- id:` line silently merge two list items.
+
+### Params are typed, and values live in `.env`
+
+An earlier `.pi/params.yaml` turned every value into a path, and would have put secrets into chat, compiled waves, child tasks and run logs. Params can be tokens and table names too. Now a param is a `path`, `text` or `secret`; a secret appears only as `${ENV_NAME}`; the model can't read `.env`; and the agent asks you to add a missing secret rather than asking you for it.
+
+## How the code is laid out
+
+### One self-contained `index.ts` per agent
+
+Each agent has one extension file, with no re-export layers. The owner pushes back on indirection and duplicate folders, and the duplication this leaves between the two extensions is accepted. For the same reason Prometheus is standalone: you start Pi in its folder, and nothing is installed into `~/.pi/agent/`.
+
+### Contributor notes are kept where Pi can't read them
+
+Pi loads the first of `AGENTS.override.md`, `AGENTS.md` and `CLAUDE.md` from every folder above its working directory. A root `CLAUDE.md` therefore put about 5,000 tokens of contributor notes into every turn, about a fifth of a planning session. So the notes are in `.claude/CLAUDE.md`, which Claude Code reads and Pi doesn't. Roles live in `.pi/APPEND_SYSTEM.md` for the same reason: an `AGENTS.md` would leak Prometheus's role into workflows below it.
+
+### No releases for Prometheus itself
+
+Instead of releases and tags, a workflow's skill copy is labelled `<version>+<commit>[.dirty-<hash>]`. `/workflow-refresh --all` updates only the workflows whose label differs.
