@@ -91,11 +91,13 @@ edits, never by rewriting the file.
      answer that leaves the stages as they were needs no critic.
      After two rounds, remaining gaps become assumptions with
      `confirm: true`. Then the next bullet.
-   - None open → `status: ready` (never back to `draft`), check, and tell the user: the goal, the waves
-     from `summary.waves` (where the run replans or pauses), approvals, the
-     params `/workflow-run` will ask for, assumptions worth a glance, any
-     rejected blocking finding, and `cd workflows/<slug> && pi`, then
-     `/workflow-run`. Paths, not YAML.
+   - None open → `status: ready` (never back to `draft`), check, and tell the user, in their terms
+     (see Asking): what they will get; what a run does, in order, from `summary.waves`, and
+     where it will stop for them (to approve something, or to settle details once it has seen
+     their data); what `/workflow-run` will ask for, described ("the folder your emails are
+     in", not `mail_dir`); assumptions worth a glance; a rejected blocking finding, as what it
+     means for them; and `cd workflows/<slug> && pi`, then `/workflow-run`. No waves, stage
+     kinds, provisional, critic or validation talk.
 
 9. **On a change of mind**, bump `revision`, keep answers that still apply,
    clear `critique`, redo steps 3–8.
@@ -108,10 +110,16 @@ inside the workflow (`references/replanning.md`, `references/changing.md`).
 
 - After the critic, never before a draft. At most three questions per round,
   most consequential first, the critic's included.
-- Each: one clause of why, tied to what changes ("decides whether the last
-  wave sends mail"), 2–4 concrete options, and your default.
+- Each: one clause of why, tied to what changes for the user ("decides whether
+  the workflow sends mail"), 2–4 concrete options, and your default.
   Bad: "What format should the Excel file be?" (an assumption). Good: "Send
   replies, or only draft them? Sending is irreversible."
+- In the user's terms: what they get, what it costs per run, whether it is the
+  same every run, what can't be undone. Not the plan's: no stage kinds,
+  waves, "deterministic", "judgment", "parser", param names. Not "decides
+  whether export is a deterministic parser or a judgment stage" but "the full
+  text is copied as is, quickly and the same every time; a summary needs a
+  model to read every email on each run, and may paraphrase".
 - With `ask_user_question` (or a similar tool): one call per round, the
   default first with "(Recommended)" in its label. Otherwise a numbered list
   answerable as "1b, 2 default"; end the turn. If the user dismisses the

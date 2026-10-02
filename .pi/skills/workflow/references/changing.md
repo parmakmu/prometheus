@@ -15,7 +15,8 @@ nearest `.venv/bin/python`).
    look), agents, the revision, the commits; for a run, what it found.
 2. Ask: **merge** (future runs use it), **keep** (back to `main`, the branch
    stays), **discard**. A draft plan can only be kept or discarded.
-3. `workflow_merge` with the choice.
+3. `workflow_merge` with the choice; on merge, pass your summary from step 1 as `summary`
+   (it becomes the commit message's body on `main`).
 
 New runs and `/workflow-revise` refuse until this is done.
 

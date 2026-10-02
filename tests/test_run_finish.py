@@ -145,10 +145,14 @@ def test_a_change_that_leaves_the_plan_alone_merges_without_the_critic(tmp_path,
     assert r.data["ok"] and r.data["next"]["state"] == "change_ready", r  # the plan is not drafted
     with (wf / ".pi" / "APPEND_SYSTEM.md").open("a", encoding="utf-8") as f:
         f.write("\n## Lessons for this workflow\n- Ask once.\n")
-    r = run_py([k / "workflow_git.py", "merge", "--action", "merge"], cwd=wf)
+    r = run_py([k / "workflow_git.py", "merge", "--action", "merge", "--summary", "Adds a lesson: ask once."], cwd=wf)
     assert r.data["ok"] and (r.data["revision"], r.data["status"]) == (1, "ready"), r
     log = subprocess.run(["git", "log", "-1", "--format=%s"], cwd=wf, capture_output=True, text=True, check=True).stdout.strip()
     assert log.startswith("r1: improve/")
+    # the body says what changed: the summary and the files, not the review's own bookkeeping commit
+    body = subprocess.run(["git", "log", "-1", "--format=%b"], cwd=wf, capture_output=True, text=True, check=True).stdout
+    assert "Adds a lesson: ask once." in body and ".pi/APPEND_SYSTEM.md" in body and "1 file changed" in body, body
+    assert "Uncommitted changes at review" not in body, body
 
 
 def test_a_merge_is_one_commit_on_main_and_deletes_the_branch(tmp_path, run_py):

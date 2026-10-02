@@ -1,13 +1,13 @@
 # Commands and tools
 
-**Commands** start with `/`, and you type them in Pi. Prometheus's commands run in the Prometheus folder; the others run in a workflow's folder.
+**Commands** start with `/`, and you type them in Pi. prometheus's commands run in the prometheus folder; the others run in a workflow's folder.
 
 | Command | Runs in | Does |
 |---|---|---|
-| [`/workflow-new`](#workflow-new) | Prometheus | plan a new workflow for a request |
-| [`/workflow-list`](#workflow-list) | Prometheus | list workflows and where each stands |
-| [`/workflow-export`](#workflow-export) | Prometheus | copy a workflow somewhere else to run it |
-| [`/workflow-refresh`](#workflow-refresh) | Prometheus | update workflows to this Prometheus's template and skill |
+| [`/workflow-new`](#workflow-new) | prometheus | plan a new workflow for a request |
+| [`/workflow-list`](#workflow-list) | prometheus | list workflows and where each stands |
+| [`/workflow-export`](#workflow-export) | prometheus | copy a workflow somewhere else to run it |
+| [`/workflow-refresh`](#workflow-refresh) | prometheus | update workflows to this prometheus's template and skill |
 | [`/workflow-run`](#workflow-run) | Workflow | plan, continue or run, from wherever it stands |
 | [`/workflow-status`](#workflow-status) | Workflow | show where it stands; changes nothing |
 | [`/workflow-revise`](#workflow-revise) | Workflow | change the plan on a branch you review |
@@ -19,7 +19,7 @@ Commands are prefixed `workflow-` because Pi has built-in `/new` and `/export`.
 
 Inside a workflow, each entry names the [states](state-machine.md) it is accepted in. In any other state it is refused, with a message that says why; the refusals are in [Troubleshooting](troubleshooting.md).
 
-## Prometheus commands
+## prometheus commands
 
 ### /workflow-new
 
@@ -29,7 +29,7 @@ Plans a new workflow for a request.
 /workflow-new <request>
 ```
 
-**Runs in:** Prometheus
+**Runs in:** prometheus
 
 Creates `workflows/<slug>/`, then plans: it drafts the plan, checks it, has the plan critic review it, and asks only the questions whose answers change the plan. It never asks for param values (they belong to the machine; `/workflow-run` asks for them) and never does the requested work.
 
@@ -51,9 +51,9 @@ Lists the workflows and where each one stands.
 /workflow-list [slug]
 ```
 
-**Runs in:** Prometheus · changes nothing
+**Runs in:** prometheus · changes nothing
 
-Without a slug: each workflow's status, revision, last run, and the Prometheus version its skill copy came from, marked *stale* when this Prometheus has another. With a slug: that workflow's plan validity, waves, open questions, approvals, missing params and secrets, and whether its waves compile.
+Without a slug: each workflow's status, revision, last run, and the prometheus version its skill copy came from, marked *stale* when this prometheus has another. With a slug: that workflow's plan validity, waves, open questions, approvals, missing params and secrets, and whether its waves compile.
 
 **See also:** [`/workflow-status`](#workflow-status) · [`/workflow-refresh`](#workflow-refresh)
 
@@ -65,7 +65,7 @@ Copies a workflow somewhere else, to run it there.
 /workflow-export <slug> <destination> [--keep-state]
 ```
 
-**Runs in:** Prometheus
+**Runs in:** prometheus
 
 By default the copy has the plan, gates, stage programs and agents, without earlier runs or git history. `--keep-state` carries the runs and the history too. Neither copies `.env`: its values are per machine and may hold secrets. The copy gets a `.env` that lists each variable, unset.
 
@@ -81,15 +81,15 @@ To run the copy, the destination machine needs Pi, pi-subagents and uv, and you 
 
 ### /workflow-refresh
 
-Updates workflows to this Prometheus's template and skill.
+Updates workflows to this prometheus's template and skill.
 
 ```text
 /workflow-refresh <slug | --all>
 ```
 
-**Runs in:** Prometheus
+**Runs in:** prometheus
 
-Rewrites the files a workflow got from Prometheus: its extension, the skill and its references, the shared agents. It keeps the plan, `.env`, runs, gates, stage programs, the workflow's own agents and packages, and the `## Lessons for this workflow` section of `.pi/APPEND_SYSTEM.md`. It writes the version to `.pi/skills/workflow/VERSION` and names it in the commit: `Refresh from Prometheus 0.1.0+4f1c9a2 (was …)`.
+Rewrites the files a workflow got from prometheus: its extension, the skill and its references, the shared agents. It keeps the plan, `.env`, runs, gates, stage programs, the workflow's own agents and packages, and the `## Lessons for this workflow` section of `.pi/APPEND_SYSTEM.md`. It writes the version to `.pi/skills/workflow/VERSION` and names it in the commit: `Refresh from Prometheus 0.1.0+64ab6bc`, with `(was <version>)` added when the workflow's previous version is known.
 
 `--all` skips workflows already at this version; a named workflow is always refreshed.
 
@@ -170,7 +170,7 @@ Proposes fixes from how the workflow's recent sessions and runs went, and applie
 It reads a digest of what is new since the last improve: failed or blocked tool results, repeated calls, cost, failed or relaunched waves. From that it proposes fixes to the plan, gates, stage programs, project agents and packages, each with its evidence, and asks you about each one. Accepted ones are applied on an `improve/<date>-<n>` branch, which you review like a revise.
 
 - It can add short rules for this workflow's agent under `## Lessons for this workflow` at the end of `.pi/APPEND_SYSTEM.md`. `/workflow-refresh` keeps that section.
-- It doesn't edit the skill or its references. A problem there is listed as text for you to take to Prometheus.
+- It doesn't edit the skill or its references. A problem there is listed as text for you to take to prometheus.
 - Every proposal, applied or rejected, is recorded in `improvements.yaml`. The next improve reads only sessions and runs newer than that, and doesn't propose a rejected fix again.
 - With nothing new and no focus given, it says so and opens no branch.
 
@@ -192,8 +192,8 @@ You don't call these. They are here so you can read a tool result or a refusal t
 
 | Tool | Runs in | Does |
 |---|---|---|
-| [`workflow_scaffold`](#workflow_scaffold) | Prometheus | create the folder for the workflow being planned |
-| [`workflow_check (Prometheus)`](#workflow_check-prometheus) | Prometheus | check a workflow's plan from Prometheus |
+| [`workflow_scaffold`](#workflow_scaffold) | prometheus | create the folder for the workflow being planned |
+| [`workflow_check (prometheus)`](#workflow_check-prometheus) | prometheus | check a workflow's plan from prometheus |
 | [`workflow_check`](#workflow_check) | Workflow | check the plan and say where the workflow stands |
 | [`workflow_new_run`](#workflow_new_run) | Workflow | start a run |
 | [`workflow_compile`](#workflow_compile) | Workflow | turn the next wave into a pi-subagents call, or say what must happen first |
@@ -207,7 +207,7 @@ You don't call these. They are here so you can read a tool result or a refusal t
 | [`workflow_set_params`](#workflow_set_params) | Workflow | set param values in `.env` |
 | [`workflow_sessions`](#workflow_sessions) | Workflow | read the workflow's earlier Pi sessions |
 
-## Prometheus tools
+## prometheus tools
 
 ### workflow_scaffold
 
@@ -221,9 +221,9 @@ workflow_scaffold({ slug, request })
 
 Creates `workflows/<slug>/` from the workflow template: a draft plan holding the request, the workflow's extension, a copy of the skill, its agents and its own git repository. It refuses unless `/workflow-new` ran in this session, and allows one workflow per `/workflow-new`. Running `scaffold_workflow.py` from the shell is blocked, so the tool can't be bypassed.
 
-### workflow_check (Prometheus)
+### workflow_check (prometheus)
 
-Checks a workflow's plan from Prometheus.
+Checks a workflow's plan from prometheus.
 
 ```text
 workflow_check({ slug })
@@ -387,14 +387,14 @@ The run stays in `runs/`, marked stopped. Returns its branch, if any, for review
 Ends the review of a run or change branch.
 
 ```text
-workflow_merge({ action: "merge" | "keep" | "discard" })
+workflow_merge({ action: "merge" | "keep" | "discard", summary? })
 ```
 
 **States:** `branch_review`, `change_ready` (all three actions); `change_draft` (keep, discard) → `ready`
 
 | Action | Result |
 |---|---|
-| `merge` | The branch becomes one commit on `main` (`r<revision>: <branch>`, listing the branch's commits), tagged `r<revision>`. The branch is deleted. Only a ready, valid plan can merge. |
+| `merge` | The branch becomes one commit on `main`, tagged `r<revision>`. Its subject is `r<revision>: <branch>`; its body is the `summary` the agent gave you at review, the files changed (`git diff --stat`) and the branch's own commits. The branch is deleted. Only a ready, valid plan can merge. |
 | `keep` | Back to `main`; the branch stays for later. |
 | `discard` | Back to `main`; the branch is deleted. |
 

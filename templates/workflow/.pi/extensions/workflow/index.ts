@@ -105,9 +105,10 @@ any branch you mean to cite.
    the user to take to Prometheus.
    \`lessons\` are what earlier /workflow-improve passes decided: do not re-propose a rejected one, and
    if an applied one's problem shows up again, say its fix did not work.
-3. Ask the user about each proposal with the question tool (apply / skip). The question text itself
-   must carry the context, since the dialog may not show your chat: what happened (the evidence), why
-   it matters (the cost or repeat), the exact edit (before and after), and what skipping leaves. Then make the accepted
+3. Ask the user about each proposal with the question tool (apply / skip), in plain words (run-protocol,
+   "Asking the user"): what you noticed, what it costs them, what the change will do, and what skipping
+   leaves. Show the evidence and the exact edit (before and after) in chat first, not in the question;
+   a lesson for the agent is "the agent will stop doing X", not the rule's text. Then make the accepted
    edits following the "Changing the plan" section of
    \`.pi/skills/workflow/references/changing.md\` (critic included when the plan changes; it says what to read).
    Append every proposal, applied or skipped, to \`improvements.yaml\` (a list; create it if missing):
@@ -671,12 +672,14 @@ export default function workflowAgent(pi: ExtensionAPI) {
 			"Finish the review of the checked-out run or change branch and switch back to main: merge (one commit on main, however many the branch made; tags the revision; deletes the branch), keep (the branch stays for later) or discard (delete it). Refuses while a run is active.",
 		promptGuidelines: [
 			"Call workflow_merge only with the action the user chose after seeing the branch's changes (git diff main...<branch>).",
+			"On merge, pass `summary`: the summary of the changes you gave the user, in a few lines. It becomes the body of the commit on main.",
 		],
 		parameters: Type.Object({
 			action: Type.Union([Type.Literal("merge"), Type.Literal("keep"), Type.Literal("discard")]),
+			summary: Type.Optional(Type.String({ description: "merge: what the branch changes, in words, for the commit message" })),
 		}),
 		script: "workflow_git.py",
-		args: (p) => ["merge", "--action", p.action],
+		args: (p) => ["merge", "--action", p.action, ...opt("--summary", p.summary)],
 	});
 
 	scriptTool({

@@ -2,7 +2,7 @@
 
 These guides are for when you know what you want to do and just need the steps. Each one covers a single goal, and they assume you've already got a workflow and run it at least once. If you haven't yet, the [tutorial](tutorial.md) is the place to start.
 
-We've kept the guides to the point, so they say what to do rather than why. If you're curious about the reasons, [How Prometheus works](how-it-works.md) has them. And if a step gets refused along the way, [Troubleshooting](troubleshooting.md) will tell you what the message means.
+We've kept the guides to the point, so they say what to do rather than why. If you're curious about the reasons, [How prometheus works](how-it-works.md) has them. And if a step gets refused along the way, [Troubleshooting](troubleshooting.md) will tell you what the message means.
 
 **Running**
 - [How to run a workflow on new input](#how-to-run-a-workflow-on-new-input)
@@ -22,7 +22,7 @@ We've kept the guides to the point, so they say what to do rather than why. If y
 
 **Managing workflows**
 - [How to run a workflow on another machine](#how-to-run-a-workflow-on-another-machine)
-- [How to update workflows after updating Prometheus](#how-to-update-workflows-after-updating-prometheus)
+- [How to update workflows after updating prometheus](#how-to-update-workflows-after-updating-prometheus)
 
 ## Running
 
@@ -77,7 +77,7 @@ The stopped run stays in `runs/`, marked stopped.
 1. In the workflow's folder, run `/workflow-status`. It changes nothing.
 2. Read the state line first, which names the state and the moves open from it, then the plan's validity, the last and next wave, and anything outstanding.
 
-From Prometheus, `/workflow-list <slug>` shows the same for one workflow, and `/workflow-list` summarises all of them.
+From prometheus, `/workflow-list <slug>` shows the same for one workflow, and `/workflow-list` summarises all of them.
 
 ### How to read what happened in an earlier session
 
@@ -100,7 +100,7 @@ Use this between runs, to change what every later run does.
 3. Answer the agent's questions. It edits the plan, validates it and runs the plan critic.
 4. Review the diff when asked, and choose merge: [How to review and merge a branch](#how-to-review-and-merge-a-branch).
 
-The merge tags the new revision `r<N>` on `main`. A change that touches only gates, stage programs or agents merges without the critic. To undo a merged change, make another with `/workflow-revise`.
+The merge tags the plan's revision `r<N>` on `main`. A change that touches only gates, stage programs, agents or lessons merges without the critic, and keeps the plan's revision number: its tag moves to the new commit. To undo a merged change, make another with `/workflow-revise`.
 
 ### How to drop a discovery stage once the input is stable
 
@@ -150,14 +150,14 @@ Use this for a side effect that writes to an app or sends a message. Built-in ag
 
 ### How to run a workflow on another machine
 
-1. In Prometheus, run `/workflow-export <slug> <destination>`. Add `--keep-state` to copy the runs and the git history as well.
+1. In prometheus, run `/workflow-export <slug> <destination>`. Add `--keep-state` to copy the runs and the git history as well.
 2. On the other machine, install Pi, pi-subagents and uv, as in the tutorial's [Before you begin](tutorial.md#before-you-begin).
 3. Start Pi in the copied folder and accept the trust prompt.
 4. Fill in the copy's `.env`, which lists each variable unset, or let `/workflow-run` ask you for the values.
 
-### How to update workflows after updating Prometheus
+### How to update workflows after updating prometheus
 
-1. In Prometheus, run `/workflow-list`. A workflow marked *stale* was created or last refreshed by an older version.
+1. In prometheus, run `/workflow-list`. A workflow marked *stale* was created or last refreshed by an older version.
 2. Run `/workflow-refresh <slug>` for one workflow, or `/workflow-refresh --all` for every stale one.
 3. If the refresh refuses because of an active run or a checked-out branch, finish the run or review the branch first, then refresh again.
 

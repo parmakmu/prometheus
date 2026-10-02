@@ -1,6 +1,6 @@
 # Contributing
 
-How Prometheus is built, how to test it, and the rules a change follows.
+How prometheus is built, how to test it, and the rules a change follows.
 
 ## Architecture
 
@@ -12,10 +12,10 @@ Pi command or tool → extension (TypeScript) → Python script → one JSON obj
 ```
 
 - **Scripts** ([`.pi/skills/workflow/scripts/`](../.pi/skills/workflow/scripts/)) validate, compile, record and commit. Each prints one JSON object; a refusal is `{"ok": false, "error": …}`. Every workflow script's result also carries `next`: the workflow's state and the moves open from it. Scripts run and test without Pi.
-- **Extensions** register the commands and tools, run a script with `pi.exec`, and format its JSON. One self-contained `index.ts` per agent: [Prometheus's](../.pi/extensions/prometheus/index.ts) and [the workflow template's](../templates/workflow/.pi/extensions/workflow/index.ts).
+- **Extensions** register the commands and tools, run a script with `pi.exec`, and format its JSON. One self-contained `index.ts` per agent: [prometheus's](../.pi/extensions/prometheus/index.ts) and [the workflow template's](../templates/workflow/.pi/extensions/workflow/index.ts).
 - **`wave_runner.js`** is the only JavaScript the compiler emits: a compiled wave is the wave as JSON data, followed by this runner unchanged.
 
-The extensions run scripts with `$PI_WORKFLOW_PYTHON`, else the nearest `.venv/bin/python` upwards (a workflow inside Prometheus uses Prometheus's), else `python3`.
+The extensions run scripts with `$PI_WORKFLOW_PYTHON`, else the nearest `.venv/bin/python` upwards (a workflow inside prometheus uses prometheus's), else `python3`.
 
 ### What a launch looks like
 
@@ -55,7 +55,7 @@ Every result also carries `next`, the workflow's state and its legal moves (*fro
 
 | Path | Holds |
 |---|---|
-| [`.pi/extensions/prometheus/index.ts`](../.pi/extensions/prometheus/index.ts) | Prometheus's commands and planning tools |
+| [`.pi/extensions/prometheus/index.ts`](../.pi/extensions/prometheus/index.ts) | prometheus's commands and planning tools |
 | [`.pi/skills/workflow/SKILL.md`](../.pi/skills/workflow/SKILL.md) | the planning procedure the model follows |
 | [`.pi/skills/workflow/references/`](../.pi/skills/workflow/references/) | the model's references: plan schema, classification, critic contract, run protocol, replanning, changing |
 | [`.pi/skills/workflow/scripts/`](../.pi/skills/workflow/scripts/) | the Python scripts |
@@ -95,7 +95,7 @@ The docs follow [Divio's four types](https://docs.divio.com/documentation-system
 |---|---|---|---|
 | Tutorial | [Tutorial](tutorial.md) | teaches by doing, with a result at every step that works every time; tells the reader what they should see | explain, offer options, or assume knowledge |
 | How-to guide | [How-to guides](how-to.md), [Troubleshooting](troubleshooting.md) | gives the steps to a goal the reader already has; the title says what it achieves ("How to …") | teach, or explain why |
-| Explanation | [How Prometheus works](how-it-works.md), [Design decisions](design.md) | gives context, the why, and alternatives, read at leisure | instruct, or list every option |
+| Explanation | [How prometheus works](how-it-works.md), [Design decisions](design.md) | gives context, the why, and alternatives, read at leisure | instruct, or list every option |
 | Reference | [Commands and tools](commands.md), [Params, `.env` and secrets](params-and-secrets.md), and for contributors [The state machine](state-machine.md), [What the Python scripts do](python-scripts.md) | describes accurately and completely, in one consistent form | explain or opine |
 
 - A page that needs another type's content links to it.
@@ -104,9 +104,9 @@ The docs follow [Divio's four types](https://docs.divio.com/documentation-system
 - One word per concept: workflow, plan, stage, wave, launch, child, run, gate, stage program, project agent, replan, change.
 - A command or tool entry follows the form in [Commands and tools](commands.md): summary, syntax, where it runs and in which states, what it does, an example, its refusals, see also.
 - Each fact lives on one page. Operator text comes first; implementation detail goes in a marked "For contributors" section, or on a contributor page.
-- How Prometheus works says *what* a thing is; Design decisions says *why*, starting from what went wrong. Don't explain a concept on both.
-- Define a term where a reader first meets it, or link it to the glossary at the top of [How Prometheus works](how-it-works.md#words-used-on-this-page).
-- Write like a person explaining to a colleague: "you" for the reader, "we" for the people who built Prometheus. Say why something matters to the reader before what it is, link sections with a sentence that says where we're going next, and admit trade-offs and past mistakes plainly. Vary sentence length; clipped fragments read as cold. Clarity still wins: split a sentence when it carries more than one colon or semicolon, or buries its point behind a qualification.
+- How prometheus works says *what* a thing is; Design decisions says *why*, starting from what went wrong. Don't explain a concept on both.
+- Define a term where a reader first meets it, or link it to the glossary at the top of [How prometheus works](how-it-works.md#words-used-on-this-page).
+- Write like a person explaining to a colleague: "you" for the reader, "we" for the people who built prometheus. Say why something matters to the reader before what it is, link sections with a sentence that says where we're going next, and admit trade-offs and past mistakes plainly. Vary sentence length; clipped fragments read as cold. Clarity still wins: split a sentence when it carries more than one colon or semicolon, or buries its point behind a qualification.
 - Show, then tell: open a section with one line on what the thing does for the reader, then the real artifact (a command, a file, output from a run), then the explanation of what it shows. A number from a real run, or what went wrong, beats an abstract reason.
 - Put tips, warnings and asides in GitHub callouts (`> [!TIP]`, `> [!NOTE]`, `> [!IMPORTANT]`), one short paragraph each, so the main text stays on its path.
 - In Troubleshooting, a refusal the agent recovers from by itself goes under "Handled by the agent"; the other sections are for what needs the reader.

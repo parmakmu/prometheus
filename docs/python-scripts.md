@@ -1,12 +1,12 @@
 # What the Python scripts do
 
-This page is for contributors. It has one entry per script in [`.pi/skills/workflow/scripts/`](../.pi/skills/workflow/scripts/), grouped by when the script runs. You never run them by hand: the commands and the workflow tools do. How they fit into Prometheus is in [Contributing](contributing.md#architecture).
+This page is for contributors. It has one entry per script in [`.pi/skills/workflow/scripts/`](../.pi/skills/workflow/scripts/), grouped by when the script runs. You never run them by hand: the commands and the workflow tools do. How they fit into prometheus is in [Contributing](contributing.md#architecture).
 
 ## Create and maintain workflows
 
-**`scaffold_workflow.py`** creates a workflow from `templates/workflow/`. It fills in the slug and request, writes a draft plan, starts the workflow's git repository, and runs `uv lock`. With `--refresh`, it rewrites the files a workflow got from Prometheus and keeps the workflow's own: its plan, runs, programs, agents, packages, and the lessons section of `.pi/APPEND_SYSTEM.md`. `workflow_scaffold` and `/workflow-refresh` use it. A workflow's own copy refuses to run, because the templates belong to Prometheus.
+**`scaffold_workflow.py`** creates a workflow from `templates/workflow/`. It fills in the slug and request, writes a draft plan, starts the workflow's git repository, and runs `uv lock`. With `--refresh`, it rewrites the files a workflow got from prometheus and keeps the workflow's own: its plan, runs, programs, agents, packages, and the lessons section of `.pi/APPEND_SYSTEM.md`. `workflow_scaffold` and `/workflow-refresh` use it. A workflow's own copy refuses to run, because the templates belong to prometheus.
 
-**`prometheus_version.py`** names the Prometheus a workflow's skill copy came from: `<pyproject version>+<commit>`, plus `.dirty-<hash>` for uncommitted changes. The commit is the last one that touched the skill or the templates, so a docs or tests commit doesn't make workflows stale. Creating or refreshing a workflow writes the label to `.pi/skills/workflow/VERSION`; `/workflow-list` marks workflows with another label stale. Standard library only.
+**`prometheus_version.py`** names the prometheus a workflow's skill copy came from: `<pyproject version>+<commit>`, plus `.dirty-<hash>` for uncommitted changes. The commit is the last one that touched the skill or the templates, so a docs or tests commit doesn't make workflows stale. Creating or refreshing a workflow writes the label to `.pi/skills/workflow/VERSION`; `/workflow-list` marks workflows with another label stale. Standard library only.
 
 **`export_workflow.py`** copies a workflow elsewhere and validates the copy. By default it leaves out runs and git history; `--keep-state` keeps them. It never copies `.env` or local installs, and gives the copy a `.env` that lists each variable, unset.
 

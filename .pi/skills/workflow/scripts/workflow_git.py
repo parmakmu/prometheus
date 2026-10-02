@@ -237,8 +237,19 @@ def review():
     emit({"ok": True, "review": info, "unmerged": unmerged_branches(Path.cwd())})
 
 
+AT_REVIEW = "Uncommitted changes at review"
+
+
+def merge_message(workflow, b, summary, steps):
+    """`r<rev>: <branch>`, then the summary, the files changed and the branch's own steps (not the review's leftovers)."""
+    stat = git(workflow, "diff", "--cached", "--stat").stdout.rstrip()
+    parts = [f"r{plan_revision(workflow)[0]}: {b}", summary.strip(), stat, "\n".join(f"- {s}" for s in steps)]
+    return "\n\n".join(p for p in parts if p)
+
+
 @app.command()
-def merge(action: Annotated[str, typer.Option(help="merge | keep | discard")]):
+def merge(action: Annotated[str, typer.Option(help="merge | keep | discard")],
+          summary: Annotated[str, typer.Option(help="merge: what the branch changes, in words, for the commit message")] = ""):
     """Finish the review of the checked-out branch and switch back to main."""
     workflow = Path.cwd()
     if action not in ("merge", "keep", "discard"):
@@ -254,17 +265,17 @@ def merge(action: Annotated[str, typer.Option(help="merge | keep | discard")]):
         if errors or why_not_ready(workflow, plan):
             refuse(f"the plan on {b} is {plan.get('status')}" + (f" with errors {errors[:3]}" if errors else "")
                    + ": only a ready, valid plan can reach main. Finish the change (critic, workflow_record_critique), or keep or discard the branch.")
-    commit(workflow, "Uncommitted changes at review")  # leftovers belong to the branch
+    commit(workflow, AT_REVIEW)  # leftovers belong to the branch
     git(workflow, "switch", "-q", MAIN)
     if action == "merge":
         # one commit on main per merged branch (a squash); the branch's commits were its working steps
-        steps = git(workflow, "log", "--reverse", "--format=- %s", f"{MAIN}..{b}").stdout
+        steps = [s for s in git(workflow, "log", "--reverse", "--format=%s", f"{MAIN}..{b}").stdout.splitlines() if s != AT_REVIEW]
         if git(workflow, "merge", "-q", "--squash", b, check=False).returncode != 0:
             git(workflow, "reset", "-q", "--merge", check=False)
             git(workflow, "switch", "-q", b)
             refuse(f"main has moved and {b} conflicts with it; the branch is checked out again. Resolve by hand, or discard it.")
         if git(workflow, "diff", "--cached", "--quiet", check=False).returncode != 0:
-            git(workflow, *identity(workflow), "commit", "-q", "-m", f"r{plan_revision(workflow)[0]}: {b}\n\n{steps}")
+            git(workflow, *identity(workflow), "commit", "-q", "-m", merge_message(workflow, b, summary, steps))
         tag_ready(workflow)
     if action in ("merge", "discard"):
         git(workflow, "branch", "-q", "-D", b)  # -D: a squashed branch is not an ancestor of main

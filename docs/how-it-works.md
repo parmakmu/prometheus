@@ -1,10 +1,10 @@
-# How Prometheus works
+# How prometheus works
 
 You probably have a job like this one. Once a month, someone hands you a folder of emails, and you copy the sender, the date, the subject and the body into a spreadsheet. It isn't hard, but it is tedious, and it never quite goes away.
 
 You could ask a model to do it each month. That works, but every month it starts from scratch: it reads every email afresh, works out again how to parse them, and lays out the spreadsheet slightly differently from last time. You pay for the same thinking over and over, and you check the result over and over.
 
-Prometheus is built for jobs like that. You describe the job once, and it turns your description into a **workflow**: a folder holding a plan for the job and an agent that carries the plan out. The first time the workflow runs, it writes small programs for the mechanical parts, and you look them over. From then on those programs do the routine work in a fraction of a second, a model is called only for the parts that genuinely need judgment, and nothing with real consequences happens until you've said yes.
+prometheus is built for jobs like that. You describe the job once, and it turns your description into a **workflow**: a folder holding a plan for the job and an agent that carries the plan out. The first time the workflow runs, it writes small programs for the mechanical parts, and you look them over. From then on those programs do the routine work in a fraction of a second, a model is called only for the parts that genuinely need judgment, and nothing with real consequences happens until you've said yes.
 
 On this page we'll follow one real workflow, `emails-to-excel`, from the one-line request that created it to its second run. Everything shown in a code block was copied from its actual runs, so what you see is what you'll get.
 
@@ -16,7 +16,7 @@ It all starts with a single command:
 /workflow-new I want to read the emails in a folder and save them in an Excel file
 ```
 
-Prometheus asks you a few questions, and when it's done, your request has become a folder:
+prometheus asks you a few questions, and when it's done, your request has become a folder:
 
 ```text
 workflows/emails-to-excel/
@@ -58,14 +58,14 @@ The first thing to know is that you'll be talking to two different agents, and e
 > /workflow-new <request>                      > /workflow-run
 ```
 
-**Prometheus**, on the left, is the planner. It works out how the job should be done, writes that down as a plan, and then steps back. It never reads your emails or touches your spreadsheet. It's also careful about when it starts: only `/workflow-new` sets it planning. If you just describe a job in conversation, it will talk it through with you, but it won't build anything.
+**prometheus**, on the left, is the planner. It works out how the job should be done, writes that down as a plan, and then steps back. It never reads your emails or touches your spreadsheet. It's also careful about when it starts: only `/workflow-new` sets it planning. If you just describe a job in conversation, it will talk it through with you, but it won't build anything.
 
 > [!NOTE]
 > We learned that one the hard way. An early version took a passing remark, "I want to create documentation with docs in md", as a request, and cheerfully built a workflow nobody had asked for.
 
 **The workflow agent**, on the right, is the one that gets the work done. It hands the actual tasks to background agents through [pi-subagents](https://github.com/nicobailon/pi-subagents) and keeps you informed as they finish. It doesn't have to remember the rules about what's allowed when, either: a set of Python scripts keeps track of that, and the agent simply follows their lead.
 
-Once a workflow exists, it no longer needs Prometheus at all. The folder carries everything it needs, so you can copy it to another machine with `/workflow-export` and run it there.
+Once a workflow exists, it no longer needs prometheus at all. The folder carries everything it needs, so you can copy it to another machine with `/workflow-export` and run it there.
 
 ## Planning
 
@@ -106,10 +106,10 @@ The middle column is the stage's **kind**, and it's the most important thing abo
 | `deterministic` | a program can get it right | a stage program, checked by a gate |
 | `judgment` | it needs someone to read and think | a model, often checked by a second model |
 
-When Prometheus classifies a stage, it asks these questions in that order and stops at the first "yes". So a stage that writes to your CRM counts as a side effect even if the work itself is entirely mechanical. The first question is always "can this be undone?", and only after that, "who's best placed to do it?".
+When prometheus classifies a stage, it asks these questions in that order and stops at the first "yes". So a stage that writes to your CRM counts as a side effect even if the work itself is entirely mechanical. The first question is always "can this be undone?", and only after that, "who's best placed to do it?".
 
 > [!TIP]
-> Real work is rarely all one kind. Often most of it is mechanical, with a few awkward cases at the end. Prometheus splits that into two stages: a program handles the regular cases and writes the awkward ones to a file, and a small judgment stage looks at just those. That way a model spends its time on the handful of odd emails rather than every ordinary one.
+> Real work is rarely all one kind. Often most of it is mechanical, with a few awkward cases at the end. prometheus splits that into two stages: a program handles the regular cases and writes the awkward ones to a file, and a small judgment stage looks at just those. That way a model spends its time on the handful of odd emails rather than every ordinary one.
 
 ### Stage programs and gates
 
@@ -192,7 +192,7 @@ The planner has to answer every finding the critic raises, either by accepting i
 
 ### The questions you'll be asked
 
-You might expect a planner to start by quizzing you. Prometheus does the opposite. It drafts the plan first, lets the critic review it, and only then asks you anything, because by that point it knows which answers would actually change the plan. It asks only where a wrong guess would change the stages, a side effect, where data comes from or goes to, or what counts as done, and it keeps it short: at most three questions at a time, and two rounds.
+You might expect a planner to start by quizzing you. prometheus does the opposite. It drafts the plan first, lets the critic review it, and only then asks you anything, because by that point it knows which answers would actually change the plan. It asks only where a wrong guess would change the stages, a side effect, where data comes from or goes to, or what counts as done, and it keeps it short: at most three questions at a time, and two rounds.
 
 ## Running
 
@@ -279,7 +279,7 @@ Our answer is: not until you've had a look. Each workflow is its own git reposit
 
 When a run or a change finishes, the agent walks you through what's on the branch and asks what you'd like to do with it:
 
-- **merge** it, and it becomes one commit on `main`, tagged with the new revision (`r2`, `r3`, and so on). Every run from then on uses it.
+- **merge** it, and it becomes one commit on `main`, tagged with the plan's revision (`r2`, `r3`, and so on). Every run from then on uses it. A change that leaves the plan itself alone, such as a fixed program or a new lesson, keeps the revision number, and the tag simply moves to the new commit.
 - **keep** it for later, and you go back to `main` with the branch still there.
 - **discard** it, and it's gone.
 

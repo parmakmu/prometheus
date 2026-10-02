@@ -1,6 +1,6 @@
 # Tutorial: your first workflow
 
-In this tutorial we'll build a workflow together that copies a folder of emails into an Excel file. You'll plan it, run it, approve the one step that writes a file, look over what the run taught the workflow, and then run it a second time. That second run is the real payoff: it does the same job with almost no model work at all.
+In this tutorial we'll build a workflow together that copies a folder of emails into an Excel file. You'll plan it, run it, approve the one step that writes a file, look over what the run taught the workflow, and then run it a second time. That second run is the real payoff: it does the same job with almost no model work at all. Finally, you'll change the workflow twice: once by asking for a change yourself, and once by letting it suggest improvements from how its runs went.
 
 It takes about fifteen minutes, and you don't need any emails of your own. We'll make three small samples in step 2.
 
@@ -17,9 +17,9 @@ It takes about fifteen minutes, and you don't need any emails of your own. We'll
 
 You also need a model configured in Pi, as for any Pi session.
 
-## 1. Set up Prometheus
+## 1. Set up prometheus
 
-Prometheus is the agent that plans workflows. Start it in the folder where you cloned this repository:
+prometheus is the agent that plans workflows. Start it in the folder where you cloned this repository:
 
 ```sh
 uv sync
@@ -79,17 +79,17 @@ You should see the three files. Note the folder's full path, which `echo ~/tutor
 
 ## 3. Plan the workflow
 
-With the emails in place, go back to the Prometheus terminal and describe the job:
+With the emails in place, go back to the prometheus terminal and describe the job:
 
 ```text
 /workflow-new I want to read the emails in a folder and save them in an Excel file
 ```
 
-Prometheus now plans. You will see it look at what it can, draft a **plan**, and have a second agent, the plan critic, review the draft. Then it asks you a few questions. Typical ones ask which fields to extract (choose sender, recipients, date, subject and body) and what to do about attachments.
+prometheus now plans. You will see it look at what it can, draft a **plan**, and have a second agent, the plan critic, review the draft. Then it asks you whatever it couldn't sensibly guess. In real sessions for this job, that was a single question: should each row hold the email's full text, or a summary of it? Choose the full text. It's copied exactly, and once the workflow has its programs, it costs nothing to produce.
 
 It won't ask where your emails are. That depends on the machine the workflow runs on, so the run asks instead.
 
-When Prometheus says the workflow is ready, look at what it made:
+When prometheus says the workflow is ready, look at what it made:
 
 ```sh
 ls -a workflows/emails-to-excel
@@ -120,7 +120,7 @@ Yours may name them differently or add a stage, but the shape is the same: look 
 
 ## 4. Start the workflow agent
 
-Prometheus only plans. The workflow is a Pi agent of its own, and it does the work. Open a third terminal in the Prometheus folder and start it:
+prometheus only plans. The workflow is a Pi agent of its own, and it does the work. Open a third terminal in the prometheus folder and start it:
 
 ```sh
 cd workflows/emails-to-excel
@@ -240,12 +240,54 @@ Watch how it differs. `read-emails` and `build-workbook` now run the programs yo
 | Branch to review | yes | none |
 | Whole run | a few minutes | 77 seconds |
 
+## 9. Change the plan
+
+Look at that table again: `discover` is now the only stage still using a model. It earned its place on the first run, when nobody knew what your emails looked like. But if your emails always arrive in the same format, it's reading samples just to report what you already know.
+
+So let's take it out. Changing a workflow between runs is the job of `/workflow-revise`. In the workflow agent, type:
+
+```text
+/workflow-revise drop the discover stage: the email format is stable now, so read-emails shouldn't need its report
+```
+
+The second half of that request matters. `read-emails` reads `discover`'s report, so the agent needs to know what it should do without it.
+
+The agent opens a new branch for the change, called something like `revise/2026-10-02-1`, so nothing touches `main` while you work. It edits the plan, checks it, and has the plan critic review the change, just as during planning. It may ask you a question or two.
+
+When it's done, it shows you the change and asks you to **merge**, **keep** or **discard** it, exactly as in step 7. Read the summary, and if it says what you asked for, choose **merge**. Then look at the history:
+
+```sh
+git log --oneline main
+```
+
+The newest commit is your change, and `git tag` shows it has a new revision number. From the next run on, the workflow follows the new plan. If the stage programs still pass their gates without the report, no model is called at all; if one needs adjusting, a model is shown the error and fixes the program once, and you review that fix like any other.
+
+> If your emails *do* change format one day, the gate on `read-emails` will catch it, and the run will stop and tell you. You can fix the program then with another `/workflow-revise`.
+
+## 10. Let the workflow suggest improvements
+
+`/workflow-revise` is for changes you already have in mind. `/workflow-improve` is for the ones you haven't spotted yet. It reads back through the workflow's earlier sessions and runs, looking for trouble: failed steps, work done twice, waves that had to be relaunched, money spent where it didn't need to be. Then it proposes fixes, each with the evidence that prompted it. Type:
+
+```text
+/workflow-improve
+```
+
+Even runs that look smooth from the outside leave something to find. *From a real run of this workflow:* it noticed that, after the reviewer had approved a change, the agent went on to check the plan again, twice in one session, which never changed the outcome. It proposed a one-line lesson so the agent would stop doing that.
+
+If it finds nothing new, it says so. You can also point it at something you've noticed, such as `/workflow-improve the approval question is hard to answer`.
+
+For each proposal, the agent explains in plain words what it noticed, what it would change, and what would stay as it is if you skip it. If you want the details, the evidence and the exact edit are in the chat just above the question. Answer **apply** or **skip** for each one. It may well have only one or two suggestions, or none, after runs this short, and that's fine.
+
+If you applied anything, the changes wait on an `improve/…` branch, and you review it like any other: read the summary, then **merge** or **discard**. Every proposal, applied or skipped, is remembered in `improvements.yaml`, so the next `/workflow-improve` won't suggest a fix you've already turned down.
+
 ## What you have done
 
-Well done: that's the whole cycle. You planned a workflow with `/workflow-new`, ran it with `/workflow-run`, approved a side effect, reviewed and merged what the first run wrote, and watched the second run reuse it at a fifth of the cost. Every workflow you build from here works the same way, however different the job.
+Well done: that's the whole life of a workflow. You planned it with `/workflow-new`, ran it with `/workflow-run`, approved a side effect, reviewed and merged what the first run wrote, and watched the second run reuse it at a fifth of the cost. Then you changed it twice: once with `/workflow-revise`, for a change you had in mind, and once with `/workflow-improve`, for the ones the workflow found itself. Every change went through a branch you reviewed.
+
+Every workflow you build from here works the same way, however different the job.
 
 ## Where to go next
 
-- To see why the second run was cheaper, and how the pieces fit together: [How Prometheus works](how-it-works.md).
-- To do something specific, such as running on a new folder of emails or changing the plan: [How-to guides](how-to.md).
+- To see why the second run was cheaper, and how the pieces fit together: [How prometheus works](how-it-works.md).
+- To do something specific, such as running on a new folder of emails or connecting a stage to an app: [How-to guides](how-to.md).
 - If a command refuses: [Troubleshooting](troubleshooting.md).

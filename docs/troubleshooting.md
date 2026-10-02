@@ -1,6 +1,6 @@
 # Troubleshooting
 
-When something goes wrong in Prometheus, it usually shows up as a **refusal**: a script declines to take a step, explains why, and leaves your workflow exactly as it was. That can feel abrupt, but it's the system protecting your work, and nothing is lost. The agent passes the message on and usually suggests what to do next.
+When something goes wrong in prometheus, it usually shows up as a **refusal**: a script declines to take a step, explains why, and leaves your workflow exactly as it was. That can feel abrupt, but it's the system protecting your work, and nothing is lost. The agent passes the message on and usually suggests what to do next.
 
 If you've hit one and want to understand it, you're in the right place. The entries are grouped by when you're likely to meet them, and each one starts with what you'll see (the message as printed, with `<…>` for the parts that vary), then explains the cause and the fix. The quickest way in is to search this page for a few words of the message.
 
@@ -14,9 +14,9 @@ To see where a workflow stands and which moves are open, run `/workflow-status`.
 
 The `/workflow-*` commands don't appear in Pi.
 
-**Cause.** Pi loads a project's extension only once you trust the folder, and Prometheus and each workflow are separate projects.
+**Cause.** Pi loads a project's extension only once you trust the folder, and prometheus and each workflow are separate projects.
 
-**Fix.** Start `pi` in the Prometheus folder or the workflow's folder and accept the trust prompt. Each workflow needs trusting on its own, including a copy made with `/workflow-export`.
+**Fix.** Start `pi` in the prometheus folder or the workflow's folder and accept the trust prompt. Each workflow needs trusting on its own, including a copy made with `/workflow-export`.
 
 ### Python package missing
 
@@ -26,7 +26,7 @@ Python package '<name>' is missing … ask the user to run `uv sync`
 
 **Cause.** The scripts' Python packages aren't installed for the Python the extension found, which is `$PI_WORKFLOW_PYTHON` if set, else the nearest `.venv`. A workflow creates its own `.venv` with `uv sync` when it first starts, so inside a workflow the message means that step failed, usually because uv isn't installed or you were offline.
 
-**Fix.** Run `uv sync` in the Prometheus folder, or in the workflow's folder for an exported workflow; install uv or get online first if that was the problem. Then restart `pi`. The workflow agent never installs packages itself.
+**Fix.** Run `uv sync` in the prometheus folder, or in the workflow's folder for an exported workflow; install uv or get online first if that was the problem. Then restart `pi`. The workflow agent never installs packages itself.
 
 ### git is required
 
@@ -208,11 +208,11 @@ Staged index changed after launch
 
 ### Editing the plan was blocked
 
-The workflow agent was blocked from editing `plan.yaml`.
+The workflow agent was blocked from editing `plan.yaml`, or from running a shell command that names it, even a read-only one such as `git diff -- plan.yaml`.
 
-**Cause.** Once a workflow has a run, its plan changes only through the replan tools during a run or through a change between runs, so that every edit is checked and reviewed.
+**Cause.** Once a workflow has a run, its plan changes only through the replan tools during a run or through a change between runs, so that every edit is checked and reviewed. The guard can't tell a shell command that reads the plan from one that writes it, so outside a `/workflow-revise` branch it blocks any that names `plan.yaml`.
 
-**Fix.** During a run, ask the agent for the change and it replans with its tools. Between runs, use `/workflow-revise`.
+**Fix.** To read the plan, the agent uses its read tool, or `git diff main...<branch>` without naming the file; it usually recovers by itself. To change the plan during a run, ask the agent and it replans with its tools. Between runs, use `/workflow-revise`.
 
 ### Locked in a replan
 
@@ -310,7 +310,7 @@ main has moved and <branch> conflicts with it
 branch run/<id> already exists from an earlier run with this id
 ```
 
-**Cause.** `runs/` isn't in git, so deleting a run's folder frees its id but leaves the branch that run created. New runs skip ids that still have a branch, so only a run started by an older version of Prometheus can collide.
+**Cause.** `runs/` isn't in git, so deleting a run's folder frees its id but leaves the branch that run created. New runs skip ids that still have a branch, so only a run started by an older version of prometheus can collide.
 
 **Fix.** Stop the run, then either review the old branch (`git switch run/<id>`, then `/workflow-run`) or delete it (`git branch -D run/<id>`).
 
@@ -322,13 +322,13 @@ You merged a branch with git yourself instead of choosing merge in the review.
 
 **Fix.** Tag the revision (`git tag r<N>` on `main`) and delete the branch. Next time, choose merge in the review, which does both.
 
-## Prometheus commands
+## prometheus commands
 
-### Prometheus answered instead of planning
+### prometheus answered instead of planning
 
-You described some work, and Prometheus answered or suggested a command instead of planning.
+You described some work, and prometheus answered or suggested a command instead of planning.
 
-**Cause.** Prometheus plans only when you run `/workflow-new`, so a plain message gets an answer, even one that describes work.
+**Cause.** prometheus plans only when you run `/workflow-new`, so a plain message gets an answer, even one that describes work.
 
 **Fix.** Run `/workflow-new <request>`.
 

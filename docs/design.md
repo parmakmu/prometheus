@@ -1,8 +1,8 @@
 # Design decisions
 
-Very few of Prometheus's rules were designed up front. Most of them are there because we tried something simpler first, ran it for real, and watched it go wrong. This page tells those stories: what happened, what it taught us, and the rule we ended up with.
+Very few of prometheus's rules were designed up front. Most of them are there because we tried something simpler first, ran it for real, and watched it go wrong. This page tells those stories: what happened, what it taught us, and the rule we ended up with.
 
-You don't need any of this to use Prometheus. It's here for the moment you look at a rule and think "surely that's unnecessary", and especially before you change one, so you know what it's quietly preventing. The ideas themselves are explained in [How Prometheus works](how-it-works.md), and the same decisions are recorded more tersely in [`CLAUDE.md`](../.claude/CLAUDE.md).
+You don't need any of this to use prometheus. It's here for the moment you look at a rule and think "surely that's unnecessary", and especially before you change one, so you know what it's quietly preventing. The ideas themselves are explained in [How prometheus works](how-it-works.md), and the same decisions are recorded more tersely in [`CLAUDE.md`](../.claude/CLAUDE.md).
 
 If there's one lesson running through nearly every story below, it's this: **a model is good at judgment and poor at bookkeeping.** Again and again, the fix was to take a decision that could be made by a rule away from the model and put it in code, where it can be tested and costs nothing to run.
 
@@ -32,7 +32,7 @@ The rule first said only approvals had to use `ask_user_question`. One run then 
 
 ### Only a command starts planning
 
-A user typed "I want to create documentation with docs in md" as an ordinary message. Prometheus took it as a request and created a workflow nobody had asked for. Now the planning skill can't be invoked by the model, and `workflow_scaffold` refuses unless `/workflow-new` ran in the session. Starting a plan is something only you can do.
+A user typed "I want to create documentation with docs in md" as an ordinary message. prometheus took it as a request and created a workflow nobody had asked for. Now the planning skill can't be invoked by the model, and `workflow_scaffold` refuses unless `/workflow-new` ran in the session. Starting a plan is something only you can do.
 
 ### Stages are classified irreversibility first
 
@@ -98,7 +98,7 @@ The plan has to be reusable on new input. So each run lives in `runs/<id>/`, rel
 
 What a run discovers is a proposal, not a silent change to every later run. So a run's first commit opens a `run/<id>` branch, a change you ask for opens a `revise/` or `improve/` branch, and you see the diff and choose. A merge is one commit, because a branch's commits are working steps, and `main` should read as one entry per reviewed change. New runs and changes refuse while another branch is checked out, so a review can't be skipped.
 
-An earlier design let Prometheus revise a workflow's plan from outside, with no locks. It was removed: the workflow owns its plan.
+An earlier design let prometheus revise a workflow's plan from outside, with no locks. It was removed: the workflow owns its plan.
 
 ### Only scripts commit, and never during a wave
 
@@ -118,12 +118,12 @@ An earlier `.pi/params.yaml` turned every value into a path, and would have put 
 
 ### One self-contained `index.ts` per agent
 
-Each agent has one extension file, with no re-export layers. The owner pushes back on indirection and duplicate folders, and the duplication this leaves between the two extensions is accepted. For the same reason Prometheus is standalone: you start Pi in its folder, and nothing is installed into `~/.pi/agent/`.
+Each agent has one extension file, with no re-export layers. The owner pushes back on indirection and duplicate folders, and the duplication this leaves between the two extensions is accepted. For the same reason prometheus is standalone: you start Pi in its folder, and nothing is installed into `~/.pi/agent/`.
 
 ### Contributor notes are kept where Pi can't read them
 
-Pi loads the first of `AGENTS.override.md`, `AGENTS.md` and `CLAUDE.md` from every folder above its working directory. A root `CLAUDE.md` therefore put about 5,000 tokens of contributor notes into every turn, about a fifth of a planning session. So the notes are in `.claude/CLAUDE.md`, which Claude Code reads and Pi doesn't. Roles live in `.pi/APPEND_SYSTEM.md` for the same reason: an `AGENTS.md` would leak Prometheus's role into workflows below it.
+Pi loads the first of `AGENTS.override.md`, `AGENTS.md` and `CLAUDE.md` from every folder above its working directory. A root `CLAUDE.md` therefore put about 5,000 tokens of contributor notes into every turn, about a fifth of a planning session. So the notes are in `.claude/CLAUDE.md`, which Claude Code reads and Pi doesn't. Roles live in `.pi/APPEND_SYSTEM.md` for the same reason: an `AGENTS.md` would leak prometheus's role into workflows below it.
 
-### No releases for Prometheus itself
+### No releases for prometheus itself
 
 Instead of releases and tags, a workflow's skill copy is labelled `<version>+<commit>[.dirty-<hash>]`. `/workflow-refresh --all` updates only the workflows whose label differs.

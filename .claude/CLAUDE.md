@@ -92,6 +92,11 @@ Libraries: typer, pydantic (plan shape, in `validate_plan.py`; the cross-referen
   run?, input changed?, decisions, approvals, after a failed/blocked wave, merge/keep/discard) uses
   `ask_user_question` when available (run-protocol "Asking the user"); plain chat only for values.
   Why: run 5 asked its start and failure questions in plain chat, since the rule covered approvals only.
+  Questions are in the user's terms, internals (tool names, session files, record numbers, commits)
+  only in chat before them. Why: the first `/workflow-improve` (2026-10-02) asked "apply?" with a
+  session filename, record numbers 69–72 and two tool names, to mean "stop double-checking the plan".
+  Planning too (SKILL.md "Asking", step 8): its questions explained options as "a deterministic parser
+  or a judgment-based summarization stage", and its ready report listed waves and "provisional" stages.
 - **Clarifying questions**: draft first, then ask only if a wrong guess changes the stage graph,
   a side effect, a source/destination or "done". ≤3 per round, ≤2 rounds, after the critic.
   Never param values (per machine; `/workflow-run` asks).
