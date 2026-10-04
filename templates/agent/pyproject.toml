@@ -1,0 +1,11 @@
+# Every Python package the agent uses: the skill scripts' (listed here) and
+# its gates' and stage programs' (added with the agent's `agent_add_package`, which asks the user first). `uv run`, which
+# runs gates and programs, syncs .venv/ from this file and uv.lock first.
+[project]
+name = "agent-{{slug}}"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = ["typer>=0.12", "pydantic>=2.7", "pydantic-settings>=2.4", "python-dotenv>=1.0", "ruamel.yaml>=0.18"]
+
+[tool.uv]
+package = false

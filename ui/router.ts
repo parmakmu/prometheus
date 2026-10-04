@@ -4,9 +4,9 @@
  * stopping it when idle. Each worker is its own process: one Pi session, one folder, one `.env`.
  *
  *   GET  /me                     who you are
- *   GET  /workflows              your workflows (list_workflows.py; no model involved)
+ *   GET  /agents              your agents (list_agents.py; no model involved)
  *   *    /p/<agent path>         prometheus, your planner         → worker in <your prometheus>
- *   *    /w/<slug>/<agent path>  a workflow                       → worker in <your prometheus>/workflows/<slug>
+ *   *    /a/<slug>/<agent path>  an agent                       → worker in <your prometheus>/agents/<slug>
  *
  * Who you are: with TRUST_USER_HEADER set (e.g. x-forwarded-user, from oauth2-proxy in front), that
  * header; listen on loopback then, so only the proxy reaches the router. Without it (development), you
@@ -17,14 +17,14 @@
  * repository (one person on their own machine).
  *
  * Sandboxes (bubblewrap): each worker sees only what it needs, at the same paths as outside.
- *   prometheus: your copy read-only, its workflows/ read-write
- *   a workflow: that folder read-write; prometheus's .venv read-only; nothing of other workflows
+ *   prometheus: your copy read-only, its agents/ read-write
+ *   an agent: that folder read-write; prometheus's .venv read-only; nothing of other agents
  *   both:       system and node read-only, your Pi state (sessions, settings, auth), your files
  *               read-only (USERS_ROOT/<user>/files, or SANDBOX_READ paths), a home of its own
  * SANDBOX=off runs workers unsandboxed (development only). With a systemd user session, each worker
  * also gets MEMORY_MAX and CPU_QUOTA limits.
  *
- *   node ui/router.ts sandbox-run <user> <p | w/slug> -- <command…>   runs a command in that sandbox
+ *   node ui/router.ts sandbox-run <user> <p | a/slug> -- <command…>   runs a command in that sandbox
  */
 import { spawn, execFile, execFileSync, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
@@ -117,31 +117,31 @@ const ownOf = (user: string) => (USERS_ROOT ? path.join(USERS_ROOT, user) : path
 const filesOf = (user: string) => path.join(ownOf(user), "files");
 const SLUG = /^[a-z0-9][a-z0-9-]*$/;
 
-// where sandboxed workers' pi-subagents keep their runs (survives a worker restart); list_workflows.py reads them there
+// where sandboxed workers' pi-subagents keep their runs (survives a worker restart); list_agents.py reads them there
 const SUBAGENTS_ROOT = path.join(HOME, ".cache", "pi-subagents");
 
 const pythonFor = (root: string) => [path.join(root, ".venv/bin/python"), path.join(REPO, ".venv/bin/python")].find(existsSync) ?? "python3";
 
-// all your workflows, or just one (`only`: its folder), as list_workflows.py summarises them
-function listWorkflows(user: string, res: ServerResponse, only?: string) {
+// all your agents, or just one (`only`: its folder), as list_agents.py summarises them
+function listAgents(user: string, res: ServerResponse, only?: string) {
 	const root = prometheusOf(user);
 	const python = pythonFor(root);
-	const script = path.join(root, ".pi/skills/workflow/scripts/list_workflows.py");
+	const script = path.join(root, ".pi/skills/agent/scripts/list_agents.py");
 	const env = SANDBOX === "off" ? process.env : { ...process.env, PI_SUBAGENTS_TEMP_ROOT: SUBAGENTS_ROOT };
-	execFile(python, [script, ...(only ? ["--workflow", only] : ["--root", "workflows"])], { cwd: root, env }, (err, stdout, stderr) =>
+	execFile(python, [script, ...(only ? ["--agent", only] : ["--root", "agents"])], { cwd: root, env }, (err, stdout, stderr) =>
 		err ? send(res, 500, { error: stderr || String(err) }) : (res.writeHead(200, { "Content-Type": "application/json" }), res.end(stdout)),
 	);
 }
 
 // --- sandboxes ------------------------------------------------------------------------------------
 
-// the planner creates and refreshes workflows but never needs their secrets or conversations: each
+// the planner creates and refreshes agents but never needs their secrets or conversations: each
 // .env reads as empty, each .pi/sessions as an empty folder
-const hideSecrets = (workflows: string) =>
-	existsSync(workflows)
-		? readdirSync(workflows).flatMap((s) => [
-				...(existsSync(path.join(workflows, s, ".env")) ? ["--ro-bind", EMPTY, path.join(workflows, s, ".env")] : []),
-				...(existsSync(path.join(workflows, s, ".pi", "sessions")) ? ["--tmpfs", path.join(workflows, s, ".pi", "sessions")] : []),
+const hideSecrets = (agents: string) =>
+	existsSync(agents)
+		? readdirSync(agents).flatMap((s) => [
+				...(existsSync(path.join(agents, s, ".env")) ? ["--ro-bind", EMPTY, path.join(agents, s, ".env")] : []),
+				...(existsSync(path.join(agents, s, ".pi", "sessions")) ? ["--tmpfs", path.join(agents, s, ".pi", "sessions")] : []),
 			])
 		: [];
 
@@ -169,7 +169,7 @@ function sandboxed(user: string, agent: string, cwd: string, command: string[], 
 		...ro(NODE_PREFIX), ...ro(path.dirname(path.dirname(PI_PACKAGE_ROOT))), ...ro(path.join(REPO, "ui")), ...ro(path.join(REPO, "node_modules")),
 		"--bind", agentDir, PI_AGENT, ...(USERS_ROOT ? ro(path.join(PI_AGENT, "npm")) : []), // shared Pi packages
 		...(agent === "prometheus"
-			? [...ro(root), ...rw((mkdirSync(sessionDirOf(root), { recursive: true }), sessionDirOf(root))), ...rw(path.join(root, "workflows")), ...hideSecrets(path.join(root, "workflows"))]
+			? [...ro(root), ...rw((mkdirSync(sessionDirOf(root), { recursive: true }), sessionDirOf(root))), ...rw(path.join(root, "agents")), ...hideSecrets(path.join(root, "agents"))]
 			: [...ro(path.join(root, ".venv")), ...rw(cwd)]),
 		...files.flatMap(ro),
 		...writable.flatMap(rw),
@@ -188,18 +188,18 @@ function sandboxed(user: string, agent: string, cwd: string, command: string[], 
 	return [all[0], all.slice(1)];
 }
 
-// node ui/router.ts sandbox-run <user> <p | w/slug> -- <command…>: for checking what a sandbox can do
+// node ui/router.ts sandbox-run <user> <p | a/slug> -- <command…>: for checking what a sandbox can do
 if (process.argv[2] === "sandbox-run") {
 	const [user, which] = process.argv.slice(3, 5);
 	const cmd = process.argv.slice(process.argv.indexOf("--") + 1);
-	const cwd = which === "p" ? prometheusOf(user) : path.join(prometheusOf(user), "workflows", which.slice(2));
+	const cwd = which === "p" ? prometheusOf(user) : path.join(prometheusOf(user), "agents", which.slice(2));
 	const [c, args] = sandboxed(user, which === "p" ? "prometheus" : which, cwd, cmd, {});
 	const r = spawn(c, args, { stdio: "inherit", env: SANDBOX === "off" ? process.env : {} });
 	r.on("exit", (code) => process.exit(code ?? 1));
 	await new Promise(() => {});
 }
 
-// --- files: your input files, and workflows' outputs -----------------------------------------------
+// --- files: your input files, and agents' outputs -----------------------------------------------
 
 const MAX_PREVIEW = 200 * 1024;
 const MAX_UPLOAD = Number(process.env.MAX_UPLOAD_MB ?? 200) * 1024 * 1024;
@@ -262,12 +262,12 @@ function sendFile(file: string | null, res: ServerResponse) {
 	createReadStream(file).pipe(res);
 }
 
-// what the folder view of a workflow never shows or serves: secrets, git's and uv's internals, session logs, macOS litter
+// what the folder view of an agent never shows or serves: secrets, git's and uv's internals, session logs, macOS litter
 const HIDDEN = /(^|\/)(\.git|\.venv|node_modules|__pycache__|\.DS_Store|\.gitkeep|\.env(\..*)?|\.pi\/sessions)(\/|$)/i; // i: macOS's file system ignores case (.ENV is .env)
 
-// `rel` inside the workflow folder `cwd`, or null if it escapes, is hidden or (for a file) does not exist
+// `rel` inside the agent folder `cwd`, or null if it escapes, is hidden or (for a file) does not exist
 // (checked both as asked and as resolved: a symlink such as runs/x/work/cfg -> ../../../.env must not serve .env)
-function inWorkflow(cwd: string, rel: string): string | null {
+function inAgent(cwd: string, rel: string): string | null {
 	const p = inside(cwd, rel);
 	if (!p) return null;
 	const shown = (file: string, root: string) => path.relative(root, file).split(path.sep).join("/");
@@ -276,7 +276,7 @@ function inWorkflow(cwd: string, rel: string): string | null {
 	return p;
 }
 
-// whether a run of the workflow is active (its run.yaml says so): then nothing outside the scripts touches its git
+// whether a run of the agent is active (its run.yaml says so): then nothing outside the scripts touches its git
 function runActive(cwd: string) {
 	const runs = path.join(cwd, "runs");
 	return existsSync(runs) && readdirSync(runs).some((id) => {
@@ -285,11 +285,11 @@ function runActive(cwd: string) {
 	});
 }
 
-function listWorkflowFolder(cwd: string, dir: string, res: ServerResponse) {
-	const d = inWorkflow(cwd, dir);
+function listAgentFolder(cwd: string, dir: string, res: ServerResponse) {
+	const d = inAgent(cwd, dir);
 	if (!d || !existsSync(d) || !statSync(d).isDirectory()) return send(res, 404, "no such folder");
 	const entries = readdirSync(d, { withFileTypes: true })
-		.filter((e) => inWorkflow(cwd, path.relative(cwd, path.join(d, e.name))))
+		.filter((e) => inAgent(cwd, path.relative(cwd, path.join(d, e.name))))
 		.map((e) => {
 			const s = statSync(path.join(d, e.name));
 			return { name: e.name, dir: s.isDirectory(), size: s.size, modified: s.mtime.toISOString() };
@@ -299,8 +299,8 @@ function listWorkflowFolder(cwd: string, dir: string, res: ServerResponse) {
 }
 
 // a file's text for the preview; a binary or large one answers `text: null` (the page offers a download)
-function readWorkflowFile(cwd: string, rel: string, res: ServerResponse) {
-	const f = inWorkflow(cwd, rel);
+function readAgentFile(cwd: string, rel: string, res: ServerResponse) {
+	const f = inAgent(cwd, rel);
 	if (!f || !existsSync(f) || !statSync(f).isFile()) return send(res, 404, "no such file");
 	const size = statSync(f).size;
 	if (size > MAX_PREVIEW) return send(res, 200, { size, text: null });
@@ -308,14 +308,14 @@ function readWorkflowFile(cwd: string, rel: string, res: ServerResponse) {
 	send(res, 200, { size, text: bytes.includes(0) ? null : bytes.toString("utf8") });
 }
 
-// what the person may change in the page: the plan, the agent role, programs, gates and project agents
+// what the person may change in the page: the plan, the agent role, programs, gates and subagents
 const EDITABLE = /^(plan\.yaml|\.pi\/APPEND_SYSTEM\.md|(scripts|gates|\.pi\/agents)\/.+)$/;
 const MAX_EDIT = 1024 * 1024;
 
-// Saves a file of the workflow. Once a run exists the edit goes to a change branch (begin-change opens or continues
+// Saves a file of the agent. Once a run exists the edit goes to a change branch (begin-change opens or continues
 // revise/<date>-<n>), so main changes only by a reviewed merge; before the first run it is planning, on main.
-function saveWorkflowFile(user: string, cwd: string, rel: string, req: IncomingMessage, res: ServerResponse) {
-	const f = inWorkflow(cwd, rel);
+function saveAgentFile(user: string, cwd: string, rel: string, req: IncomingMessage, res: ServerResponse) {
+	const f = inAgent(cwd, rel);
 	if (!f || !EDITABLE.test(path.relative(cwd, f).split(path.sep).join("/")) || !existsSync(f) || !statSync(f).isFile()) return send(res, 400, "this file can't be edited here");
 	const chunks: Buffer[] = [];
 	let size = 0;
@@ -326,8 +326,8 @@ function saveWorkflowFile(user: string, cwd: string, rel: string, req: IncomingM
 	req.on("end", () => {
 		if (size > MAX_EDIT) return send(res, 413, "larger than 1 MB");
 		const root = prometheusOf(user);
-		const script = path.join(root, ".pi/skills/workflow/scripts/workflow_git.py");
-		execFile(pythonFor(root), [script, "--workflow", cwd, "begin-change"], { cwd }, (err, stdout, stderr) => {
+		const script = path.join(root, ".pi/skills/agent/scripts/agent_git.py");
+		execFile(pythonFor(root), [script, "--agent", cwd, "begin-change"], { cwd }, (err, stdout, stderr) => {
 			let out: { ok?: boolean; error?: string; branch?: string; mode?: string } = {};
 			try {
 				out = JSON.parse(stdout);
@@ -361,12 +361,12 @@ async function changes(cwd: string, res: ServerResponse) {
 		files.set(p[p.length - 1], status[0]);
 	}
 	for (const p of (await gitIn(cwd, ["ls-files", "--others", "--exclude-standard"])).out.split("\n").filter(Boolean)) files.set(p, "A");
-	send(res, 200, { branch, base, files: [...files].filter(([p]) => inWorkflow(cwd, p)).map(([p, status]) => ({ path: p, status })) });
+	send(res, 200, { branch, base, files: [...files].filter(([p]) => inAgent(cwd, p)).map(([p, status]) => ({ path: p, status })) });
 }
 
 // a file's two sides for the side-by-side diff: as main (or HEAD) has it and as it is now; null where it doesn't exist
 async function diffOf(cwd: string, asked: string, res: ServerResponse) {
-	const f = inWorkflow(cwd, asked);
+	const f = inAgent(cwd, asked);
 	if (!f) return send(res, 400, "bad path");
 	const rel = path.relative(cwd, f).split(path.sep).join("/");
 	const { base } = await baseOf(cwd);
@@ -376,7 +376,7 @@ async function diffOf(cwd: string, asked: string, res: ServerResponse) {
 
 // put a file back as main (or HEAD) has it; a file new on the branch is deleted
 async function discardEdits(cwd: string, asked: string, res: ServerResponse) {
-	const f = inWorkflow(cwd, asked);
+	const f = inAgent(cwd, asked);
 	const rel = f ? path.relative(cwd, f).split(path.sep).join("/") : "";
 	if (!f || !EDITABLE.test(rel)) return send(res, 400, "this file can't be changed here");
 	// a wave's writer children are checked against the repo's staged index: leave it alone while a run is active
@@ -414,8 +414,8 @@ function discardBranch(user: string, cwd: string, name: string, res: ServerRespo
 	const root = prometheusOf(user);
 	void baseOf(cwd).then(({ branch }) => {
 		if (branch !== name) return void gitIn(cwd, ["branch", "-q", "-D", name]).then((r) => (r.code ? send(res, 409, r.err) : send(res, 200, { ok: true })));
-		const script = path.join(root, ".pi/skills/workflow/scripts/workflow_git.py");
-		execFile(pythonFor(root), [script, "--workflow", cwd, "merge", "--action", "discard"], { cwd }, (err, stdout, stderr) => {
+		const script = path.join(root, ".pi/skills/agent/scripts/agent_git.py");
+		execFile(pythonFor(root), [script, "--agent", cwd, "merge", "--action", "discard"], { cwd }, (err, stdout, stderr) => {
 			let out: { error?: string } = {};
 			try {
 				out = JSON.parse(stdout);
@@ -449,7 +449,7 @@ function subagentStatus(cwd: string, id: string): any | null {
 
 const costOf = (st: any) => st?.totalCost?.costUsd ?? null;
 
-// A command child (the workflow-batcher runner: no model) runs a reviewed program, then the stage's gate, or splits
+// A command child (the batcher runner: no model) runs a reviewed program, then the stage's gate, or splits
 // or merges a map stage. Its request is in the compiled wave (runs/<id>/.compiled/<wave>.wave.json, found by the
 // child's key; the child runs in runs/<id>/work), its result in its output log: {program: {exit, stdout, stderr}, gate: {exit}}.
 function commandOf(cwd: string, childCwd: string | undefined, key: string): { op: string; script: string | null; command: string | null; gate: string | null } | null {
@@ -507,11 +507,11 @@ function launchOf(cwd: string, id: string) {
 		const state = field("status") ?? "unknown";
 		const children = [...(launch.match(/^    children:\n((?: {6}.*\n?)*)/m)?.[1] ?? "").matchAll(/^ {6}([\w-]+): ['"]?([\w-]*)/gm)].map(([, key, runId]) => {
 			const a = artifactOf(cwd, runId);
-			const program = a?.agent === "workflow-batcher" ? a.result() : null;
+			const program = a?.agent === "batcher" ? a.result() : null;
 			return {
 				key, agent: a?.agent, runId: a ? runId : null, model: a?.model ?? null, cost: a?.cost ?? null,
 				state: a?.exitCode != null ? (a.exitCode === 0 ? "done" : "failed") : state === "done" ? "done" : "unknown",
-				...(a?.agent === "workflow-batcher" ? { program: { ...commandOf(cwd, path.join(runs, run, "work"), key), exit: program?.program?.exit ?? null, gateExit: program?.gate?.exit ?? null } } : {}),
+				...(a?.agent === "batcher" ? { program: { ...commandOf(cwd, path.join(runs, run, "work"), key), exit: program?.program?.exit ?? null, gateExit: program?.gate?.exit ?? null } } : {}),
 			};
 		});
 		return { id, state, startedAt: time("started_at"), endedAt: time("finished_at"), cost: Number(field("cost_usd")) || null, children };
@@ -547,14 +547,14 @@ function waveInfo(cwd: string, id: string, res: ServerResponse) {
 			model: step?.model ?? null, lastTool: tools.length ? tools[tools.length - 1].tool : null,
 			lastArgs: tools.length ? String(tools[tools.length - 1].args ?? "").slice(0, 120) : null,
 			toolCount: cs?.toolCount ?? null, tokens: cs?.totalTokens?.total ?? null,
-			...(c.agent === "workflow-batcher" ? { program: { ...commandOf(cwd, cs?.cwd, c.childId), exit: resultOf(c.runId)?.program?.exit ?? null, gateExit: resultOf(c.runId)?.gate?.exit ?? null } } : {}),
+			...(c.agent === "batcher" ? { program: { ...commandOf(cwd, cs?.cwd, c.childId), exit: resultOf(c.runId)?.program?.exit ?? null, gateExit: resultOf(c.runId)?.gate?.exit ?? null } } : {}),
 		};
 	});
 	send(res, 200, { id, state: st.state, startedAt: st.startedAt ?? null, endedAt: st.endedAt ?? null, cost: costOf(st), children });
 }
 
 // one subagent's work, read from its own Pi session so the page can show it like the main agent's: its task, then
-// each thought, tool call (with its result) and text, in order. A command runner (workflow-batcher) has no session:
+// each thought, tool call (with its result) and text, in order. A command runner (batcher) has no session:
 // then its log's summary. Thoughts as the worker shows them (text, a readable summary, or a note that it is encrypted).
 const MAX_STEP = 4000;
 function thoughtOf(block: any): string {
@@ -604,7 +604,7 @@ function childLog(cwd: string, id: string, res: ServerResponse) {
 		// pi-subagents' record is gone: the child's artifacts
 		const a = artifactOf(cwd, id);
 		if (!a) return send(res, 404, "no such run here");
-		const done = a.agent === "workflow-batcher" ? a.result() : null;
+		const done = a.agent === "batcher" ? a.result() : null;
 		if (done && (done.program || done.gate)) {
 			const child = childOf(cwd, id);
 			return send(res, 200, { steps: [programStep(child && commandOf(cwd, child.work, child.key), done)] });
@@ -626,7 +626,7 @@ function childLog(cwd: string, id: string, res: ServerResponse) {
 	send(res, 200, { steps: summary ? [{ kind: "text", text: clip(summary) }] : [] });
 }
 
-// a workflow's results: every file under runs/<id>/outputs/, newest run first
+// an agent's results: every file under runs/<id>/outputs/, newest run first
 function outputs(cwd: string, res: ServerResponse) {
 	const runs = path.join(cwd, "runs");
 	const out: { run: string; path: string; size: number; modified: string }[] = [];
@@ -843,7 +843,7 @@ function route(req: IncomingMessage, res: ServerResponse) {
 	const root = prometheusOf(user);
 	if (!existsSync(path.join(root, ".pi", "APPEND_SYSTEM.md"))) return send(res, 403, `no prometheus folder for user ${user}`);
 	if (req.method === "GET" && url === "/me") return send(res, 200, { user, folder: USERS_ROOT ? `${user}/prometheus` : "this repository" });
-	if (req.method === "GET" && url === "/workflows") return listWorkflows(user, res);
+	if (req.method === "GET" && url === "/agents") return listAgents(user, res);
 	const q = new URL(req.url ?? "/", "http://x").searchParams;
 	if (url === "/files") {
 		if (req.method === "GET") return listFiles(user, q.get("dir") ?? "", res);
@@ -857,18 +857,18 @@ function route(req: IncomingMessage, res: ServerResponse) {
 	}
 	if (req.method === "GET" && url === "/files/download") return sendFile(inside(filesOf(user), q.get("path") ?? ""), res);
 
-	// an agent: prometheus (/p/…) or a workflow (/w/<slug>/…)
+	// whom to talk to: prometheus (/p/…) or an agent it built (/a/<slug>/…)
 	let agent: string, cwd: string, rest: string;
 	let m = url.match(/^\/p(\/.*)$/);
 	if (m) [agent, cwd, rest] = ["prometheus", root, m[1]];
-	else if ((m = url.match(/^\/w\/([^/]+)(\/.*)$/))) {
-		[agent, cwd, rest] = [`w/${m[1]}`, path.join(root, "workflows", m[1]), m[2]];
-		if (!SLUG.test(m[1]) || !existsSync(path.join(cwd, "plan.yaml"))) return send(res, 404, `no workflow ${m[1]}`);
-		// files attached in this workflow's chat: uploads/ in its folder, which its own sandbox reads at the same path
+	else if ((m = url.match(/^\/a\/([^/]+)(\/.*)$/))) {
+		[agent, cwd, rest] = [`a/${m[1]}`, path.join(root, "agents", m[1]), m[2]];
+		if (!SLUG.test(m[1]) || !existsSync(path.join(cwd, "plan.yaml"))) return send(res, 404, `no agent ${m[1]}`);
+		// files attached in this agent's chat: uploads/ in its folder, which its own sandbox reads at the same path
 		if (rest === "/upload") {
 			const base = path.join(cwd, "uploads");
 			if (req.method === "PUT") {
-				// an older workflow's .gitignore has no uploads/ until it is refreshed: keep the files out of git through
+				// an older agent's .gitignore has no uploads/ until it is refreshed: keep the files out of git through
 				// the repo's own exclude file, which is not versioned (editing .gitignore would leave main dirty)
 				const exclude = path.join(cwd, ".git", "info", "exclude");
 				if (existsSync(path.join(cwd, ".git")) && !(existsSync(exclude) && /^\/?uploads\/?$/m.test(readFileSync(exclude, "utf8")))) {
@@ -884,19 +884,19 @@ function route(req: IncomingMessage, res: ServerResponse) {
 				return send(res, 200, { ok: true });
 			}
 		}
-		if (req.method === "GET" && rest === "/summary") return listWorkflows(user, res, cwd);
+		if (req.method === "GET" && rest === "/summary") return listAgents(user, res, cwd);
 		if (req.method === "GET" && rest === "/outputs") return outputs(cwd, res);
 		if (req.method === "GET" && rest === "/download") {
-			return sendFile(inWorkflow(cwd, q.get("path") ?? ""), res);
+			return sendFile(inAgent(cwd, q.get("path") ?? ""), res);
 		}
-		if (req.method === "GET" && rest === "/tree") return listWorkflowFolder(cwd, q.get("dir") ?? "", res);
-		if (req.method === "GET" && rest === "/file") return readWorkflowFile(cwd, q.get("path") ?? "", res);
+		if (req.method === "GET" && rest === "/tree") return listAgentFolder(cwd, q.get("dir") ?? "", res);
+		if (req.method === "GET" && rest === "/file") return readAgentFile(cwd, q.get("path") ?? "", res);
 		if (req.method === "GET" && rest === "/changes") return void changes(cwd, res);
 		if (req.method === "GET" && rest === "/diff") return void diffOf(cwd, q.get("path") ?? "", res);
 		if (req.method === "POST" && rest === "/discard") return void discardEdits(cwd, q.get("path") ?? "", res);
 		if (req.method === "POST" && rest === "/checkout") return void checkoutBranch(cwd, q.get("name") ?? "", res);
 		if (req.method === "POST" && rest === "/discard-branch") return discardBranch(user, cwd, q.get("name") ?? "", res);
-		if (req.method === "PUT" && rest === "/file") return saveWorkflowFile(user, cwd, q.get("path") ?? "", req, res);
+		if (req.method === "PUT" && rest === "/file") return saveAgentFile(user, cwd, q.get("path") ?? "", req, res);
 	} else return send(res, 404, "not found");
 	if (req.method === "GET" && rest === "/wave") return waveInfo(cwd, q.get("id") ?? "", res);
 	if (req.method === "GET" && rest === "/wave/child") return childLog(cwd, q.get("id") ?? "", res);

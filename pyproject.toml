@@ -1,5 +1,5 @@
 # Python dependencies of the skill scripts. `uv sync` creates .venv/, which the
-# extensions use (override with PI_WORKFLOW_PYTHON).
+# extensions use (override with PI_AGENT_PYTHON).
 [project]
 name = "prometheus"
 version = "0.1.0"

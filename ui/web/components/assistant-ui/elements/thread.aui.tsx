@@ -72,9 +72,9 @@ export type ThreadComponents = {
   ToolFallback?: ToolCallMessagePartComponent | undefined;
 };
 
-// tool calls that draw a card for you (a question, a panel, the created workflow, a wave's children): shown outside
+// tool calls that draw a card for you (a question, a panel, the created agent, a wave's children): shown outside
 // the Details fold, where you can see and answer them
-const STANDALONE_TOOLS = new Set(["pi_panel", "pi_models", "ask_user_question", "workflow_scaffold", "subagent"]);
+const STANDALONE_TOOLS = new Set(["pi_panel", "pi_models", "ask_user_question", "agent_scaffold", "subagent"]);
 
 export type ThreadProps = {
   components?: ThreadComponents | undefined;
@@ -568,7 +568,7 @@ type Item = { kind: "step" | "card" | "answer"; msg: string; i: number; part: Pa
 
 // The agent's own record-keeping around a wave (writing its launch and its end into run.yaml, checking on it,
 // closing its mission): the wave's line already says all of it, so as steps they only read as separate events
-const BOOKKEEPING = new Set(["workflow_log_start", "workflow_log_finish"]);
+const BOOKKEEPING = new Set(["agent_log_start", "agent_log_finish"]);
 const isBookkeeping = (p: Part) =>
   p.type === "tool-call" && (BOOKKEEPING.has(p.toolName ?? "") || (p.toolName === "subagent" && ["status", "mission.close"].includes(String(p.args?.action ?? ""))));
 const isPrivate = (p: Part) => p.type === "reasoning" && (p.text ?? "").startsWith(PRIVATE_THOUGHT);
@@ -782,7 +782,7 @@ const UserMessage: FC = () => {
 };
 
 // Editable: a message stored in Pi's session (id "pi-<entry>", so the worker can rewind to it) that comes after the
-// last /workflow-… command; the command and what precedes it stay as they are (the worker checks the same rule).
+// last /agent-… command; the command and what precedes it stay as they are (the worker checks the same rule).
 function useEditable() {
   const id = useAuiState((s) => s.message.id);
   const messages = useAuiState((s) => s.thread.messages) as unknown as readonly Msg[];
@@ -790,8 +790,8 @@ function useEditable() {
     if (!id.startsWith("pi-")) return false;
     const textOf = (m: Msg) => m.content.map((p) => (p.type === "text" ? (p.text ?? "") : "")).join("").trim();
     const at = messages.findIndex((m) => m.id === id);
-    const lastCommand = messages.reduce((n, m, i) => (m.role === "user" && textOf(m).startsWith("/workflow-") ? i : n), -1);
-    return at > lastCommand && !textOf(messages[at]!).startsWith("/workflow-");
+    const lastCommand = messages.reduce((n, m, i) => (m.role === "user" && textOf(m).startsWith("/agent-") ? i : n), -1);
+    return at > lastCommand && !textOf(messages[at]!).startsWith("/agent-");
   }, [id, messages]);
 }
 

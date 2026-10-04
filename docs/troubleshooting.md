@@ -1,22 +1,30 @@
 # Troubleshooting
 
-When something goes wrong in prometheus, it usually shows up as a **refusal**: a script declines to take a step, explains why, and leaves your workflow exactly as it was. That can feel abrupt, but it's the system protecting your work, and nothing is lost. The agent passes the message on and usually suggests what to do next.
+When something goes wrong in prometheus, it usually shows up as a **refusal**: a script declines to take a step, explains why, and leaves your agent exactly as it was. That can feel abrupt, but it's the system protecting your work, and nothing is lost. The agent passes the message on and usually suggests what to do next.
 
 If you've hit one and want to understand it, you're in the right place. The entries are grouped by when you're likely to meet them, and each one starts with what you'll see (the message as printed, with `<…>` for the parts that vary), then explains the cause and the fix. The quickest way in is to search this page for a few words of the message.
 
 Many refusals need nothing from you at all, because the agent knows how to recover. We've gathered those at the end, under [Handled by the agent](#handled-by-the-agent), so you can quickly tell whether a message is yours to deal with.
 
-To see where a workflow stands and which moves are open, run `/workflow-status`.
+To see where an agent stands and which moves are open, run `/agent-status`.
 
 ## Setup
 
 ### Commands are missing
 
-The `/workflow-*` commands don't appear in Pi.
+The `/agent-*` commands don't appear in Pi.
 
-**Cause.** Pi loads a project's extension only once you trust the folder, and prometheus and each workflow are separate projects.
+**Cause.** Pi loads a project's extension only once you trust the folder, and prometheus and each agent are separate projects.
 
-**Fix.** Start `pi` in the prometheus folder or the workflow's folder and accept the trust prompt. Each workflow needs trusting on its own, including a copy made with `/workflow-export`.
+**Fix.** Start `pi` in the prometheus folder or the agent's folder and accept the trust prompt. Each agent needs trusting on its own, including a copy made with `/agent-export`.
+
+### Agents still in `workflows/`
+
+Starting prometheus warns "Agents used to be called workflows: … still in workflows/", the sidebar and `/agent-list` don't show them, or `/workflow-run` is an unknown command.
+
+**Cause.** Agents were called workflows until 2026-10-04: they lived in `workflows/`, and their commands were `/workflow-*`. Prometheus now looks in `agents/`, and doesn't move your folders itself, since a `pi` session may be running inside one.
+
+**Fix.** In the prometheus folder, `mv workflows/* agents/`, then `/agent-refresh --all`. The refresh replaces each agent's old skill and extension, so its commands become `/agent-run`, `/agent-status`, `/agent-revise` and `/agent-improve`, and commits that in the agent's repo. It also brings back each agent's conversations: Pi lists them only for the folder they were started in, so after the move they show again once refreshed.
 
 ### Python package missing
 
@@ -24,9 +32,9 @@ The `/workflow-*` commands don't appear in Pi.
 Python package '<name>' is missing … ask the user to run `uv sync`
 ```
 
-**Cause.** The scripts' Python packages aren't installed for the Python the extension found, which is `$PI_WORKFLOW_PYTHON` if set, else the nearest `.venv`. A workflow creates its own `.venv` with `uv sync` when it first starts, so inside a workflow the message means that step failed, usually because uv isn't installed or you were offline.
+**Cause.** The scripts' Python packages aren't installed for the Python the extension found, which is `$PI_AGENT_PYTHON` if set, else the nearest `.venv`. An agent creates its own `.venv` with `uv sync` when it first starts, so inside an agent the message means that step failed, usually because uv isn't installed or you were offline.
 
-**Fix.** Run `uv sync` in the prometheus folder, or in the workflow's folder for an exported workflow; install uv or get online first if that was the problem. Then restart `pi`. The workflow agent never installs packages itself.
+**Fix.** Run `uv sync` in the prometheus folder, or in the agent's folder for an exported agent; install uv or get online first if that was the problem. Then restart `pi`. The agent never installs packages itself.
 
 ### git is required
 
@@ -34,7 +42,7 @@ Python package '<name>' is missing … ask the user to run `uv sync`
 git is required
 ```
 
-**Cause.** Each workflow is its own git repository, and pi-subagents checks the repository's staged files around every child that writes.
+**Cause.** Each agent is its own git repository, and pi-subagents checks the repository's staged files around every child that writes.
 
 **Fix.** Install git.
 
@@ -44,7 +52,7 @@ git is required
 this wave runs stage programs or gates with `uv run`, but uv is not installed
 ```
 
-**Cause.** Gates and stage programs run with `uv run`, which first installs the workflow's packages into its `.venv/`.
+**Cause.** Gates and stage programs run with `uv run`, which first installs the agent's packages into its `.venv/`.
 
 **Fix.** Install [uv](https://docs.astral.sh/uv/). The first `uv run` needs network access to fetch the packages.
 
@@ -54,7 +62,7 @@ The model says it has no `subagent` tool.
 
 **Cause.** pi-subagents isn't installed, or its `subagent` tool isn't active in this session.
 
-**Fix.** If it isn't installed, install it globally with `pi install npm:pi-subagents`. If it is, start with `/workflow-new`, `/workflow-run` or `/workflow-revise`, which activate the tool before they begin. In a session continued without one of those commands, the model enables the tool itself, and with some providers it appears only after your next message.
+**Fix.** If it isn't installed, install it globally with `pi install npm:pi-subagents`. If it is, start with `/agent-new`, `/agent-run` or `/agent-revise`, which activate the tool before they begin. In a session continued without one of those commands, the model enables the tool itself, and with some providers it appears only after your next message.
 
 ### Every wave fails at startup
 
@@ -64,7 +72,7 @@ Background children require the host npm package (@earendil-works/pi-coding-agen
 
 **Cause.** The installed Pi and pi-subagents don't match. pi-subagents starts each background child with packages it expects Pi to provide, so when Pi stops providing one, every wave fails on its first child. With pi-subagents 0.74.0 this happened on Pi 1.0, which dropped `@earendil-works/pi-agent-core/node`; pi-subagents 0.75.0 works with Pi 1.0.1.
 
-**Fix.** Update pi-subagents (`pi update`, or `pi install npm:pi-subagents`) to a release that supports your Pi (0.75.0 or later for Pi 1.0), or install a Pi it supports. Then run `/workflow-run`, and the active run relaunches the failed wave.
+**Fix.** Update pi-subagents (`pi update`, or `pi install npm:pi-subagents`) to a release that supports your Pi (0.75.0 or later for Pi 1.0), or install a Pi it supports. Then run `/agent-run`, and the active run relaunches the failed wave.
 
 ## Starting a run
 
@@ -76,7 +84,7 @@ the plan on main is not ready to run (…); <run/…, revise/… or improve/…>
 
 **Cause.** A run always starts from `main`. When a branch awaiting review is checked out, starting a run commits its leftovers, switches to `main` and keeps the branch for review, but only if the plan on `main` is ready. Here it isn't (a draft, or errors), so nothing was switched.
 
-**Fix.** Review the branch (`/workflow-revise` or the workspace's *Review and merge*: merge, keep or discard), or change the plan on `main` until it is ready.
+**Fix.** Review the branch (`/agent-revise` or the workspace's *Review and merge*: merge, keep or discard), or change the plan on `main` until it is ready.
 
 ### Plan not ready
 
@@ -86,7 +94,7 @@ the plan is <status>, not ready: finish it first
 
 **Cause.** A run starts only from a ready plan, which means one that validates and that the plan critic has reviewed.
 
-**Fix.** Run `/workflow-run`. With a draft plan it goes back to planning and asks what the plan still needs.
+**Fix.** Run `/agent-run`. With a draft plan it goes back to planning and asks what the plan still needs.
 
 ### A run is already active
 
@@ -96,7 +104,7 @@ run <id> is active: continue it, or stop it first
 
 **Cause.** Only one run can be active at a time.
 
-**Fix.** To continue the run, use `/workflow-run`. To start over, tell the agent: it stops the active run, which stays in `runs/` marked stopped, and shows you its branch if it has one.
+**Fix.** To continue the run, use `/agent-run`. To start over, tell the agent: it stops the active run, which stays in `runs/` marked stopped, and shows you its branch if it has one.
 
 ### A value is missing
 
@@ -113,17 +121,17 @@ input '<id>' resolves to '<path>', a relative path
 input '<id>' resolves to '<path>', which does not exist
 ```
 
-**Cause.** Inputs live outside the workflow, so their paths must be absolute and must exist.
+**Cause.** Inputs live outside the agent, so their paths must be absolute and must exist.
 
 **Fix.** Give the value again when asked, or correct it in `.env`.
 
 ### A secret is missing
 
-The workflow agent asks you to add a variable to `.env`.
+The agent asks you to add a variable to `.env`.
 
 **Cause.** A secret param has no value, and the agent never asks for a secret in chat.
 
-**Fix.** Add `NAME=value` to the workflow's `.env`, or set it in the environment you start `pi` from, then tell the agent it is set.
+**Fix.** Add `NAME=value` to the agent's `.env`, or set it in the environment you start `pi` from, then tell the agent it is set.
 
 ### No connector for a side effect
 
@@ -132,9 +140,9 @@ stage '<key>': agent '<name>' cannot reach <target>
 builtin agent '<name>' writes <target> but has no connector tools
 ```
 
-**Cause.** A side effect that writes outside the workflow, to an app or as a message, needs an agent that can reach the target, either through a connector tool (`mcp:<server>` in the agent's `tools`) or through a command-line tool run with `bash`. The first message is an error: the stage's project agent has neither. The second is a warning: built-in agents such as `worker` get no connector tools, so the stage can reach its target only with a command-line tool.
+**Cause.** A side effect that writes outside the agent, to an app or as a message, needs an agent that can reach the target, either through a connector tool (`mcp:<server>` in the agent's `tools`) or through a command-line tool run with `bash`. The first message is an error: the stage's subagent has neither. The second is a warning: built-in agents such as `worker` get no connector tools, so the stage can reach its target only with a command-line tool.
 
-**Fix.** To use a connector, give the stage a project agent in `.pi/agents/` whose `tools` list it. See [How to make a stage use a connector](how-to.md#how-to-make-a-stage-use-a-connector).
+**Fix.** To use a connector, give the stage a subagent in `.pi/agents/` whose `tools` list it. See [How to make a stage use a connector](how-to.md#how-to-make-a-stage-use-a-connector).
 
 ## During a run
 
@@ -146,7 +154,7 @@ a wave is running (stages <…>); check its run before launching again
 
 **Cause.** A wave was launched and hasn't been recorded as finished.
 
-**Fix.** Wait for pi-subagents' completion notice; the workflow agent then records the result and carries on. If `pi` restarted in the meantime, `/workflow-run` checks the wave first and records it once it has finished.
+**Fix.** Wait for pi-subagents' completion notice; the agent then records the result and carries on. If `pi` restarted in the meantime, `/agent-run` checks the wave first and records it once it has finished.
 
 ### Waits for the running wave
 
@@ -166,13 +174,13 @@ You see this after asking for a replan, a critique, a decision or a stop while a
 run <id> is still <state> in pi-subagents: wait for its completion notice
 ```
 
-**Cause.** The workflow agent tried to record a wave that pi-subagents is still running.
+**Cause.** The agent tried to record a wave that pi-subagents is still running.
 
 **Fix.** Wait. If you know the wave has ended, because `pi` crashed or you stopped it, tell the agent: it records the wave as failed or stopped, so you can relaunch it.
 
 ### Review before the next wave
 
-The workflow agent shows you a wave's results and asks whether to go on.
+The agent shows you a wave's results and asks whether to go on.
 
 **Cause.** The plan puts a review after that wave (`pause_after`), and until you answer, compiling the next wave returns `review_needed`.
 
@@ -180,7 +188,7 @@ The workflow agent shows you a wave's results and asks whether to go on.
 
 ### A wave failed
 
-The workflow agent reports a failed wave and offers three options.
+The agent reports a failed wave and offers three options.
 
 **Cause.** A gate rejected an output, a review found a blocking problem, or the wave failed before its script returned, in which case the agent reports the `failure_kind`, such as `timeout` or `validation`.
 
@@ -188,11 +196,11 @@ The workflow agent reports a failed wave and offers three options.
 
 ### The subagent tool returned an error
 
-The workflow agent stops and reports an error from the `subagent` tool, with a run id.
+The agent stops and reports an error from the `subagent` tool, with a run id.
 
 **Cause.** An infrastructure problem: the wave failed to launch, an extension failed to load, or a child failed to start. The agent is designed to report the exact error and stop, not to work around it by doing the stage itself or writing its own scripts, unless you tell it to.
 
-**Fix.** Fix the cause, then run `/workflow-run` again.
+**Fix.** Fix the cause, then run `/agent-run` again.
 
 ### Staged index changed
 
@@ -200,19 +208,19 @@ The workflow agent stops and reports an error from the `subagent` tool, with a r
 Staged index changed after launch
 ```
 
-**Cause.** A child that writes files failed its acceptance check, because files were staged (`git add`) in the workflow's repository while it ran.
+**Cause.** A child that writes files failed its acceptance check, because files were staged (`git add`) in the agent's repository while it ran.
 
-**Fix.** Relaunch the wave, and don't stage files in a workflow while a wave runs.
+**Fix.** Relaunch the wave, and don't stage files in an agent while a wave runs.
 
-## Changing a workflow
+## Changing an agent
 
 ### Editing the plan was blocked
 
-The workflow agent was blocked from editing `plan.yaml`, or from running a shell command that names it, even a read-only one such as `git diff -- plan.yaml`.
+The agent was blocked from editing `plan.yaml`, or from running a shell command that names it, even a read-only one such as `git diff -- plan.yaml`.
 
-**Cause.** Once a workflow has a run, its plan changes only through the replan tools during a run or through a change between runs, so that every edit is checked and reviewed. The guard can't tell a shell command that reads the plan from one that writes it, so outside a `/workflow-revise` branch it blocks any that names `plan.yaml`.
+**Cause.** Once an agent has a run, its plan changes only through the replan tools during a run or through a change between runs, so that every edit is checked and reviewed. The guard can't tell a shell command that reads the plan from one that writes it, so outside a `/agent-revise` branch it blocks any that names `plan.yaml`.
 
-**Fix.** To read the plan, the agent uses its read tool, or `git diff main...<branch>` without naming the file; it usually recovers by itself. To change the plan during a run, ask the agent and it replans with its tools. Between runs, use `/workflow-revise`.
+**Fix.** To read the plan, the agent uses its read tool, or `git diff main...<branch>` without naming the file; it usually recovers by itself. To change the plan during a run, ask the agent and it replans with its tools. Between runs, use `/agent-revise`.
 
 ### Locked in a replan
 
@@ -222,7 +230,7 @@ a replan cannot change [<fields>] … locked
 
 **Cause.** A replan during a run can't change the request, goal, `done_when`, params, inputs, outputs, agents, stages that already ran, or a side effect's approval.
 
-**Fix.** Make those changes with `/workflow-revise` once the run has finished or been stopped.
+**Fix.** Make those changes with `/agent-revise` once the run has finished or been stopped.
 
 ### Files blocked on `main`
 
@@ -232,17 +240,17 @@ main is checked out and no run is active: gates, scripts, agents and packages ch
 
 **Cause.** After the first run, `main` changes only by a reviewed merge. The message usually means the checked-out branch was switched, from a terminal or an editor, while a change was in progress.
 
-**Fix.** Switch back to the branch you were working on (`git switch revise/…`) and tell the agent to continue. To start something new, use `/workflow-revise`.
+**Fix.** Switch back to the branch you were working on (`git switch revise/…`) and tell the agent to continue. To start something new, use `/agent-revise`.
 
 ### Critique on `main`
 
 ```text
-main changes only by a reviewed merge once a run exists: change the plan with /workflow-revise
+main changes only by a reviewed merge once a run exists: change the plan with /agent-revise
 ```
 
 **Cause.** After the first run, a critic's result is recorded on a run's or a change's branch, never on `main`.
 
-**Fix.** Start a change with `/workflow-revise`.
+**Fix.** Start a change with `/agent-revise`.
 
 ### Change while a run is active
 
@@ -250,19 +258,19 @@ main changes only by a reviewed merge once a run exists: change the plan with /w
 run <id> is active: tell the run what to change … or stop it first
 ```
 
-**Cause.** `/workflow-revise` and `/workflow-improve` work only while no run is active.
+**Cause.** `/agent-revise` and `/agent-improve` work only while no run is active.
 
 **Fix.** Ask the run itself for the change: it replans on the run's branch, which you review at the end. Or stop the run first.
 
 ### Another change is open
 
 ```text
-<revise/… or improve/…> is an open /workflow-<kind> change: finish it first
+<revise/… or improve/…> is an open /agent-<kind> change: finish it first
 ```
 
 **Cause.** A revise and an improve each get their own branch, so you review them separately, one at a time.
 
-**Fix.** Run `/workflow-run`, which shows you the open branch and asks whether to merge, keep or discard it. Then run the other command.
+**Fix.** Run `/agent-run`, which shows you the open branch and asks whether to merge, keep or discard it. Then run the other command.
 
 ### Nothing to improve from yet
 
@@ -270,19 +278,19 @@ run <id> is active: tell the run what to change … or stop it first
 no run yet, so nothing to improve from
 ```
 
-**Cause.** `/workflow-improve` proposes fixes drawn from earlier runs and sessions, so it needs at least one run.
+**Cause.** `/agent-improve` proposes fixes drawn from earlier runs and sessions, so it needs at least one run.
 
-**Fix.** Run the workflow first. To change the plan before then, use `/workflow-revise`, which edits the plan directly while no run exists.
+**Fix.** Run the agent first. To change the plan before then, use `/agent-revise`, which edits the plan directly while no run exists.
 
 ### Nothing new to improve from
 
 ```text
-Nothing new since the last /workflow-improve: no unreviewed sessions or runs.
+Nothing new since the last /agent-improve: no unreviewed sessions or runs.
 ```
 
 **Cause.** Every session and run is older than the last entry in `improvements.yaml`, so there is nothing new to draw from, and no branch was opened.
 
-**Fix.** Run the workflow first, or give a focus to improve it anyway: `/workflow-improve <focus>`.
+**Fix.** Run the agent first, or give a focus to improve it anyway: `/agent-improve <focus>`.
 
 ### Merge a plan that is not ready
 
@@ -312,7 +320,7 @@ branch run/<id> already exists from an earlier run with this id
 
 **Cause.** `runs/` isn't in git, so deleting a run's folder frees its id but leaves the branch that run created. New runs skip ids that still have a branch, so only a run started by an older version of prometheus can collide.
 
-**Fix.** Stop the run, then either review the old branch (`git switch run/<id>`, then `/workflow-run`) or delete it (`git branch -D run/<id>`).
+**Fix.** Stop the run, then either review the old branch (`git switch run/<id>`, then `/agent-run`) or delete it (`git branch -D run/<id>`).
 
 ### Merged with git by hand
 
@@ -328,18 +336,18 @@ You merged a branch with git yourself instead of choosing merge in the review.
 
 You described some work, and prometheus answered or suggested a command instead of planning.
 
-**Cause.** prometheus plans only when you run `/workflow-new`, so a plain message gets an answer, even one that describes work.
+**Cause.** prometheus plans only when you run `/agent-new`, so a plain message gets an answer, even one that describes work.
 
-**Fix.** Run `/workflow-new <request>`.
+**Fix.** Run `/agent-new <request>`.
 
 ### Refresh during a run or review
 
 ```text
-<workflow> has an active run (<id>); refresh it once the run has finished and its branch is reviewed
-<workflow> has branch <name> checked out; refresh it after merging, keeping or discarding that branch
+<agent> has an active run (<id>); refresh it once the run has finished and its branch is reviewed
+<agent> has branch <name> checked out; refresh it after merging, keeping or discarding that branch
 ```
 
-**Cause.** A refresh rewrites the workflow's copy of the skill, including the tool a running map stage uses, and its commit would land on the checked-out branch and show up in that branch's review.
+**Cause.** A refresh rewrites the agent's copy of the skill, including the tool a running map stage uses, and its commit would land on the checked-out branch and show up in that branch's review.
 
 **Fix.** Finish the run, then merge, keep or discard its branch, or the open `revise/…` or `improve/…` branch, and refresh after that.
 
@@ -347,10 +355,10 @@ You described some work, and prometheus answered or suggested a command instead 
 
 ```text
 <dest>/<slug> already exists
-destination is inside the workflow
+destination is inside the agent
 ```
 
-**Cause.** An export never overwrites anything, and can't copy a workflow into itself.
+**Cause.** An export never overwrites anything, and can't copy an agent into itself.
 
 **Fix.** Pick another destination, or pass a different name.
 
@@ -366,7 +374,7 @@ plan.yaml changed after the critic's result was recorded
 
 **Cause.** The plan was edited after the plan critic reviewed it, so the critic hasn't seen it as it is now. On a branch, any difference from `main`'s plan counts as an edit.
 
-**What the agent does.** The workflow agent runs the critic again and records its result, and runs and merges wait until it has.
+**What the agent does.** The agent runs the critic again and records its result, and runs and merges wait until it has.
 
 ### Reading `.env` was blocked
 
@@ -384,7 +392,7 @@ wave <w> was already launched as pi-subagents run <id> … and not recorded
 
 **Cause.** The session ended between launching the wave and recording the launch, so launching again would run the wave twice.
 
-**What the agent does.** The workflow agent records the existing launch, then waits for it or records its result.
+**What the agent does.** The agent records the existing launch, then waits for it or records its result.
 
 ### Launch recorded on a draft plan
 
@@ -392,7 +400,7 @@ wave <w> was already launched as pi-subagents run <id> … and not recorded
 <why the plan is not ready>. No wave was compiled from this plan, so none can have launched
 ```
 
-**Cause.** The workflow agent tried to record a launch while the plan wasn't ready, typically after a replan the critic hasn't passed yet. Compiling refuses a plan that isn't ready, so no wave can have launched from it.
+**Cause.** The agent tried to record a launch while the plan wasn't ready, typically after a replan the critic hasn't passed yet. Compiling refuses a plan that isn't ready, so no wave can have launched from it.
 
 **What the agent does.** The agent records the critic's result first, then compiles and launches the wave.
 
@@ -404,7 +412,7 @@ run <id> is still <state> in pi-subagents, but its process (<pid>) is gone
 
 **Cause.** The wave's process died without recording how it ended, because `pi` or the machine stopped mid-wave.
 
-**What the agent does.** The workflow agent records the wave as failed, and you can relaunch it.
+**What the agent does.** The agent records the wave as failed, and you can relaunch it.
 
 ### No pi-subagents record
 
@@ -414,7 +422,7 @@ cannot read pi-subagents' record of run <id>
 
 **Cause.** pi-subagents keeps each background run's record in a temporary folder, and either that folder was cleaned up or `PI_SUBAGENTS_TEMP_ROOT` differs from when the wave launched.
 
-**What the agent does.** The workflow agent records the wave from the completion notice, passing its status and result.
+**What the agent does.** The agent records the wave from the completion notice, passing its status and result.
 
 ### Replan without a run
 
@@ -422,21 +430,21 @@ cannot read pi-subagents' record of run <id>
 no run is active: the replan tools work only during a run
 ```
 
-**Cause.** The workflow agent tried to replan outside a run.
+**Cause.** The agent tried to replan outside a run.
 
-**What the agent does.** Before the first run, or on a change branch, the agent edits `plan.yaml` directly; after a run has finished, use `/workflow-revise`.
+**What the agent does.** Before the first run, or on a change branch, the agent edits `plan.yaml` directly; after a run has finished, use `/agent-revise`.
 
 ### Package not in pyproject.toml
 
 ```text
-gates/<file> would fail before checking anything: it imports …, which the workflow's pyproject.toml does not list
+gates/<file> would fail before checking anything: it imports …, which the agent's pyproject.toml does not list
 ```
 
 The same message names `scripts/<file>` for a stage program.
 
-**Cause.** Every package that a workflow's gates and stage programs use must be listed in its `pyproject.toml` and locked in `uv.lock`, so you can see them all in one place and review them with the branch. The same check reports a script with its own `# /// script` package block, and a gate that needs packages but runs with `python3` instead of `uv run`.
+**Cause.** Every package that an agent's gates and stage programs use must be listed in its `pyproject.toml` and locked in `uv.lock`, so you can see them all in one place and review them with the branch. The same check reports a script with its own `# /// script` package block, and a gate that needs packages but runs with `python3` instead of `uv run`.
 
-**What the agent does.** The workflow agent adds the package with `workflow_add_package`, which asks you to approve it and shows why it is needed, or moves the block's packages into `pyproject.toml`.
+**What the agent does.** The agent adds the package with `agent_add_package`, which asks you to approve it and shows why it is needed, or moves the block's packages into `pyproject.toml`.
 
 ### Unknown critic run
 
@@ -447,10 +455,10 @@ run <id> is a <agent> child in state <state>, not a completed plan-critic run
 
 **Cause.** A critic's result can be recorded only for a plan-critic child that ran and completed, and pi-subagents keeps the records of those children in its temporary folder.
 
-**What the agent does.** The workflow agent passes the right run id or relaunches a failed critic, and if the records were cleaned up, it runs the critic again.
+**What the agent does.** The agent passes the right run id or relaunches a failed critic, and if the records were cleaned up, it runs the critic again.
 
 ## For contributors
 
-The messages come from the Python scripts in [`.pi/skills/workflow/scripts/`](../.pi/skills/workflow/scripts/), which print `{"ok": false, "error": …}` and exit non-zero; the extensions pass that on to the model. A failed validation prints its report instead, with `errors: […]`. The run protocol ([`run-protocol.md`](../.pi/skills/workflow/references/run-protocol.md), "Failures") tells the workflow agent how to react.
+The messages come from the Python scripts in [`.pi/skills/agent/scripts/`](../.pi/skills/agent/scripts/), which print `{"ok": false, "error": …}` and exit non-zero; the extensions pass that on to the model. A failed validation prints its report instead, with `errors: […]`. The run protocol ([`run-protocol.md`](../.pi/skills/agent/references/run-protocol.md), "Failures") tells the agent how to react.
 
-When you add a refusal that a person running workflows can meet, add a test in [`tests/`](../tests/) that triggers it, and an entry here with a short heading (its anchor is what [Commands and tools](commands.md) links to), what the person sees, the cause and the fix.
+When you add a refusal that a person running agents can meet, add a test in [`tests/`](../tests/) that triggers it, and an entry here with a short heading (its anchor is what [Commands and tools](commands.md) links to), what the person sees, the cause and the fix.

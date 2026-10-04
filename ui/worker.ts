@@ -1,5 +1,5 @@
 /**
- * One agent: a Pi SDK session in one folder (prometheus, or a workflow), served as AG-UI on a unix
+ * One agent: a Pi SDK session in one folder (prometheus, or an agent), served as AG-UI on a unix
  * socket. The router (router.ts) starts one per user and agent, checks who may call, and forwards to it;
  * nothing else can reach the socket, so there are no checks here.
  *
@@ -325,7 +325,7 @@ const textOf = (content: unknown): string =>
             ? content.map((p: any) => (p?.type === "text" ? p.text : "")).join("")
             : "";
 
-// a command such as /workflow-new returns before the turn it starts: wait for Pi to settle
+// a command such as /agent-new returns before the turn it starts: wait for Pi to settle
 let busy = false;
 let waiting: (() => void)[] = [];
 const idle = () => (busy ? new Promise<void>((r) => waiting.push(r)) : Promise.resolve());
@@ -334,10 +334,10 @@ const settled = async () => {
     await idle();
 };
 
-// A command such as /workflow-run reaches Pi's session as the prompt it sends the model, not as what you typed. The
+// A command such as /agent-run reaches Pi's session as the prompt it sends the model, not as what you typed. The
 // worker notes which command a prompt came from in the session itself (a custom entry, which the model never sees
-// and the terminal ignores), so the history shows "/workflow-run" as you typed it: not the prompt, and not as two
-// versions of one message (the page's "/workflow-run" and the session's prompt, which it showed as branches 1/2, 2/2).
+// and the terminal ignores), so the history shows "/agent-run" as you typed it: not the prompt, and not as two
+// versions of one message (the page's "/agent-run" and the session's prompt, which it showed as branches 1/2, 2/2).
 const COMMAND_ENTRY = "prometheus-ui-command";
 const hashOf = (text: string) => createHash("sha256").update(text.trim()).digest("hex").slice(0, 16);
 // The command being run, from when it is sent until it shows something or sends its prompt: noted then, so each
@@ -351,7 +351,7 @@ function noteCommandPrompt(message: any) {
     session.sessionManager.appendCustomEntry(COMMAND_ENTRY, { command: commandRun.command, prompt: hashOf(prompt), ...(commandRun.shown ? { hidden: true } : {}) });
     commandRun = null;
 }
-// A command that shows something (/workflow-list) leaves no user message in Pi's session: noted with the first thing
+// A command that shows something (/agent-list) leaves no user message in Pi's session: noted with the first thing
 // it shows (`before`), so the history shows it there as you typed it, instead of it vanishing at the run's end
 function noteShownCommand(entry: any) {
     if (!commandRun || commandRun.shown || entry?.type !== "custom_message") return;
@@ -418,7 +418,7 @@ function snapshot() {
                 .map((p) => ({ id: p.id, type: "function", function: { name: p.name, arguments: JSON.stringify(p.arguments ?? {}) } }));
             out.push({ id, role: "assistant", content: textOf(parts), ...(toolCalls.length ? { toolCalls } : {}) });
         } else if (m.role === "toolResult") {
-            const limit = String(m.toolName).startsWith("workflow_") ? 20000 : 4000;
+            const limit = String(m.toolName).startsWith("agent_") ? 20000 : 4000;
             out.push({ id, role: "tool", toolCallId: m.toolCallId, content: textOf(m.content).slice(0, limit) || "done" });
         } else if (m.role === "custom" && m.display !== false && textOf(m.content)) out.push({ id, role: "assistant", content: textOf(m.content) });
     }
@@ -428,7 +428,7 @@ function snapshot() {
 // Editing a message of yours: Pi's session is a tree, so an edit is a real branch. POST /edit {entry} rewinds the
 // session to just before that message (Pi's navigateTree, as /tree does in the terminal; the old path stays in the
 // session as a branch), then the page sends the edited text, which continues from there. Only messages after the
-// last /workflow-… command: a workflow command acts on the disk (runs, commits), which rewinding the conversation
+// last /agent-… command: an agent command acts on the disk (runs, commits), which rewinding the conversation
 // would not undo.
 function editRefusal(entry: string): string | null {
     if (busy || session.isStreaming) return "The agent is working: edit once it has finished.";
@@ -436,8 +436,8 @@ function editRefusal(entry: string): string | null {
     const at = users.findIndex((x) => x.id === entry);
     if (at < 0) return "That message is not in this conversation's current branch.";
     const commands = commandsByPrompt();
-    const lastCommand = users.reduce((n, x, i) => ((commands.get(hashOf(textOf(x.m.content))) ?? textOf(x.m.content)).trim().startsWith("/workflow-") ? i : n), -1);
-    if (at <= lastCommand) return "Only messages after the last workflow command can be edited: the command's work (runs, commits) would not be undone.";
+    const lastCommand = users.reduce((n, x, i) => ((commands.get(hashOf(textOf(x.m.content))) ?? textOf(x.m.content)).trim().startsWith("/agent-") ? i : n), -1);
+    if (at <= lastCommand) return "Only messages after the last agent command can be edited: the command's work (runs, commits) would not be undone.";
     return null;
 }
 function edit(req: any, res: ServerResponse) {
@@ -498,7 +498,7 @@ session.subscribe((event: any) => {
             opened.delete(messageId);
         }
     } else if (event.type === "message_end" && event.message?.role === "custom" && event.message.display !== false) {
-        const text = textOf(event.message.content); // an extension's sendMessage, e.g. /workflow-list output
+        const text = textOf(event.message.content); // an extension's sendMessage, e.g. /agent-list output
         // Pi records it before announcing it (when idle): named as the snapshot names it (pi-<entry id>), the snapshot
         // that ends the run replaces it instead of the page keeping both
         const entry = (session.sessionManager.getBranch() as any[]).at(-1);
@@ -510,8 +510,8 @@ session.subscribe((event: any) => {
         emit({ type: EventType.TOOL_CALL_ARGS, toolCallId: event.toolCallId, delta: JSON.stringify(event.args ?? {}) });
         emit({ type: EventType.TOOL_CALL_END, toolCallId: event.toolCallId });
     } else if (event.type === "tool_execution_end") {
-        // workflow tools return JSON the cards parse: keep it whole; trim the rest
-        const limit = String(event.toolName).startsWith("workflow_") ? 20000 : 4000;
+        // agent tools return JSON the cards parse: keep it whole; trim the rest
+        const limit = String(event.toolName).startsWith("agent_") ? 20000 : 4000;
         const content = textOf(event.result?.content).slice(0, limit) || (event.isError ? "error" : "done");
         emit({ type: EventType.TOOL_CALL_RESULT, messageId: randomUUID(), toolCallId: event.toolCallId, content, role: "tool" });
     }
@@ -608,7 +608,7 @@ function status(res: ServerResponse) {
     );
 }
 
-// the slash commands that work here: the extensions' (/workflow-new, …). Pi's own TUI commands
+// the slash commands that work here: the extensions' (/agent-new, …). Pi's own TUI commands
 // (/model, /compact, …) are not run by session.prompt(), so they are not offered.
 // --- Pi's built-in commands: part of its terminal app, not extensions, so done here with the SDK ----
 
@@ -707,8 +707,8 @@ function commands(res: ServerResponse) {
         args: argsOf(c.description ?? ""),
     }));
     res.writeHead(200, { "Content-Type": "application/json" });
-    // this agent's own first (/workflow-…); the other extensions' (some only make sense in the terminal) after
-    const ours = (c: any) => (c.name.startsWith("workflow-") ? 0 : 1);
+    // this agent's own first (/agent-…); the other extensions' (some only make sense in the terminal) after
+    const ours = (c: any) => (c.name.startsWith("agent-") ? 0 : 1);
     for (const c of list) c.group = ours(c) ? "Other extensions" : "main"; // main: this agent's own
     // Pi's own all run without text: what they need they ask (/model's picker, /thinking's choice, /name's field)
     const pi = Object.entries(BUILTIN).map(([name, description]) => ({ name, description, group: "pi", args: "optional" }));

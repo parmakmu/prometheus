@@ -86,18 +86,18 @@ const CodeHeader: FC<CodeHeaderProps> = ({ language, code }) => {
   );
 };
 
-// A path the agent wrote as a link (runs/<id>/outputs/x.xlsx, or the same under the workflow's folder) means
-// nothing to the browser: in a workflow's chat it downloads from that workflow's folder instead.
-function workflowPath(href: string, slug: string | null): string | null {
+// A path the agent wrote as a link (runs/<id>/outputs/x.xlsx, or the same under the agent's folder) means
+// nothing to the browser: in an agent's chat it downloads from that agent's folder instead.
+function pathInAgent(href: string, slug: string | null): string | null {
   if (!slug || /^(https?:|mailto:|#)/i.test(href)) return null;
-  const inFolder = href.match(new RegExp(`/workflows/${slug}/(.+)$`));
+  const inFolder = href.match(new RegExp(`/agents/${slug}/(.+)$`));
   const rel = inFolder ? inFolder[1] : href.startsWith("/") ? null : href.replace(/^\.\//, "");
   return rel ? decodeURIComponent(rel) : null;
 }
 
 const Link: FC<ComponentPropsWithoutRef<"a">> = ({ className, href, onClick, ...props }) => {
   const { slug } = useAgent();
-  const rel = href ? workflowPath(href, slug) : null;
+  const rel = href ? pathInAgent(href, slug) : null;
   return (
     <a
       className={cn("aui-md-a text-primary hover:text-primary/80 underline underline-offset-2", className)}
@@ -106,7 +106,7 @@ const Link: FC<ComponentPropsWithoutRef<"a">> = ({ className, href, onClick, ...
         rel
           ? (e) => {
               e.preventDefault();
-              void download(`/w/${slug}/download?path=${encodeURIComponent(rel)}`, rel.split("/").pop() ?? rel).catch(() => alert(`Could not download ${rel}`));
+              void download(`/a/${slug}/download?path=${encodeURIComponent(rel)}`, rel.split("/").pop() ?? rel).catch(() => alert(`Could not download ${rel}`));
             }
           : onClick
       }

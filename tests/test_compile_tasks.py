@@ -1,5 +1,5 @@
 """Task text the compiler writes for children, checked on a small plan built in
-the test (the scenario in test_workflow.py covers compiling whole waves)."""
+the test (the scenario in test_agent.py covers compiling whole waves)."""
 import importlib.util
 import sys
 
@@ -45,8 +45,8 @@ def test_a_stage_nobody_consumes_gets_no_such_section(tmp_path):
     assert "Used next by" not in c.task("read-emails", c.stages["read-emails"], set())
 
 
-def test_a_program_runs_with_uv_in_the_workflows_environment(tmp_path):
-    # the program uses the workflow's packages (pyproject.toml); `uv run` syncs them first
+def test_a_program_runs_with_uv_in_the_agents_environment(tmp_path):
+    # the program uses the agent's packages (pyproject.toml); `uv run` syncs them first
     plan = {"stages": [{"key": "export", "title": "Write the workbook", "kind": "deterministic", "pattern": "script",
                         "agent": "worker", "script": "export.py", "run": "rows.json out.xlsx",
                         "out": [{"id": "book", "path": "out.xlsx"}], "verify": {"check": "One row per email."}}]}

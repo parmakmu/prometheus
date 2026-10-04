@@ -75,7 +75,7 @@ export function MyRuntimeProvider({
     [currentThreadId, version],
   );
 
-  const attachments = useMemo(() => filesAdapter(agentPath.startsWith("/w/") ? agentPath.split("/")[2] : null), [agentPath]);
+  const attachments = useMemo(() => filesAdapter(agentPath.startsWith("/a/") ? agentPath.split("/")[2] : null), [agentPath]);
   const runtime = useAgUiRuntime({
     agent,
     logger: {

@@ -134,15 +134,15 @@ def test_repeated_key_after_a_dropped_list_item():
 
 
 def test_project_agent_listed_as_builtin(tmp_path):
-    # A plain name means source: builtin; an agent the workflow defines should say source: project.
+    # A plain name means source: builtin; an agent the agent defines should say source: project.
     (tmp_path / ".pi" / "agents").mkdir(parents=True)
     (tmp_path / ".pi" / "agents" / "worker.md").write_text("---\nname: worker\n---\nbody\n", encoding="utf-8")
-    _errors, warnings, _summary = validate_plan.validate(copy.deepcopy(INV), workflow_root=tmp_path)
+    _errors, warnings, _summary = validate_plan.validate(copy.deepcopy(INV), agent_root=tmp_path)
     assert any("'worker' is defined in .pi/agents/ but listed as builtin" in w for w in warnings), warnings
 
 
-def test_gate_packages_come_from_the_workflows_pyproject(tmp_path):
-    # one list of packages per workflow; `uv run` syncs it before running a gate
+def test_gate_packages_come_from_the_agents_pyproject(tmp_path):
+    # one list of packages per agent; `uv run` syncs it before running a gate
     (tmp_path / "gates").mkdir()
     (tmp_path / "pyproject.toml").write_text('[project]\nname = "w"\ndependencies = ["openpyxl>=3.1", "PyYAML"]\n',
                                               encoding="utf-8")
@@ -150,8 +150,8 @@ def test_gate_packages_come_from_the_workflows_pyproject(tmp_path):
     (tmp_path / "gates" / "check_report.py").write_text("import openpyxl\nimport yaml\n", encoding="utf-8")
     plan = copy.deepcopy(INV)
     st(plan, "compare")["verify"]["gate"] = "uv run ../gates/check_report.py ${report_dir}/Q3-invoice-variance.xlsx"
-    errors, _warnings, _summary = validate_plan.validate(plan, workflow_root=tmp_path)
-    assert any("check_lines.py would fail" in e and "workflow_add_package" in e and "not_listed_pkg" in e for e in errors), errors
+    errors, _warnings, _summary = validate_plan.validate(plan, agent_root=tmp_path)
+    assert any("check_lines.py would fail" in e and "agent_add_package" in e and "not_listed_pkg" in e for e in errors), errors
     assert not any("check_report.py would fail" in e for e in errors), errors  # yaml is PyYAML's import name
 
 
@@ -161,7 +161,7 @@ def test_gate_with_packages_must_run_with_uv_and_not_declare_its_own(tmp_path):
     (tmp_path / "gates" / "check_lines.py").write_text('# /// script\n# dependencies = ["openpyxl"]\n# ///\nimport openpyxl\n',
                                                          encoding="utf-8")
     (tmp_path / "gates" / "check_report.py").write_text("import openpyxl\n", encoding="utf-8")  # run with python3
-    errors, _warnings, _summary = validate_plan.validate(copy.deepcopy(INV), workflow_root=tmp_path)
+    errors, _warnings, _summary = validate_plan.validate(copy.deepcopy(INV), agent_root=tmp_path)
     assert any("check_lines.py would fail" in e and "pyproject.toml instead" in e for e in errors), errors
     assert any("check_report.py would fail" in e and "`uv run`" in e for e in errors), errors
 
@@ -174,8 +174,8 @@ def test_a_side_effect_agent_must_reach_its_target(tmp_path):
     st(plan, "drafts")["agent"] = "drafter"
     agent = tmp_path / ".pi" / "agents" / "drafter.md"
     agent.write_text("---\nname: drafter\ntools: read, write\n---\nbody\n", encoding="utf-8")
-    errors, _warnings, _summary = validate_plan.validate(plan, workflow_root=tmp_path)
+    errors, _warnings, _summary = validate_plan.validate(plan, agent_root=tmp_path)
     assert any("'drafter' cannot reach Gmail drafts" in e for e in errors), errors
     agent.write_text("---\nname: drafter\ntools: [read, mcp:gmail/create_draft]\n---\nbody\n", encoding="utf-8")
-    errors, warnings, _summary = validate_plan.validate(plan, workflow_root=tmp_path)
+    errors, warnings, _summary = validate_plan.validate(plan, agent_root=tmp_path)
     assert not any("cannot reach" in e for e in errors) and not any("connector" in w for w in warnings), (errors, warnings)

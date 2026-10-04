@@ -3,9 +3,9 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { MyRuntimeProvider } from "./MyRuntimeProvider";
 
-// The agent the chat talks to, "/p" (prometheus, the planner) or "/w/<slug>" (a workflow's own agent),
+// The agent the chat talks to, "/p" (prometheus, the planner) or "/a/<slug>" (an agent prometheus built),
 // and the conversation: a Pi session of that agent ("new-…" starts one; none is its latest). Kept in the
-// address (#/w/emails-to-excel/s/<id>), so a reload stays on it. `base` is where its endpoints are.
+// address (#/a/emails-to-excel/s/<id>), so a reload stays on it. `base` is where its endpoints are.
 type Agent = {
   agent: string;
   slug: string | null;
@@ -14,8 +14,8 @@ type Agent = {
   label: string;
   setAgent: (agent: string) => void;
   setSession: (session: string | null) => void;
-  // another agent and conversation at once, with `text` waiting in its composer (New workflow: prometheus, a fresh
-  // conversation, "/workflow-new "), or sent when `send` (a command that only reads, as /workflow-list); the status
+  // another agent and conversation at once, with `text` waiting in its composer (New agent: prometheus, a fresh
+  // conversation, "/agent-new "), or sent when `send` (a command that only reads, as /agent-list); the status
   // bar puts it there, once the conversation has loaded (status-bar.tsx)
   open: (agent: string, session: string | null, text?: string, send?: boolean) => void;
   draft: { text: string; send: boolean } | null;
@@ -24,7 +24,7 @@ type Agent = {
 const AgentContext = createContext<Agent | null>(null);
 export const useAgent = () => useContext(AgentContext)!;
 
-const HASH = /^#(\/p|\/w\/[a-z0-9-]+)?(?:\/s\/([\w-]+))?$/;
+const HASH = /^#(\/p|\/a\/[a-z0-9-]+)?(?:\/s\/([\w-]+))?$/;
 const fromHash = (): [string, string | null] => {
   const m = typeof window !== "undefined" ? window.location.hash.match(HASH) : null;
   return [m?.[1] ?? "/p", m?.[2] ?? null];
@@ -45,7 +45,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
   };
   // state, not a ref: a command for the conversation already open (no remount) reaches it too
   const [draft, setDraft] = useState<{ text: string; send: boolean } | null>(null);
-  const slug = agent.startsWith("/w/") ? agent.slice(3) : null;
+  const slug = agent.startsWith("/a/") ? agent.slice(3) : null;
   const base = session ? `${agent}/s/${session}` : agent;
   return (
     <AgentContext.Provider value={{ agent, slug, session, base, label: slug ?? "prometheus", setAgent: (a) => go(a, null), setSession: (s) => go(agent, s), open: (a, s, text, send = false) => (setDraft(text ? { text, send } : null), go(a, s)), draft, clearDraft: () => setDraft(null) }}>

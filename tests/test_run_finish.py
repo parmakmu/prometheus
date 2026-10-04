@@ -1,12 +1,13 @@
-"""A run finished end to end: a one-stage workflow whose last wave completes, so
+"""A run finished end to end: a one-stage agent whose last wave completes, so
 `run_log finish` returns what the parent needs for the final report. (The
-scenario in test_workflow.py stops or fails its runs; none completes.)"""
+scenario in test_agent.py stops or fails its runs; none completes.)"""
 import datetime
 import hashlib
 import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -40,14 +41,14 @@ stages:
 """
 
 
-def ready_workflow(root, run_py, slug):
-    """A scaffolded workflow holding the ready one-stage plan, not yet committed (planning on main);
-    returns (workflow, its scripts folder)."""
-    r = run_py([SKILL / "scripts" / "scaffold_workflow.py", slug, "--root", root, "--request", "count the lines"])
+def ready_agent(root, run_py, slug):
+    """A scaffolded agent holding the ready one-stage plan, not yet committed (planning on main);
+    returns (agent, its scripts folder)."""
+    r = run_py([SKILL / "scripts" / "scaffold_agent.py", slug, "--root", root, "--request", "count the lines"])
     assert r.data and r.data["ok"], r
     wf = root / slug
     (wf / "plan.yaml").write_text(PLAN, encoding="utf-8")
-    return wf, wf / ".pi" / "skills" / "workflow" / "scripts"
+    return wf, wf / ".pi" / "skills" / "agent" / "scripts"
 
 
 # the tests reading `finished` share one finished run: keep them on one worker (the rest spread out)
@@ -57,7 +58,7 @@ FINISHED = pytest.mark.xdist_group("run-finish")
 @pytest.fixture(scope="module")
 def finished(tmp_path_factory, run_py):
     tmp = tmp_path_factory.mktemp("finish")
-    wf, k = ready_workflow(tmp, run_py, "tiny")
+    wf, k = ready_agent(tmp, run_py, "tiny")
     pis = tmp / "pi-subagents"
     env = {**os.environ, "PI_SUBAGENTS_TEMP_ROOT": str(pis)}
 
@@ -102,7 +103,7 @@ def test_finish_returns_the_mission_close_call(finished):
 
 def test_a_leftover_run_branch_is_not_reused(tmp_path, run_py):
     # runs/ is not in git: deleting a kept run's folder frees its id, but its branch run/<id> stays
-    wf, k = ready_workflow(tmp_path, run_py, "left")
+    wf, k = ready_agent(tmp_path, run_py, "left")
     today = datetime.datetime.now().astimezone().date().isoformat()
     subprocess.run(["git", "branch", f"run/{today}-1"], cwd=wf, check=True)
     r = run_py([k / "run_log.py", "new"], cwd=wf)
@@ -118,7 +119,7 @@ def test_a_leftover_run_branch_is_not_reused(tmp_path, run_py):
 
 def test_a_replan_gets_two_critic_passes(tmp_path, run_py):
     # fixing a finding bumps the revision; the cap must hold across revisions
-    wf, k = ready_workflow(tmp_path, run_py, "crit")
+    wf, k = ready_agent(tmp_path, run_py, "crit")
     assert run_py([k / "run_log.py", "new"], cwd=wf).data["ok"]
 
     def record(run_id):
@@ -134,26 +135,26 @@ def test_a_replan_gets_two_critic_passes(tmp_path, run_py):
 
 
 def test_improve_and_revise_get_their_own_branches(tmp_path, run_py):
-    wf, k = ready_workflow(tmp_path, run_py, "kinds")
+    wf, k = ready_agent(tmp_path, run_py, "kinds")
     assert run_py([k / "run_log.py", "new"], cwd=wf).data["ok"]
     assert run_py([k / "run_log.py", "stop"], cwd=wf).data["ok"]  # a run exists, none is active
-    r = run_py([k / "workflow_git.py", "begin-change", "--kind", "improve"], cwd=wf)
+    r = run_py([k / "agent_git.py", "begin-change", "--kind", "improve"], cwd=wf)
     assert r.data["ok"] and r.data["branch"].startswith("improve/") and r.data["mode"] == "improve", r
-    again = run_py([k / "workflow_git.py", "begin-change", "--kind", "improve"], cwd=wf)  # already open: continue it
+    again = run_py([k / "agent_git.py", "begin-change", "--kind", "improve"], cwd=wf)  # already open: continue it
     assert again.data["branch"] == r.data["branch"] and again.data["continued"], again
-    other = run_py([k / "workflow_git.py", "begin-change"], cwd=wf)  # a revise does not land on the improve branch
-    assert "open /workflow-improve change" in errors(other), other
-    assert run_py([k / "workflow_git.py", "review"], cwd=wf).data["review"]["branch"] == r.data["branch"]
+    other = run_py([k / "agent_git.py", "begin-change"], cwd=wf)  # a revise does not land on the improve branch
+    assert "open /agent-improve change" in errors(other), other
+    assert run_py([k / "agent_git.py", "review"], cwd=wf).data["review"]["branch"] == r.data["branch"]
 
 
 def test_a_change_that_leaves_the_plan_alone_merges_without_the_critic(tmp_path, run_py):
-    wf, k = ready_workflow(tmp_path, run_py, "lesson")
+    wf, k = ready_agent(tmp_path, run_py, "lesson")
     assert run_py([k / "run_log.py", "new"], cwd=wf).data["ok"] and run_py([k / "run_log.py", "stop"], cwd=wf).data["ok"]
-    r = run_py([k / "workflow_git.py", "begin-change", "--kind", "improve"], cwd=wf)
+    r = run_py([k / "agent_git.py", "begin-change", "--kind", "improve"], cwd=wf)
     assert r.data["ok"] and r.data["next"]["state"] == "change_ready", r  # the plan is not drafted
     with (wf / ".pi" / "APPEND_SYSTEM.md").open("a", encoding="utf-8") as f:
-        f.write("\n## Lessons for this workflow\n- Ask once.\n")
-    r = run_py([k / "workflow_git.py", "merge", "--action", "merge", "--summary", "Adds a lesson: ask once."], cwd=wf)
+        f.write("\n## Lessons for this agent\n- Ask once.\n")
+    r = run_py([k / "agent_git.py", "merge", "--action", "merge", "--summary", "Adds a lesson: ask once."], cwd=wf)
     assert r.data["ok"] and (r.data["revision"], r.data["status"]) == (1, "ready"), r
     log = subprocess.run(["git", "log", "-1", "--format=%s"], cwd=wf, capture_output=True, text=True, check=True).stdout.strip()
     assert log.startswith("r1: improve/")
@@ -165,7 +166,7 @@ def test_a_change_that_leaves_the_plan_alone_merges_without_the_critic(tmp_path,
 
 def test_a_merge_is_one_commit_on_main_and_deletes_the_branch(tmp_path, run_py):
     # main gets one commit per merged branch, however many the branch made, and stays linear
-    r = run_py([SKILL / "scripts" / "scaffold_workflow.py", "reb", "--root", tmp_path, "--request", "x"])
+    r = run_py([SKILL / "scripts" / "scaffold_agent.py", "reb", "--root", tmp_path, "--request", "x"])
     assert r.data and r.data["ok"], r
     wf = tmp_path / "reb"
 
@@ -187,7 +188,7 @@ def test_a_merge_is_one_commit_on_main_and_deletes_the_branch(tmp_path, run_py):
     git("add", "-A")
     git("commit", "-qm", "main moved")
     git("switch", "-q", "change/2026-01-01-1")
-    r = run_py([wf / ".pi" / "skills" / "workflow" / "scripts" / "workflow_git.py", "merge", "--action", "merge"], cwd=wf)
+    r = run_py([wf / ".pi" / "skills" / "agent" / "scripts" / "agent_git.py", "merge", "--action", "merge"], cwd=wf)
     assert r.data and r.data["ok"], r
     assert git("branch", "--list").split() == ["*", "main"]
     assert git("rev-list", "--merges", "--count", "main").strip() == "0"
@@ -198,7 +199,7 @@ def test_a_merge_is_one_commit_on_main_and_deletes_the_branch(tmp_path, run_py):
 
 
 def test_a_merge_that_conflicts_with_main_leaves_both_unchanged(tmp_path, run_py):
-    r = run_py([SKILL / "scripts" / "scaffold_workflow.py", "clash", "--root", tmp_path, "--request", "x"])
+    r = run_py([SKILL / "scripts" / "scaffold_agent.py", "clash", "--root", tmp_path, "--request", "x"])
     assert r.data and r.data["ok"], r
     wf = tmp_path / "clash"
 
@@ -218,16 +219,16 @@ def test_a_merge_that_conflicts_with_main_leaves_both_unchanged(tmp_path, run_py
     git("commit", "-qm", "main moved")
     main = git("rev-parse", "main")
     git("switch", "-q", "change/2026-01-01-1")
-    r = run_py([wf / ".pi" / "skills" / "workflow" / "scripts" / "workflow_git.py", "merge", "--action", "merge"], cwd=wf)
+    r = run_py([wf / ".pi" / "skills" / "agent" / "scripts" / "agent_git.py", "merge", "--action", "merge"], cwd=wf)
     assert "conflicts" in errors(r), r
     assert git("symbolic-ref", "--short", "HEAD").strip() == "change/2026-01-01-1"
     assert git("rev-parse", "main") == main and not git("status", "--porcelain").strip()
     assert (wf / "gates" / "g.py").read_text(encoding="utf-8") == "branch\n"
 
 
-def test_refresh_keeps_the_workflows_packages(tmp_path, run_py):
+def test_refresh_keeps_the_agents_packages(tmp_path, run_py):
     # gates and programs add packages to pyproject.toml; a refresh must not drop them
-    scaffold = SKILL / "scripts" / "scaffold_workflow.py"
+    scaffold = SKILL / "scripts" / "scaffold_agent.py"
     assert run_py([scaffold, "pkgs", "--root", tmp_path, "--request", "x"]).data["ok"]
     pyproject = tmp_path / "pkgs" / "pyproject.toml"
     text = pyproject.read_text(encoding="utf-8")
@@ -238,8 +239,51 @@ def test_refresh_keeps_the_workflows_packages(tmp_path, run_py):
     assert '"openpyxl>=3.1"' in text and '"typer>=0.12"' in text  # kept, and the skill's package added back
 
 
+def test_refresh_replaces_the_layout_from_when_agents_were_workflows(tmp_path, run_py):
+    # an agent made before the rename: its skill, extension (with the /workflow-* commands) and batcher by old names
+    scaffold = SKILL / "scripts" / "scaffold_agent.py"
+    assert run_py([scaffold, "old", "--root", tmp_path, "--request", "x"]).data["ok"]
+    agent = tmp_path / "old"
+    pi = agent / ".pi"
+    (pi / "skills" / "agent").rename(pi / "skills" / "workflow")
+    (pi / "extensions" / "agent").rename(pi / "extensions" / "workflow")
+    (pi / "agents" / "batcher.md").rename(pi / "agents" / "workflow-batcher.md")
+    (pi / "skills" / "workflow" / "VERSION").write_text("0.0.1+old\n", encoding="utf-8")
+    sys.path.insert(0, str(SKILL / "scripts"))
+    import prometheus_version
+    from utils import read_yaml, write_yaml
+    from validate_plan import check_ready, plan_digest
+    # its plan names the old batcher, and the critic saw exactly this plan (it is ready)
+    plan = read_yaml(agent / "plan.yaml", {})
+    plan["agents"] = {"available": ["scout", {"name": "workflow-batcher", "source": "project", "runner": "external-cli"}]}
+    plan["status"] = "ready"
+    plan["critique"] = {"plan_digest": plan_digest(plan)}
+    write_yaml(agent / "plan.yaml", plan)
+    assert check_ready(read_yaml(agent / "plan.yaml", {})) is None
+    assert prometheus_version.installed(agent) == "0.0.1+old"  # read from the old folder: out of date, not unknown
+    # a conversation from when it lived in workflows/: Pi lists it only for the folder it records
+    sessions = pi / "sessions"
+    sessions.mkdir(exist_ok=True)
+    talk = sessions / "2026-10-02T22-27-52-997Z_x.jsonl"
+    body = '{"type":"message","id":"a","message":{"role":"user","content":"hi"}}\n'
+    talk.write_text(json.dumps({"type": "session", "id": "x", "cwd": str(tmp_path / "workflows" / "old")}) + "\n" + body, encoding="utf-8")
+    r = run_py([scaffold, "old", "--root", tmp_path, "--refresh"])
+    assert r.data and r.data["ok"], r
+    for gone in ("skills/workflow", "extensions/workflow", "agents/workflow-batcher.md"):
+        assert not (pi / gone).exists(), gone
+        assert any(x.startswith(f".pi/{gone}") for x in r.data["removed"]), r.data["removed"]
+    for new in ("skills/agent/SKILL.md", "extensions/agent/index.ts", "agents/batcher.md"):
+        assert (pi / new).is_file(), new
+    assert prometheus_version.installed(agent) != "0.0.1+old"
+    plan = read_yaml(agent / "plan.yaml", {})
+    assert plan["agents"]["available"] == ["scout", {"name": "batcher", "source": "project", "runner": "external-cli"}]
+    assert check_ready(plan) is None  # a mechanical rename: the critic's result still holds
+    first, rest = talk.read_text(encoding="utf-8").split("\n", 1)
+    assert json.loads(first)["cwd"] == str(agent.resolve()) and rest == body
+
+
 def test_refresh_raises_an_old_python_floor_to_the_templates(tmp_path, run_py):
-    scaffold = SKILL / "scripts" / "scaffold_workflow.py"
+    scaffold = SKILL / "scripts" / "scaffold_agent.py"
     assert run_py([scaffold, "floor", "--root", tmp_path, "--request", "x"]).data["ok"]
     pyproject = tmp_path / "floor" / "pyproject.toml"
     pyproject.write_text(pyproject.read_text(encoding="utf-8").replace('requires-python = ">=3.14"', 'requires-python = ">=3.10"'), encoding="utf-8")
@@ -256,21 +300,21 @@ def errors(r):
 
 
 def test_a_run_needs_a_ready_plan(tmp_path, run_py):
-    r = run_py([SKILL / "scripts" / "scaffold_workflow.py", "draft", "--root", tmp_path, "--request", "x"])
+    r = run_py([SKILL / "scripts" / "scaffold_agent.py", "draft", "--root", tmp_path, "--request", "x"])
     assert r.data and r.data["ok"], r
-    k = tmp_path / "draft" / ".pi" / "skills" / "workflow" / "scripts"
+    k = tmp_path / "draft" / ".pi" / "skills" / "agent" / "scripts"
     r = run_py([k / "run_log.py", "new"], cwd=tmp_path / "draft")
     assert "not ready" in errors(r) and not list((tmp_path / "draft" / "runs").glob("*/run.yaml")), r
 
 
 def test_improve_needs_a_run(tmp_path, run_py):
-    wf, k = ready_workflow(tmp_path, run_py, "early")
-    assert "nothing to improve" in errors(run_py([k / "workflow_git.py", "begin-change", "--kind", "improve"], cwd=wf))
-    assert run_py([k / "workflow_git.py", "begin-change"], cwd=wf).data["mode"] == "planning"  # revise: plan on main
+    wf, k = ready_agent(tmp_path, run_py, "early")
+    assert "nothing to improve" in errors(run_py([k / "agent_git.py", "begin-change", "--kind", "improve"], cwd=wf))
+    assert run_py([k / "agent_git.py", "begin-change"], cwd=wf).data["mode"] == "planning"  # revise: plan on main
 
 
 def test_leftovers_on_main_go_to_a_branch_once_a_run_exists(tmp_path, run_py):
-    wf, k = ready_workflow(tmp_path, run_py, "left2")
+    wf, k = ready_agent(tmp_path, run_py, "left2")
     git = git_in(wf)
     assert run_py([k / "run_log.py", "new"], cwd=wf).data["ok"]  # the first run commits planning on main
     assert run_py([k / "run_log.py", "stop"], cwd=wf).data["ok"]
@@ -280,15 +324,15 @@ def test_leftovers_on_main_go_to_a_branch_once_a_run_exists(tmp_path, run_py):
     assert r.data["ok"] and git("branch", "--show-current").stdout.strip() == f"run/{r.data['run']}", r
     assert git("rev-parse", "main").stdout == main
     assert run_py([k / "run_log.py", "stop"], cwd=wf).data["ok"]
-    assert run_py([k / "workflow_git.py", "merge", "--action", "discard"], cwd=wf).data["ok"]
+    assert run_py([k / "agent_git.py", "merge", "--action", "discard"], cwd=wf).data["ok"]
     (wf / "gates" / "stray2.py").write_text("", encoding="utf-8")
-    r = run_py([k / "workflow_git.py", "begin-change"], cwd=wf)
+    r = run_py([k / "agent_git.py", "begin-change"], cwd=wf)
     assert r.data["ok"] and git("rev-parse", "main").stdout == main, r
     assert "gates/stray2.py" in git("show", "--name-only", "--format=", "HEAD").stdout
 
 
 def test_replan_critique_and_decisions_wait_for_the_running_wave(tmp_path, run_py):
-    wf, k = ready_workflow(tmp_path, run_py, "busy")
+    wf, k = ready_agent(tmp_path, run_py, "busy")
     env = {**os.environ, "PI_SUBAGENTS_TEMP_ROOT": str(tmp_path / "pi-subagents")}
     assert run_py([k / "run_log.py", "new"], cwd=wf).data["ok"]
     assert run_py([k / "compile_wave.py"], cwd=wf, env=env).data["ok"]
@@ -302,8 +346,8 @@ def test_replan_critique_and_decisions_wait_for_the_running_wave(tmp_path, run_p
 
 
 def test_a_launch_nobody_recorded_is_not_compiled_again(tmp_path, run_py):
-    # the session ended between the launch and workflow_log_start
-    wf, k = ready_workflow(tmp_path, run_py, "twice")
+    # the session ended between the launch and agent_log_start
+    wf, k = ready_agent(tmp_path, run_py, "twice")
     pis = tmp_path / "pi-subagents"
     env = {**os.environ, "PI_SUBAGENTS_TEMP_ROOT": str(pis)}
     assert run_py([k / "run_log.py", "new"], cwd=wf).data["ok"]
@@ -319,7 +363,7 @@ def test_a_launch_nobody_recorded_is_not_compiled_again(tmp_path, run_py):
 
 
 def test_a_dead_run_still_marked_running_names_the_way_out(tmp_path, run_py):
-    wf, k = ready_workflow(tmp_path, run_py, "dead")
+    wf, k = ready_agent(tmp_path, run_py, "dead")
     pis = tmp_path / "pi-subagents"
     env = {**os.environ, "PI_SUBAGENTS_TEMP_ROOT": str(pis)}
     assert run_py([k / "run_log.py", "new"], cwd=wf).data["ok"]
@@ -336,7 +380,7 @@ def test_a_dead_run_still_marked_running_names_the_way_out(tmp_path, run_py):
 
 
 def test_an_edit_after_the_critique_needs_the_critic_again(tmp_path, run_py):
-    wf, k = ready_workflow(tmp_path, run_py, "edited")
+    wf, k = ready_agent(tmp_path, run_py, "edited")
     critic = '{"run_id": "%s", "verdict": "pass", "agent": "worker"}'  # the plan's agents list no plan-critic
     fake_critic("c1", agent="worker")
     fake_critic("c2", agent="worker")
@@ -351,8 +395,8 @@ def test_an_edit_after_the_critique_needs_the_critic_again(tmp_path, run_py):
 
 
 def test_refresh_keeps_a_higher_python_floor(tmp_path, run_py):
-    # a workflow that raised its own floor (a package needing a newer Python) keeps it
-    scaffold = SKILL / "scripts" / "scaffold_workflow.py"
+    # an agent that raised its own floor (a package needing a newer Python) keeps it
+    scaffold = SKILL / "scripts" / "scaffold_agent.py"
     assert run_py([scaffold, "high", "--root", tmp_path, "--request", "x"]).data["ok"]
     pyproject = tmp_path / "high" / "pyproject.toml"
     pyproject.write_text(pyproject.read_text(encoding="utf-8").replace('requires-python = ">=3.14"', 'requires-python = ">=3.15"'), encoding="utf-8")
@@ -361,11 +405,11 @@ def test_refresh_keeps_a_higher_python_floor(tmp_path, run_py):
     assert 'requires-python = ">=3.15"' in pyproject.read_text(encoding="utf-8")
 
 
-def test_a_workflows_copy_of_the_skill_cannot_scaffold(tmp_path, run_py):
+def test_an_agents_copy_of_the_skill_cannot_scaffold(tmp_path, run_py):
     # the templates are Prometheus's, outside the skill: a copy without them must say so, not write nothing
-    _wf, k = ready_workflow(tmp_path, run_py, "copy")
-    r = run_py([k / "scaffold_workflow.py", "other", "--root", tmp_path, "--request", "x"])
-    assert "no workflow template" in errors(r) and not (tmp_path / "other").exists(), r
+    _wf, k = ready_agent(tmp_path, run_py, "copy")
+    r = run_py([k / "scaffold_agent.py", "other", "--root", tmp_path, "--request", "x"])
+    assert "no agent template" in errors(r) and not (tmp_path / "other").exists(), r
 
 
 # --- launches, critiques and reviews ------------------------------------------------
@@ -395,7 +439,7 @@ def record_launch(root, run_id, returned):
 
 
 def test_a_late_recorded_launch_finds_its_mission(tmp_path, run_py):
-    wf, k = ready_workflow(tmp_path, run_py, "mission")
+    wf, k = ready_agent(tmp_path, run_py, "mission")
     missions = Path(os.environ["PI_CODING_AGENT_DIR"]) / "missions" / "projects" / "abc"
     missions.mkdir(parents=True, exist_ok=True)
     (missions / "m-42.json").write_text(json.dumps({"id": "m-42", "runs": [{"runId": "wf-late"}]}), encoding="utf-8")
@@ -406,7 +450,7 @@ def test_a_late_recorded_launch_finds_its_mission(tmp_path, run_py):
 
 
 def test_a_run_needs_a_plan_that_validates(tmp_path, run_py):
-    wf, k = ready_workflow(tmp_path, run_py, "stale")
+    wf, k = ready_agent(tmp_path, run_py, "stale")
     fake_critic("s1", agent="worker")
     assert run_py([k / "plan_edit.py", "critique", "--result", '{"run_id": "s1", "verdict": "pass", "agent": "worker"}'], cwd=wf).data["ready"]
     plan = wf / "plan.yaml"
@@ -416,7 +460,7 @@ def test_a_run_needs_a_plan_that_validates(tmp_path, run_py):
 
 
 def test_a_critique_needs_a_completed_critic_run_and_not_main_after_a_run(tmp_path, run_py):
-    wf, k = ready_workflow(tmp_path, run_py, "critics")
+    wf, k = ready_agent(tmp_path, run_py, "critics")
 
     def critique(run_id):
         return run_py([k / "plan_edit.py", "critique", "--result", json.dumps({"run_id": run_id, "verdict": "pass", "agent": "worker"})], cwd=wf)
@@ -431,7 +475,7 @@ def test_a_critique_needs_a_completed_critic_run_and_not_main_after_a_run(tmp_pa
 
 
 def test_the_next_wave_waits_for_the_users_review_and_a_refused_compile_commits_nothing(tmp_path, run_py):
-    wf, k = ready_workflow(tmp_path, run_py, "review")
+    wf, k = ready_agent(tmp_path, run_py, "review")
     (wf / "plan.yaml").write_text(PAUSED, encoding="utf-8")
     git = git_in(wf)
     assert run_py([k / "run_log.py", "new"], cwd=wf).data["ok"]
@@ -445,7 +489,7 @@ def test_the_next_wave_waits_for_the_users_review_and_a_refused_compile_commits_
     r = run_py([k / "compile_wave.py"], cwd=wf)
     assert r.data["preflight"]["review_needed"]["wave"] == "w1", r
     assert git("rev-parse", "HEAD").stdout == head and "gates/later.py" in git("status", "--porcelain").stdout
-    assert r.data["next"]["state"] == "between_waves" and "workflow_compile" in r.data["next"]["moves"]
+    assert r.data["next"]["state"] == "between_waves" and "agent_compile" in r.data["next"]["moves"]
     assert r.data["next"]["last_launch"] == {"wave": "w1", "status": "done", "subagent_run_id": "rv-1"}
     r = run_py([k / "compile_wave.py", "--reviewed"], cwd=wf)
     assert r.data["ok"] and r.data["wave"] == "w2" and git("rev-parse", "HEAD").stdout != head, r
@@ -453,7 +497,7 @@ def test_the_next_wave_waits_for_the_users_review_and_a_refused_compile_commits_
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node")
 def test_a_relaunch_runs_only_the_children_that_did_not_complete(tmp_path, run_py, run_node):
-    wf, k = ready_workflow(tmp_path, run_py, "relaunch")
+    wf, k = ready_agent(tmp_path, run_py, "relaunch")
     (wf / "plan.yaml").write_text(TWO, encoding="utf-8")
     mock = Path(__file__).parent / "mock-subagents.mjs"
     assert run_py([k / "run_log.py", "new"], cwd=wf).data["ok"]
@@ -471,11 +515,11 @@ def test_a_relaunch_runs_only_the_children_that_did_not_complete(tmp_path, run_p
     assert again.data["result"]["children"]["count"] == {**first["children"]["count"], "reused": True}
 
 
-def test_the_list_gives_each_workflow_its_state_and_recent_runs(tmp_path, run_py):
+def test_the_list_gives_each_agent_its_state_and_recent_runs(tmp_path, run_py):
     # the web UI's dashboard reads these: a state for the "needs you" badge, and runs with their cost
-    wf, k = ready_workflow(tmp_path, run_py, "listed")
+    wf, k = ready_agent(tmp_path, run_py, "listed")
     assert run_py([k / "run_log.py", "new"], cwd=wf).data["ok"] and run_py([k / "run_log.py", "stop"], cwd=wf).data["ok"]
-    r = run_py([k / "list_workflows.py", "--root", tmp_path])
+    r = run_py([k / "list_agents.py", "--root", tmp_path])
     (item,) = [w for w in r.data if w["slug"] == "listed"]
     assert item["state"] in ("ready", "branch_review"), item
     (run,) = item["recent_runs"]

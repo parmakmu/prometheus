@@ -7,7 +7,7 @@ import "@xterm/xterm/css/xterm.css";
 
 export const metadata: Metadata = {
   title: "prometheus",
-  description: "Plan and run workflows",
+  description: "Plan and run agents",
 };
 
 export const dynamic = "force-dynamic";

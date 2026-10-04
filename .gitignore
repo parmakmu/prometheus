@@ -3,9 +3,9 @@ __pycache__/
 *.pyc
 build/
 scratch/
-# workflows are per-user; keep the folder (the extension looks for it), not its contents
-workflows/*
-!workflows/.gitkeep
+# agents are per-user; keep the folder (the extension looks for it), not its contents
+agents/*
+!agents/.gitkeep
 .venv/
 .DS_Store
 # Pi conversations (sessionDir in .pi/settings.json)

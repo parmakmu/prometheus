@@ -11,10 +11,10 @@ const paths = new Map<string, string>(); // attachment id → path on the server
 // "image" is what makes the chat draw a picture's own thumbnail; anything else is shown by its type icon
 const kind = (file: File) => (file.type.startsWith("image/") ? "image" : "file");
 
-// In a workflow's chat the file goes to that workflow's uploads/ folder; with the planner, to your files folder.
+// In an agent's chat the file goes to that agent's uploads/ folder; with the planner, to your files folder.
 export const uploadsOf = (slug: string | null) =>
   slug
-    ? { put: (name: string) => `/w/${slug}/upload?unique=1&path=${encodeURIComponent(name)}`, del: (name: string) => `/w/${slug}/upload?path=${encodeURIComponent(name)}` }
+    ? { put: (name: string) => `/a/${slug}/upload?unique=1&path=${encodeURIComponent(name)}`, del: (name: string) => `/a/${slug}/upload?path=${encodeURIComponent(name)}` }
     : { put: (name: string) => `/files?unique=1&path=${encodeURIComponent(`chat-uploads/${name}`)}`, del: (name: string) => `/files?path=${encodeURIComponent(`chat-uploads/${name}`)}` };
 
 export const filesAdapter = (slug: string | null): AttachmentAdapter => ({

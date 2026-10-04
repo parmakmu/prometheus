@@ -1,6 +1,6 @@
 // Mock pi-subagents runtime for compiled workflow scripts.
 // Usage: node harness.mjs <compiled.json> [--fail KEY] [--block KEY]
-// - workflow-batcher children run the real batch_tool.py (stdin = task, cwd = item cwd)
+// - batcher children run the real batch_tool.py (stdin = task, cwd = item cwd)
 // - other children write placeholder files for every "- id: /abs/path" under "Write:",
 //   plus their `output`; return structuredOutput built from outputSchema
 // - acceptance.verify commands run on the host in the child's cwd; output: "json" ones parse stdout
@@ -52,8 +52,8 @@ function run(key, opts) {
     throw new Error(`${key}: acceptance must set preserveStagedIndex: true and review.required: false`);
   if (verify.some((v) => v.output === "json") && opts.outputSchema) throw new Error(`${key}: typed verify + outputSchema (pi rejects this)`);
   if (key === failKey) return { key, runId, ok: false, state: "failed", error: "mock failure" };
-  if (opts.agent === "workflow-batcher") {
-    const r = spawnSync("python3", ["../../../.pi/skills/workflow/scripts/batch_tool.py"], { cwd: opts.cwd, input: "agent text\n" + opts.task, encoding: "utf8" });
+  if (opts.agent === "batcher") {
+    const r = spawnSync("python3", ["../../../.pi/skills/agent/scripts/batch_tool.py"], { cwd: opts.cwd, input: "agent text\n" + opts.task, encoding: "utf8" });
     if (r.status !== 0) return { key, runId, ok: false, state: "failed", error: r.stdout + r.stderr };
     return { key, runId, ok: true, state: "complete", output: r.stdout };
   }

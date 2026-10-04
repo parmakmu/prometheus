@@ -1,0 +1,264 @@
+# Example: a plan that is concrete from the start. In an agent this file is
+# agents/invoice-check/plan.yaml, with gates/check_lines.py and
+# gates/check_report.py written during planning.
+version: 1
+revision: 1
+status: ready
+
+request: >-
+  Go through the supplier folder in my mail export, find the invoices, check
+  them against the Q3 budget sheet, flag anything over budget and draft
+  replies to suppliers where the amounts don't match the PO.
+
+goal: >-
+  A variance report of Q3 supplier invoices against budget, plus reply drafts
+  for invoices whose amounts differ from their purchase order.
+
+done_when:
+  - every invoice found in the folder appears once in the variance report
+  - each report row shows invoice amount, PO amount, budget line and status
+  - one reply draft exists for each invoice with status "po_mismatch"
+  - nothing is sent
+
+params:
+  mail_dir:
+    description: folder with the supplier mail export (.eml files)
+  budget_file:
+    description: the Q3 budget workbook
+  report_dir:
+    description: folder for the final variance report
+    default: outputs
+
+inputs:
+  - id: mail
+    kind: folder
+    location: ${mail_dir}
+    format: eml
+    access: read
+    note: 1,240 .eml files observed; about 300 have PDF attachments
+  - id: budget
+    kind: file
+    location: ${budget_file}
+    format: xlsx
+    access: read
+    note: sheet "Q3" with columns cost_center, supplier, po_number, po_amount, budget
+
+agents:
+  checked: subagent list, 2026-09-26
+  available:
+    - scout
+    - researcher
+    - evidence-auditor
+    - worker
+    - reviewer
+    - oracle
+    - name: plan-critic
+      source: project
+
+outputs:
+  - id: variance_report
+    kind: file
+    location: ${report_dir}/Q3-invoice-variance.xlsx
+    format: xlsx
+    overwrite: false
+  - id: reply_drafts
+    kind: app
+    location: Gmail drafts
+    format: email
+
+unknowns:
+  - id: u1
+    text: what the mail export looks like (formats, attachments)
+    resolve_by: probe
+    finding: 1,240 .eml files; about 300 carry PDF attachments; a sample of 3 PDFs all had a text layer
+    run_id: example-probe-run
+  - id: u2
+    text: when an amount difference counts as a PO mismatch
+    resolve_by: user
+    question: q2
+
+stages:
+  - key: find
+    title: Classify which emails carry supplier invoices
+    kind: judgment
+    kind_reason: forwarded and inline invoices defeat sender or attachment rules
+    pattern: map
+    agent: worker
+    consumes: [mail]
+    items: mail
+    items_glob: "*.eml"
+    batch: 50
+    out:
+      - id: invoice_index
+        path: invoice-index.json
+        format: json
+        schema: {file: string, is_invoice: boolean, supplier: string, attachment: string}
+    verify:
+      check: every file in the folder is classified exactly once
+
+  - key: extract
+    title: Pull invoice number, PO number, date and amount from text-layer PDFs
+    kind: deterministic
+    kind_reason: fixed fields in machine-generated PDFs; checkable by recount
+    pattern: script
+    agent: worker
+    script: extract_invoice_lines.py
+    run: "${mail_dir} invoice-index.json invoice-lines.csv unparsed.json"
+    needs: [find]
+    consumes: [mail, invoice_index]
+    out:
+      - id: invoice_lines
+        path: invoice-lines.csv
+        format: csv
+      - id: unparsed
+        path: unparsed.json
+        format: json
+        notes: invoices the parser could not read, with a reason each
+    verify:
+      gate:
+        command: python3 ../gates/check_lines.py invoice-lines.csv unparsed.json invoice-index.json
+        output: json
+      check: parsed rows plus unparsed entries equal the invoice count
+
+  - key: extract-rest
+    title: Read the invoices the parser could not
+    kind: judgment
+    kind_reason: scans and odd layouts need reading, not parsing
+    pattern: map
+    agent: worker
+    needs: [extract]
+    consumes: [mail, unparsed]
+    items: unparsed
+    batch: 10
+    out:
+      - id: rest_lines
+        path: rest-lines.json
+        format: json
+        schema: {invoice_no: string, po_number: string, date: string, amount: number, supplier: string, confidence: string}
+
+  - key: compare
+    title: Join invoices to budget and PO amounts, compute status
+    kind: deterministic
+    kind_reason: exact join on PO number and arithmetic against the budget sheet
+    pattern: script
+    agent: worker
+    script: compare_to_budget.py
+    run: "${budget_file} invoice-lines.csv rest-lines.json ${report_dir}/Q3-invoice-variance.xlsx"
+    needs: [extract-rest]
+    consumes: [invoice_lines, rest_lines, budget]
+    out:
+      - id: variance_report
+        path: ${report_dir}/Q3-invoice-variance.xlsx
+        format: xlsx
+    verify:
+      gate: python3 ../gates/check_report.py ${report_dir}/Q3-invoice-variance.xlsx
+      check: row count equals invoice count; status in {ok, over_budget, po_mismatch, no_po}
+
+  - key: review
+    title: Spot-check mismatches, over-budget rows and low-confidence reads
+    kind: judgment
+    kind_reason: whether a flagged row is a real discrepancy needs reading the invoice
+    pattern: reviewer
+    agent: reviewer
+    needs: [compare]
+    consumes: [variance_report, invoice_lines, rest_lines]
+    out:
+      - id: review_notes
+        path: review.json
+        format: json
+        schema: {blocking: boolean, findings: [string]}
+
+  - key: approve-drafts
+    title: User reviews the report and approves drafting
+    kind: decision
+    kind_reason: whether to contact suppliers is the user's call
+    pattern: approval
+    needs: [review]
+    consumes: [variance_report, review_notes]
+    out:
+      - id: draft_approval
+        format: text
+
+  - key: drafts
+    title: Draft one reply per po_mismatch invoice in Gmail
+    kind: side_effect
+    kind_reason: creates drafts in the user's Gmail account
+    pattern: worker
+    agent: worker
+    needs: [approve-drafts]
+    consumes: [variance_report, draft_approval]
+    approval: required
+    out:
+      - id: reply_drafts
+        format: email
+    verify:
+      check: draft count equals number of po_mismatch rows; none sent
+
+
+assumptions:
+  - id: a1
+    text: Most invoices are PDF attachments with a text layer; the rest go through extract-rest
+    source: observed
+    confirm: false
+  - id: a2
+    text: Report columns are invoice_no, supplier, date, amount, po_number, po_amount, budget_line, budget_remaining, status
+    source: default
+    confirm: true
+
+critique:
+  agent: plan-critic
+  run_id: example-critic-run
+  revision: 1
+  passes: 2
+  verdict: revise
+  findings:
+    - id: f1
+      severity: major
+      category: should_split
+      target: extract
+      claim: extract assumes every invoice PDF has a text layer; scanned ones would drop out of the report silently
+      disposition: accepted
+      note: extract now writes unparsed.json; added the extract-rest judgment stage
+    - id: f2
+      severity: blocking
+      category: missing_question
+      target: done_when
+      claim: Q3 could mean invoice date or received date, which changes which invoices are in scope
+      disposition: asked
+      note: became q3
+    - id: f3
+      severity: minor
+      category: other
+      target: review
+      claim: the review stage adds cost and could be dropped
+      disposition: rejected
+      note: it is the only check on judgment output before anything reaches Gmail
+
+questions:
+  - id: q1
+    question: Should replies be sent, or only drafted?
+    why: sending is irreversible and decides the last wave
+    options: [draft only, send after I approve each, send all after one approval]
+    default: draft only
+    blocks: [drafts]
+    answer: draft only
+  - id: q2
+    question: How large a difference counts as a PO mismatch?
+    why: decides which invoices get a reply
+    options: [any difference, above 1% or 5 CHF, above 5%]
+    default: above 1% or 5 CHF
+    blocks: [compare, drafts]
+    answer: above 1% or 5 CHF
+  - id: q3
+    question: Does Q3 mean the invoice date or the date the email arrived?
+    why: decides which invoices are in scope
+    options: [invoice date, received date]
+    default: invoice date
+    blocks: [find, compare]
+    from_finding: f2
+    answer: invoice date
+
+limits:
+  max_parallel: 4
+  max_retries: 2
+  max_batch: 50

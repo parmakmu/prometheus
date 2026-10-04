@@ -22,10 +22,10 @@ export function FolderIcon({ name, open = false, className = "size-4" }: { name:
 
 export const UPLOADS_CHANGED = "uploads-changed";
 
-// where this chat's "+" put its files (attachments.ts): a workflow's uploads/ folder, or your files folder for the planner
+// where this chat's "+" put its files (attachments.ts): an agent's uploads/ folder, or your files folder for the planner
 const where = (slug: string | null) => ({
-  list: slug ? `/w/${slug}/tree?dir=uploads` : "/files?dir=chat-uploads",
-  file: (name: string) => (slug ? `/w/${slug}/download?path=${encodeURIComponent(`uploads/${name}`)}` : `/files/download?path=${encodeURIComponent(`chat-uploads/${name}`)}`),
+  list: slug ? `/a/${slug}/tree?dir=uploads` : "/files?dir=chat-uploads",
+  file: (name: string) => (slug ? `/a/${slug}/download?path=${encodeURIComponent(`uploads/${name}`)}` : `/files/download?path=${encodeURIComponent(`chat-uploads/${name}`)}`),
 });
 
 // an image from the server, fetched with the token (an <img> can't send it)

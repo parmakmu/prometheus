@@ -1,6 +1,6 @@
 """Shared fixtures for the pytest suite.
 
-ROOT is the Prometheus repo root, SKILL its copy of the workflow skill.
+ROOT is the Prometheus repo root, SKILL its copy of the agent skill.
 `run_py`/`run_node` run a script and parse its stdout as JSON. A nonzero exit
 is not itself a failure: scripts report refusals as {"ok": false, ...} on exit
 1 or 2, and tests check that. `git_in(path)` returns a callable that runs
@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-SKILL = ROOT / ".pi" / "skills" / "workflow"
+SKILL = ROOT / ".pi" / "skills" / "agent"
 HERE = Path(__file__).resolve().parent
 
 
@@ -57,8 +57,8 @@ def private_pi(tmp_path_factory):
 
 
 def fake_critic(run_id, agent="plan-critic", state="completed", root=None):
-    """A pi-subagents record of a critic workflow whose child `run_id` ran (what
-    workflow_record_critique checks), in $PI_SUBAGENTS_TEMP_ROOT unless `root` is given."""
+    """A pi-subagents record of a critic agent whose child `run_id` ran (what
+    agent_record_critique checks), in $PI_SUBAGENTS_TEMP_ROOT unless `root` is given."""
     folder = Path(root or os.environ["PI_SUBAGENTS_TEMP_ROOT"]) / "async-subagent-runs" / f"critic-of-{run_id}"
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "status.json").write_text(json.dumps({"runId": f"critic-of-{run_id}", "state": "complete", "workflowChildren": {

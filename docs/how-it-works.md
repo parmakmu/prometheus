@@ -4,26 +4,26 @@ You probably have a job like this one. Once a month, someone hands you a folder 
 
 You could ask a model to do it each month. That works, but every month it starts from scratch: it reads every email afresh, works out again how to parse them, and lays out the spreadsheet slightly differently from last time. You pay for the same thinking over and over, and you check the result over and over.
 
-prometheus is built for jobs like that. You describe the job once, and it turns your description into a **workflow**: a folder holding a plan for the job and an agent that carries the plan out. The first time the workflow runs, it writes small programs for the mechanical parts, and you look them over. From then on those programs do the routine work in a fraction of a second, a model is called only for the parts that genuinely need judgment, and nothing with real consequences happens until you've said yes.
+prometheus is built for jobs like that. You describe the job once, and it turns your description into an **agent**: a folder that is a Pi agent of its own, holding a plan for the job and carrying it out. The first time the agent runs, it writes small programs for the mechanical parts, and you look them over. From then on those programs do the routine work in a fraction of a second, a model is called only for the parts that genuinely need judgment, and nothing with real consequences happens until you've said yes.
 
-On this page we'll follow one real workflow, `emails-to-excel`, from the one-line request that created it to its second run. Everything shown in a code block was copied from its actual runs, so what you see is what you'll get.
+On this page we'll follow one real agent, `emails-to-excel`, from the one-line request that created it to its second run. Everything shown in a code block was copied from its actual runs, so what you see is what you'll get.
 
 ## The short version
 
 It all starts with a single command:
 
 ```text
-/workflow-new I want to read the emails in a folder and save them in an Excel file
+/agent-new I want to read the emails in a folder and save them in an Excel file
 ```
 
 prometheus asks you a few questions, and when it's done, your request has become a folder:
 
 ```text
-workflows/emails-to-excel/
+agents/emails-to-excel/
   plan.yaml       the plan
   gates/          programs that check what a stage produced
   scripts/        stage programs: the work itself, as plain code
-  .pi/            the workflow agent: extension, agents, skill copy
+  .pi/            the agent itself: extension, subagents, skill copy
   .env            this machine's values (not in git)
   runs/           one folder per run (not in git)
   uploads/        files attached in the web app's chat (not in git)
@@ -40,9 +40,9 @@ The diagram below shows the whole cycle. Don't worry if some of the boxes don't 
 
 ```mermaid
 flowchart LR
-    A["/workflow-new<br/>your request"] --> B["Plan<br/>stages, gates, params"]
+    A["/agent-new<br/>your request"] --> B["Plan<br/>stages, gates, params"]
     B --> C["Critic reviews<br/>you answer questions"]
-    C --> D["/workflow-run<br/>waves of stages"]
+    C --> D["/agent-run<br/>waves of stages"]
     D --> E{"Side effect?"}
     E -- "you approve" --> D
     D --> F["Review the branch<br/>merge, keep or discard"]
@@ -55,24 +55,24 @@ flowchart LR
 The first thing to know is that you'll be talking to two different agents, and each one has a single job. You start them in different folders:
 
 ```text
-~/prometheus $ pi                              ~/prometheus/workflows/emails-to-excel $ pi
-> /workflow-new <request>                      > /workflow-run
+~/prometheus $ pi                              ~/prometheus/agents/emails-to-excel $ pi
+> /agent-new <request>                      > /agent-run
 ```
 
-**prometheus**, on the left, is the planner. It works out how the job should be done, writes that down as a plan, and then steps back. It never reads your emails or touches your spreadsheet. It's also careful about when it starts: only `/workflow-new` sets it planning. If you just describe a job in conversation, it will talk it through with you, but it won't build anything.
+**prometheus**, on the left, is the planner. It works out how the job should be done, writes that down as a plan, and then steps back. It never reads your emails or touches your spreadsheet. It's also careful about when it starts: only `/agent-new` sets it planning. If you just describe a job in conversation, it will talk it through with you, but it won't build anything.
 
 > [!NOTE]
-> We learned that one the hard way. An early version took a passing remark, "I want to create documentation with docs in md", as a request, and cheerfully built a workflow nobody had asked for.
+> We learned that one the hard way. An early version took a passing remark, "I want to create documentation with docs in md", as a request, and cheerfully built an agent nobody had asked for.
 
-**The workflow agent**, on the right, is the one that gets the work done. It hands the actual tasks to background agents through [pi-subagents](https://github.com/nicobailon/pi-subagents) and keeps you informed as they finish. It doesn't have to remember the rules about what's allowed when, either: a set of Python scripts keeps track of that, and the agent simply follows their lead.
+**The agent**, on the right, is the one that gets the work done. It hands the actual tasks to subagents through [pi-subagents](https://github.com/nicobailon/pi-subagents) and keeps you informed as they finish. It doesn't have to remember the rules about what's allowed when, either: a set of Python scripts keeps track of that, and the agent simply follows their lead.
 
-Once a workflow exists, it no longer needs prometheus at all. The folder carries everything it needs, so you can copy it to another machine with `/workflow-export` and run it there.
+Once an agent exists, it no longer needs prometheus at all. The folder carries everything it needs, so you can copy it to another machine with `/agent-export` and run it there.
 
 ## Planning
 
 ### The plan
 
-Everything the workflow knows about your job lives in one file, `plan.yaml`. It starts with your request in your own words, followed by the goal and a list of what "done" means, written so you can check each line yourself:
+Everything the agent knows about your job lives in one file, `plan.yaml`. It starts with your request in your own words, followed by the goal and a list of what "done" means, written so you can check each line yourself:
 
 ```yaml
 request: I want to read emails and save them in Excel
@@ -124,7 +124,7 @@ This is where the savings come from. A deterministic stage is simply a program a
   run: "${email_folder} discovery.md email-rows.json unparsed-emails.json"
 ```
 
-The first time the workflow runs, a model writes `read_emails.py`. You review it along with everything else the run produced, and from then on the workflow just runs it, which takes about a tenth of a second. Here's one row of what it extracted from the tutorial's sample emails:
+The first time the agent runs, a model writes `read_emails.py`. You review it along with everything else the run produced, and from then on the agent just runs it, which takes about a tenth of a second. Here's one row of what it extracted from the tutorial's sample emails:
 
 ```json
 {
@@ -143,11 +143,11 @@ Of course, a program that runs without anyone watching needs checking, and that'
 Gates are written while the plan is being made, before the stage has ever run, and never by the stage they check. It's the same reason you wouldn't let someone mark their own exam.
 
 > [!NOTE]
-> If a program does fail one day, perhaps because an email arrives in a format it has never seen, the workflow doesn't just retry. It calls a model, shows it the exact error, and asks it to fix the program, so the fix is there for every run after.
+> If a program does fail one day, perhaps because an email arrives in a format it has never seen, the agent doesn't just retry. It calls a model, shows it the exact error, and asks it to fix the program, so the fix is there for every run after.
 
 ### Params: values that belong to your machine
 
-A workflow should run anywhere, so the plan never contains anything specific to one computer. The input folder, an output path, a database table, an API token: each of these is a **param**. The plan says the param exists and what it's for, and its actual value lives in a file called `.env` next to the plan:
+An agent should run anywhere, so the plan never contains anything specific to one computer. The input folder, an output path, a database table, an API token: each of these is a **param**. The plan says the param exists and what it's for, and its actual value lives in a file called `.env` next to the plan:
 
 ```yaml
 params:
@@ -164,7 +164,7 @@ params:
 EMAIL_FOLDER='/Users/me/Mail/export'
 ```
 
-You'll notice that planning never asks where your emails are. That's not an oversight: the answer depends on whose machine the workflow is running on, so `/workflow-run` asks instead, when it actually needs to know.
+You'll notice that planning never asks where your emails are. That's not an oversight: the answer depends on whose machine the agent is running on, so `/agent-run` asks instead, when it actually needs to know.
 
 > [!IMPORTANT]
 > Secrets get extra care. The model can't read `.env` at all, so a token's value never appears in a chat, a log or a task. When a secret is missing, the agent tells you the name of the variable to set and waits for you. The details are in [Params, `.env` and secrets](params-and-secrets.md).
@@ -197,7 +197,7 @@ You might expect a planner to start by quizzing you. prometheus does the opposit
 
 ## Running
 
-With a plan in place, you start the workflow agent and type `/workflow-run`. Here's what happens next.
+With a plan in place, you start the agent and type `/agent-run`. Here's what happens next.
 
 ### Waves
 
@@ -233,7 +233,7 @@ runs/2026-10-01-3/
   .compiled/      each wave as launched
 ```
 
-`run.yaml` is the run's memory, and it's what makes it safe to walk away. Close Pi halfway through, come back tomorrow, type `/workflow-run`, and it picks up exactly where it left off. Here's part of it after a finished run:
+`run.yaml` is the run's memory, and it's what makes it safe to walk away. Close Pi halfway through, come back tomorrow, type `/agent-run`, and it picks up exactly where it left off. Here's part of it after a finished run:
 
 ```yaml
 id: 2026-10-01-3
@@ -264,19 +264,19 @@ Sooner or later a wave will fail. A gate might reject an output, a reviewer migh
 
 ### Changing the plan mid-run
 
-Sometimes, as with `discover`, a run learns something that changes the plan. When that happens it **replans**, filling in the stages that haven't run yet. A replan is deliberately limited, though. It can't touch your request, the goal, what counts as done, the params, the inputs, the outputs or the agents, and it can never quietly turn a side effect into something that no longer needs your approval. If you want a bigger change, that waits until the run is over, and you make it with `/workflow-revise`.
+Sometimes, as with `discover`, a run learns something that changes the plan. When that happens it **replans**, filling in the stages that haven't run yet. A replan is deliberately limited, though. It can't touch your request, the goal, what counts as done, the params, the inputs, the outputs or the agents, and it can never quietly turn a side effect into something that no longer needs your approval. If you want a bigger change, that waits until the run is over, and you make it with `/agent-revise`.
 
 ## Reviewing what a run changed
 
 By now the first run has done more than produce a spreadsheet. It has written two programs and filled in part of the plan. That raises a fair question: should next month's run just start using all that?
 
-Our answer is: not until you've had a look. Each workflow is its own git repository, and its `main` branch holds only what you've reviewed. Anything new waits on a branch of its own:
+Our answer is: not until you've had a look. Each agent is its own git repository, and its `main` branch holds only what you've reviewed. Anything new waits on a branch of its own:
 
 | Branch | Opened by | Holds |
 |---|---|---|
 | `run/<id>` | a run's first commit | its replans and the programs it wrote |
-| `revise/<date>-<n>` | `/workflow-revise` | a change you asked for |
-| `improve/<date>-<n>` | `/workflow-improve` | fixes drawn from earlier runs |
+| `revise/<date>-<n>` | `/agent-revise` | a change you asked for |
+| `improve/<date>-<n>` | `/agent-improve` | fixes drawn from earlier runs |
 
 When a run or a change finishes, the agent walks you through what's on the branch and asks what you'd like to do with it:
 
@@ -308,7 +308,7 @@ Two other things affect what a run costs, if you're designing your own plans. Th
 
 | Word | Means |
 |---|---|
-| **workflow** | a folder `workflows/<slug>/` with a plan, its programs and an agent that runs it |
+| **agent** | what prometheus builds: a folder `agents/<slug>/` that is a Pi agent of its own, with a plan, its programs and gates |
 | **plan** | `plan.yaml`: the job, what counts as done, and the stages |
 | **stage** | one step of the work, such as "extract the fields from every email" |
 | **kind** | whether a stage is a side effect, a decision, deterministic or judgment |
@@ -317,13 +317,14 @@ Two other things affect what a run costs, if you're designing your own plans. Th
 | **param** | a value that depends on the machine; it lives in `.env` |
 | **run** | one execution of the plan, in its own folder `runs/<id>/` |
 | **wave** | the stages launched together before the agent next needs you |
-| **child** | one background agent doing a stage, or part of one |
+| **subagent** | a profile a stage runs as (`scout`, `reviewer`, `batcher`, or one the agent defines in `.pi/agents/`) |
+| **child** | one subagent doing a stage, or part of one |
 | **side effect** | a stage that changes something outside the run |
 | **replan** | filling in later stages during a run, from what discovery found |
 | **branch** | where a run's or a change's edits wait for your review |
 
 ## Where to go from here
 
-- If you'd like to try all this yourself, the [tutorial](tutorial.md) walks you through this exact workflow in about fifteen minutes.
+- If you'd like to try all this yourself, the [tutorial](tutorial.md) walks you through this exact agent in about fifteen minutes.
 - If you're curious why a rule is the way it is, [Design decisions](design.md) tells the story behind each one, including what went wrong first.
-- If you're writing or editing plans, [`plan-schema.md`](../.pi/skills/workflow/references/plan-schema.md) describes the format field by field.
+- If you're writing or editing plans, [`plan-schema.md`](../.pi/skills/agent/references/plan-schema.md) describes the format field by field.

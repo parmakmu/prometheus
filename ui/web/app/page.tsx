@@ -4,20 +4,20 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useAui, useAuiState, AuiProvider, AuiConfig, Suggestions } from "@assistant-ui/react";
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
 import { cn } from "@/lib/utils";
-import { ChevronRight, CircleArrowUp, Flame, FolderOpen, ListChecks, MoreHorizontal, PlusIcon, RefreshCw, SquareTerminal, Workflow as WorkflowIcon } from "lucide-react";
+import { ChevronRight, CircleArrowUp, Flame, FolderOpen, ListChecks, MoreHorizontal, PlusIcon, RefreshCw, SquareTerminal, Bot as AgentIcon } from "lucide-react";
 import { AskCard, CheckCard, ModelsCard, PiPanelCard, QuestionCard, ScaffoldCard, SubagentCard } from "./cards";
 import { CanvasPanel, useCanvas } from "./canvas";
 import { StatusBar } from "./status-bar";
 import { api } from "./api";
 import { useAgent } from "./agent";
 import { Conversations, sidebarRow } from "./conversations";
-import { Workspace, type Run, type WorkflowSummary } from "./workspace";
+import { Workspace, type Run, type AgentSummary } from "./workspace";
 import { References } from "./references";
 import { TerminalPanel } from "./terminal";
 import { SlashMenu } from "./slash-menu";
 
 
-type Workflow = WorkflowSummary & {
+type Agent = AgentSummary & {
   status: string;
   revision: number;
   goal: string;
@@ -40,8 +40,8 @@ const STATES: Record<string, { label: string; tone: string; needsYou?: boolean }
   change_ready: { label: "Change waiting for your review", tone: "bg-violet-100 text-violet-800", needsYou: true },
   main_draft: { label: "Needs a revise", tone: "bg-amber-100 text-amber-800", needsYou: true },
 };
-const stateOf = (w: Workflow) => STATES[w.state] ?? { label: w.state, tone: "bg-muted" };
-const needsYou = (w: Workflow) => !!stateOf(w).needsYou || w.open_questions.length > 0;
+const stateOf = (w: Agent) => STATES[w.state] ?? { label: w.state, tone: "bg-muted" };
+const needsYou = (w: Agent) => !!stateOf(w).needsYou || w.open_questions.length > 0;
 
 const money = (n: number) => (n ? `$${n < 0.01 ? n.toFixed(4) : n.toFixed(2)}` : "$0");
 const when = (iso?: string) => (iso ? new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
@@ -51,25 +51,25 @@ const took = (r: Run) => {
   return s < 60 ? `${s} s` : `${Math.round(s / 60)} min`;
 };
 
-function useWorkflows() {
-  const [workflows, setWorkflows] = useState<Workflow[]>([]);
+function useAgents() {
+  const [agents, setAgents] = useState<Agent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const load = useCallback(() => {
-    api<Workflow[] | { error?: string }>("/workflows")
-      .then((d) => (Array.isArray(d) ? (setWorkflows(d), setError(null)) : setError(d.error ?? "unexpected answer")))
+    api<Agent[] | { error?: string }>("/agents")
+      .then((d) => (Array.isArray(d) ? (setAgents(d), setError(null)) : setError(d.error ?? "unexpected answer")))
       .catch((e: Error) => setError(e.message.includes("refused") ? e.message : "Can't reach the agent server. Start it with `npm run ui:server`."));
   }, []);
   useEffect(() => {
     load();
     const t = setInterval(load, 15000);
-    window.addEventListener("workflows-changed", load); // a file was saved in the editor
-    return () => (clearInterval(t), window.removeEventListener("workflows-changed", load));
+    window.addEventListener("agents-changed", load); // a file was saved in the editor
+    return () => (clearInterval(t), window.removeEventListener("agents-changed", load));
   }, [load]);
-  // one workflow's fresh summary, for the live view of a run (cheaper than listing all of them)
+  // one agent's fresh summary, for the live view of a run (cheaper than listing all of them)
   const refresh = useCallback((slug: string) => {
-    api<Workflow>(`/w/${slug}/summary`).then((w) => setWorkflows((all) => all.map((x) => (x.slug === w.slug ? w : x))), () => {});
+    api<Agent>(`/a/${slug}/summary`).then((w) => setAgents((all) => all.map((x) => (x.slug === w.slug ? w : x))), () => {});
   }, []);
-  return { workflows, error, load, refresh };
+  return { agents, error, load, refresh };
 }
 
 function RunsTable({ runs }: { runs: (Run & { slug?: string })[] }) {
@@ -78,7 +78,7 @@ function RunsTable({ runs }: { runs: (Run & { slug?: string })[] }) {
       <table className="w-full text-sm">
         <thead className="bg-muted/50 text-muted-foreground text-xs">
           <tr>
-            {[runs.some((r) => r.slug) && "Workflow", "Run", "Started", "Took", "Status", "Cost"].filter(Boolean).map((h) => (
+            {[runs.some((r) => r.slug) && "Agent", "Run", "Started", "Took", "Status", "Cost"].filter(Boolean).map((h) => (
               <th key={h as string} className="px-3 py-2 text-left font-medium">{h}</th>
             ))}
           </tr>
@@ -108,7 +108,7 @@ function RunsTable({ runs }: { runs: (Run & { slug?: string })[] }) {
 }
 
 // A "…" button opening a short list of actions. The list is fixed under the button, so a scrolling list around it
-// (the sidebar's workflows) doesn't clip it; a click anywhere else closes it. `className` places the button; `plain`
+// (the sidebar's agents) doesn't clip it; a click anywhere else closes it. `className` places the button; `plain`
 // drops its border (in a row).
 function MoreMenu({ actions, className = "relative", plain = false }: { actions: [string, () => void][]; className?: string; plain?: boolean }) {
   const [at, setAt] = useState<{ top: number; right: number } | null>(null);
@@ -146,7 +146,7 @@ function MoreMenu({ actions, className = "relative", plain = false }: { actions:
   );
 }
 
-function Sidebar({ workflows, error, load }: ReturnType<typeof useWorkflows>) {
+function Sidebar({ agents, error, load }: ReturnType<typeof useAgents>) {
   const { select } = useCanvas();
   const { agent, session, setAgent, open } = useAgent();
   const row = sidebarRow;
@@ -154,50 +154,50 @@ function Sidebar({ workflows, error, load }: ReturnType<typeof useWorkflows>) {
   // a command for prometheus: in the conversation with it that is open, else its latest; one that changes files
   // waits in the composer to be sent
   const ask = (command: string, send = false) => (open("/p", agent === "/p" ? session : null, command, send), select(null));
-  const stale = workflows.filter((w) => w.stale).map((w) => w.slug);
-  const [openRow, setOpenRow] = useState<string | null>(null); // the workflow whose actions show under it
+  const stale = agents.filter((w) => w.stale).map((w) => w.slug);
+  const [openRow, setOpenRow] = useState<string | null>(null); // the agent whose actions show under it
   return (
     <aside className="bg-muted/30 flex w-64 shrink-0 flex-col border-r">
-      {/* prometheus is not one of the workflows: it is where they are planned, so it comes first, as the sidebar's title,
+      {/* prometheus is not one of the agents: it is where they are planned, so it comes first, as the sidebar's title,
           and a row like the others (its chat opens on a click); its commands under it */}
       <nav className="space-y-0.5 px-4 pt-3">
         <button type="button" onClick={() => (setAgent("/p"), select(null))} title="Talk to prometheus, the planner" className={cn(row(agent === "/p"), "mb-2 py-2 text-base font-semibold")}>
           <Flame className="text-primary size-5 shrink-0" /> prometheus
         </button>
-        <button type="button" onClick={() => (open("/p", `new-${crypto.randomUUID().slice(0, 8)}`, "/workflow-new "), select(null))} className={row()}>
-          <PlusIcon className={icon} /> New workflow
+        <button type="button" onClick={() => (open("/p", `new-${crypto.randomUUID().slice(0, 8)}`, "/agent-new "), select(null))} className={row()}>
+          <PlusIcon className={icon} /> New agent
         </button>
-        <button type="button" onClick={() => ask("/workflow-list", true)} className={row()}>
-          <ListChecks className={icon} /> My workflows
+        <button type="button" onClick={() => ask("/agent-list", true)} className={row()}>
+          <ListChecks className={icon} /> My agents
         </button>
         {/* one out of date: named, and only it is refreshed; more: all of them */}
         {stale.length > 0 && (
           <button
             type="button"
-            onClick={() => ask(`/workflow-refresh ${stale.length === 1 ? stale[0] : "--all"}`)}
+            onClick={() => ask(`/agent-refresh ${stale.length === 1 ? stale[0] : "--all"}`)}
             title="Bring their copy of the skill up to this prometheus's version"
             className={row()}
           >
             <CircleArrowUp className={icon} />
-            <span className="truncate">{stale.length === 1 ? `Update ${stale[0]}` : `Update ${stale.length} workflows`}</span>
+            <span className="truncate">{stale.length === 1 ? `Update ${stale[0]}` : `Update ${stale.length} agents`}</span>
           </button>
         )}
       </nav>
 
       {/* a heading as the title: what is not a row is not clickable */}
       <div className="flex items-center justify-between px-6 pt-6 pb-1.5">
-        <span className="text-base font-semibold">Workflows</span>
+        <span className="text-base font-semibold">Agents</span>
         <button type="button" onClick={load} title="Refresh" className="text-muted-foreground hover:text-foreground">
           <RefreshCw className="size-3.5" />
         </button>
       </div>
       <div className="max-h-[45%] space-y-0.5 overflow-y-auto px-4">
         {error && <p className="px-2 text-xs text-red-600">{error}</p>}
-        {!error && !workflows.length && <p className="text-muted-foreground px-2 py-1 text-xs">None yet: New workflow plans one.</p>}
-        {workflows.map((w) => (
+        {!error && !agents.length && <p className="text-muted-foreground px-2 py-1 text-xs">None yet: New agent plans one.</p>}
+        {agents.map((w) => (
           <div key={w.slug}>
-            <div className={row(agent === `/w/${w.slug}`)}>
-              <button type="button" onClick={() => (setAgent(`/w/${w.slug}`), select(null))} title={`${w.slug}: ${stateOf(w).label}`} className="min-w-0 flex-1 truncate text-left">
+            <div className={row(agent === `/a/${w.slug}`)}>
+              <button type="button" onClick={() => (setAgent(`/a/${w.slug}`), select(null))} title={`${w.slug}: ${stateOf(w).label}`} className="min-w-0 flex-1 truncate text-left">
                 {w.slug}
               </button>
               {/* only what calls for attention, as dots (in words on hover) */}
@@ -212,13 +212,13 @@ function Sidebar({ workflows, error, load }: ReturnType<typeof useWorkflows>) {
                 from outside) in prometheus's */}
             {openRow === w.slug && (
               <div className="ms-4 mt-0.5 mb-1 space-y-0.5 border-s ps-1.5">
-                <button type="button" onClick={() => (open(`/w/${w.slug}`, null, "/workflow-status", true), select(null))} className={row()}>
+                <button type="button" onClick={() => (open(`/a/${w.slug}`, null, "/agent-status", true), select(null))} className={row()}>
                   Status
                 </button>
-                <button type="button" onClick={() => ask(`/workflow-refresh ${w.slug}`)} className={row()}>
+                <button type="button" onClick={() => ask(`/agent-refresh ${w.slug}`)} className={row()}>
                   Update to the current skill
                 </button>
-                <button type="button" onClick={() => ask(`/workflow-export ${w.slug} `)} className={row()}>
+                <button type="button" onClick={() => ask(`/agent-export ${w.slug} `)} className={row()}>
                   Export…
                 </button>
               </div>
@@ -232,10 +232,10 @@ function Sidebar({ workflows, error, load }: ReturnType<typeof useWorkflows>) {
   );
 }
 
-// the canvas when nothing is selected: what waits for you, and the recent runs of all workflows
-function Overview({ workflows }: { workflows: Workflow[] }) {
-  const waiting = workflows.filter(needsYou);
-  const runs = workflows
+// the canvas when nothing is selected: what waits for you, and the recent runs of all agents
+function Overview({ agents }: { agents: Agent[] }) {
+  const waiting = agents.filter(needsYou);
+  const runs = agents
     .flatMap((w) => w.recent_runs.map((r) => ({ ...r, slug: w.slug })))
     .sort((a, b) => (b.started_at ?? "").localeCompare(a.started_at ?? ""))
     .slice(0, 8);
@@ -246,7 +246,7 @@ function Overview({ workflows }: { workflows: Workflow[] }) {
       <h2 className="mt-1 text-xl font-semibold">{waiting.length ? `${waiting.length} waiting for you` : "All quiet"}</h2>
       <div className="mt-4 grid grid-cols-3 gap-3">
         {[
-          ["Workflows", String(workflows.length)],
+          ["Agents", String(agents.length)],
           ["Recent runs", String(runs.length)],
           ["Their cost", money(spent)],
         ].map(([k, v]) => (
@@ -274,8 +274,8 @@ function Overview({ workflows }: { workflows: Workflow[] }) {
   );
 }
 
-// whom the chat talks to: prometheus, or a workflow's own agent (with its state)
-function ChatHeader({ workflows }: { workflows: Workflow[] }) {
+// whom the chat talks to: prometheus, or an agent it built (with its state)
+function ChatHeader({ agents }: { agents: Agent[] }) {
   const { agent, slug, label } = useAgent();
   const { show } = useCanvas();
   const aui = useAui();
@@ -288,12 +288,12 @@ function ChatHeader({ workflows }: { workflows: Workflow[] }) {
     }],
     ["Reload extensions and skills", () => run("/reload")],
   ];
-  const w = workflows.find((x) => x.slug === slug);
+  const w = agents.find((x) => x.slug === slug);
   return (
     <div className="flex items-center gap-2 border-b px-4 py-2.5 text-sm">
-      {slug ? <WorkflowIcon className="text-muted-foreground size-4" /> : <Flame className="text-primary size-4" />}
+      {slug ? <AgentIcon className="text-muted-foreground size-4" /> : <Flame className="text-primary size-4" />}
       <span className={`font-medium ${slug ? "font-mono" : ""}`}>{label}</span>
-      <span className="text-muted-foreground text-xs">{slug ? "workflow agent" : "planner"}</span>
+      <span className="text-muted-foreground text-xs">{slug ? "agent" : "planner"}</span>
       {w && <span className={`ml-auto rounded-full px-2 py-0.5 text-xs ${stateOf(w).tone}`}>{stateOf(w).label}</span>}
       <button
         type="button"
@@ -331,16 +331,16 @@ function DropZone({ children }: { children: ReactNode }) {
   );
 }
 
-// the workflow the workspace shows: the selected one, or (with the planner) the one being planned
+// the agent the workspace shows: the selected one, or (with the planner) the one being planned
 function Layout() {
-  const data = useWorkflows();
+  const data = useAgents();
   const { slug } = useAgent();
   const running = useAuiState((s) => s.thread.isRunning);
   useEffect(() => {
     if (!running) data.load(); // what the agent just did (a plan drafted, a wave finished) shows now, not at the next poll
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [running]);
-  const shown = data.workflows.find((w) => (slug ? w.slug === slug : w.state === "planning"));
+  const shown = data.agents.find((w) => (slug ? w.slug === slug : w.state === "planning"));
   // while its run is active the steps follow it every 2 s (wave starts, finishes, children done)
   const live = shown?.active_run ? shown.slug : null;
   useEffect(() => {
@@ -353,7 +353,7 @@ function Layout() {
     <div className="flex h-dvh">
       <Sidebar {...data} />
       <DropZone>
-        <ChatHeader workflows={data.workflows} />
+        <ChatHeader agents={data.agents} />
         <div className="min-h-0 flex-1">
           <Thread />
         </div>
@@ -361,7 +361,7 @@ function Layout() {
         <SlashMenu />
         <StatusBar />
       </DropZone>
-      <CanvasPanel workspace={shown ? <Workspace w={shown} /> : <Overview workflows={data.workflows} />} />
+      <CanvasPanel workspace={shown ? <Workspace w={shown} /> : <Overview agents={data.agents} />} />
     </div>
   );
 }
@@ -373,12 +373,12 @@ export default function Home() {
     suggestions: Suggestions(
       slug
         ? [
-            { title: "Run it", label: "start or continue a run", prompt: "/workflow-run" },
-            { title: "Status", label: "plan, runs, what waits", prompt: "/workflow-status" },
+            { title: "Run it", label: "start or continue a run", prompt: "/agent-run" },
+            { title: "Status", label: "plan, runs, what waits", prompt: "/agent-status" },
           ]
         : [
-            { title: "List workflows", label: "and where each stands", prompt: "/workflow-list" },
-            { title: "Plan a workflow", label: "emails to a spreadsheet", prompt: "/workflow-new I want to read the emails in a folder and save them in an Excel file" },
+            { title: "List agents", label: "and where each stands", prompt: "/agent-list" },
+            { title: "Plan an agent", label: "emails to a spreadsheet", prompt: "/agent-new I want to read the emails in a folder and save them in an Excel file" },
           ],
     ),
   });

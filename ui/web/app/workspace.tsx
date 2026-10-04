@@ -13,7 +13,7 @@ import { ChildName } from "./subagents";
 
 export type Stage = { key: string; title?: string; status: "done" | "running" | null; children?: { done: number; failed: number; total: number; items?: { key: string; agent?: string; state?: string; run_id?: string | null }[] } };
 export type Run = { id: string; status: string; started_at?: string; finished_at?: string; note?: string | null; cost_usd: number };
-export type WorkflowSummary = {
+export type AgentSummary = {
   slug: string;
   state: string;
   active_run: string | null;
@@ -49,7 +49,7 @@ function Section({ title, hint, count, children, open = true }: { title: string;
 function Tree({ slug, dir, depth = 0, editable }: { slug: string; dir: string; depth?: number; editable?: boolean }) {
   const [entries, setEntries] = useState<Entry[] | null>(null);
   useEffect(() => {
-    api<{ entries: Entry[] }>(`/w/${slug}/tree?dir=${encodeURIComponent(dir)}`).then((l) => setEntries(l.entries), () => setEntries([]));
+    api<{ entries: Entry[] }>(`/a/${slug}/tree?dir=${encodeURIComponent(dir)}`).then((l) => setEntries(l.entries), () => setEntries([]));
   }, [slug, dir]);
   return (
     <>
@@ -90,7 +90,7 @@ function Node({ slug, path, dir, depth = 0, label, editable }: { slug: string; p
 
 // what the run is doing right now, in one line: the running steps, or what it waits for
 // the run's line under "Steps": only what isn't already in the list, i.e. that it waits for you (or is replanning)
-function Now({ w }: { w: WorkflowSummary }) {
+function Now({ w }: { w: AgentSummary }) {
   if (w.stages.some((s) => s.status === "running") || !w.waiting) return null;
   const text = { approval: "Waiting for your approval in the chat", review: "Waiting for your review in the chat", replan: "Adjusting the plan" }[w.waiting];
   return <p className={`px-2 pb-1 text-xs ${w.waiting === "replan" ? "text-muted-foreground" : "text-violet-700"}`}>{text}</p>;
@@ -98,7 +98,7 @@ function Now({ w }: { w: WorkflowSummary }) {
 
 // A plain list: an icon says where each step is (done, running, waiting); a running step names its subagents in one
 // quiet line under it, each opening its log
-function Steps({ w }: { w: WorkflowSummary }) {
+function Steps({ w }: { w: AgentSummary }) {
   const next = new Set(w.waiting || !w.stages.some((s) => s.status === "running") ? w.next_stages : []);
   const icon = (s: Stage) =>
     s.status === "done" ? <CheckCircle2 className="size-4 text-emerald-600" /> : s.status === "running" ? <Loader2 className="size-4 animate-spin text-sky-600" /> : <Circle className="text-muted-foreground/60 size-4" />;
@@ -135,13 +135,13 @@ const INPUT: { path: string; dir: boolean; label?: string }[] = [
   { path: ".pi/APPEND_SYSTEM.md", dir: false },
   { path: "scripts", dir: true },
   { path: "gates", dir: true },
-  { path: ".pi/agents", dir: true, label: "agents" },
+  { path: ".pi/agents", dir: true, label: "subagents" },
 ];
 
 function Input({ slug }: { slug: string }) {
   const [have, setHave] = useState<Set<string> | null>(null);
   useEffect(() => {
-    const names = (dir: string) => api<{ entries: Entry[] }>(`/w/${slug}/tree?dir=${dir}`).then((l) => l.entries.map((e) => `${dir}/${e.name}`.replace(/^\//, "")), () => [] as string[]);
+    const names = (dir: string) => api<{ entries: Entry[] }>(`/a/${slug}/tree?dir=${dir}`).then((l) => l.entries.map((e) => `${dir}/${e.name}`.replace(/^\//, "")), () => [] as string[]);
     Promise.all([names(""), names(".pi")]).then((all) => setHave(new Set(all.flat())));
   }, [slug]);
   return (
@@ -154,7 +154,7 @@ function Input({ slug }: { slug: string }) {
 }
 
 // each run is a folder: everything in it (its record, results, working files), read-only
-function Output({ w }: { w: WorkflowSummary }) {
+function Output({ w }: { w: AgentSummary }) {
   return (
     <Section title="Output" hint="read-only" count={String(w.recent_runs.length)}>
       {w.recent_runs.length === 0 && <p className="text-muted-foreground px-2 text-sm">No runs yet</p>}
@@ -166,12 +166,12 @@ function Output({ w }: { w: WorkflowSummary }) {
 }
 
 // Branches waiting for your review: edits saved here (a revise/ branch), a change, or a finished run's discoveries.
-// Reviewing one checks it out if it was kept aside, then hands it to the agent: /workflow-revise for a change
-// (the critic if the plan changed, then merge, keep or discard), /workflow-run for a run's branch (it asks).
+// Reviewing one checks it out if it was kept aside, then hands it to the agent: /agent-revise for a change
+// (the critic if the plan changed, then merge, keep or discard), /agent-run for a run's branch (it asks).
 const CHANGE = /^(revise|improve|change)\//;
-function ChangeBanner({ w }: { w: WorkflowSummary }) {
+function ChangeBanner({ w }: { w: AgentSummary }) {
   const aui = useAui();
-  const { slug } = useAgent(); // the chat must be this workflow's agent to hand it the review
+  const { slug } = useAgent(); // the chat must be this agent's agent to hand it the review
   const [error, setError] = useState<string | null>(null);
   const waiting = w.unmerged.filter((b) => CHANGE.test(b) || b.startsWith("run/"));
   if (!waiting.length) return null;
@@ -179,10 +179,10 @@ function ChangeBanner({ w }: { w: WorkflowSummary }) {
     setError(null);
     try {
       if (b !== w.branch) {
-        await send(`/w/${w.slug}/checkout?name=${encodeURIComponent(b)}`, "POST");
-        window.dispatchEvent(new Event("workflows-changed"));
+        await send(`/a/${w.slug}/checkout?name=${encodeURIComponent(b)}`, "POST");
+        window.dispatchEvent(new Event("agents-changed"));
       }
-      aui.thread().append(CHANGE.test(b) ? "/workflow-revise take the changes on this branch through review: check them, run the plan critic if the plan changed, then ask me to merge, keep or discard" : "/workflow-run");
+      aui.thread().append(CHANGE.test(b) ? "/agent-revise take the changes on this branch through review: check them, run the plan critic if the plan changed, then ask me to merge, keep or discard" : "/agent-run");
     } catch (e) {
       setError((e as Error).message);
     }
@@ -207,7 +207,7 @@ function ChangeBanner({ w }: { w: WorkflowSummary }) {
   );
 }
 
-export function Workspace({ w }: { w: WorkflowSummary }) {
+export function Workspace({ w }: { w: AgentSummary }) {
   return (
     <div className="flex min-h-full flex-col">
       <p className="mb-4 flex flex-wrap items-center gap-2 text-sm font-semibold">

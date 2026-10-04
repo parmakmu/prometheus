@@ -1,6 +1,6 @@
-// Load a workflow extension with a mock pi host and drive it.
+// Load an agent extension with a mock pi host and drive it.
 // Usage: node --experimental-strip-types ext-harness.mjs <entry index.ts> <cwd> <steps.json>
-// steps: [{cmd:"workflow-list", args:""}, {systemPrompt:"..."}, {tool:"workflow_check", params:{...}}, {toolCall:{toolName, input}}, {env:"NAME"}, ...]
+// steps: [{cmd:"agent-list", args:""}, {systemPrompt:"..."}, {tool:"agent_check", params:{...}}, {toolCall:{toolName, input}}, {env:"NAME"}, ...]
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import { Value } from "typebox/value";

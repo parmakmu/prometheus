@@ -2,7 +2,7 @@
   "name": "prometheus",
   "private": true,
   "type": "module",
-  "description": "The web UI (ui/router.ts, ui/worker.ts, ui/web) and the type-checking of the extensions (tests/test_workflow.py). Pi is not a dependency: the terminal agent and the web UI both use the global Pi install (the router finds it with `npm root -g`, or PI_PACKAGE_ROOT).",
+  "description": "The web UI (ui/router.ts, ui/worker.ts, ui/web) and the type-checking of the extensions (tests/test_agent.py). Pi is not a dependency: the terminal agent and the web UI both use the global Pi install (the router finds it with `npm root -g`, or PI_PACKAGE_ROOT).",
   "scripts": {
     "ui:server": "node ui/router.ts",
     "ui:web": "next dev ui/web",

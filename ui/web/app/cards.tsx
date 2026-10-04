@@ -34,17 +34,17 @@ function Card({ icon, title, children, busy }: { icon: ReactNode; title: string;
 }
 
 export const ScaffoldCard = makeAssistantToolUI<{ slug?: string; request?: string }, string>({
-  toolName: "workflow_scaffold",
+  toolName: "agent_scaffold",
   render: ({ args, status, toolCallId }) => (
     <ShowOnCanvas
       id={`created:${args?.slug ?? toolCallId}`}
-      title={`Workflow ${args?.slug ?? ""}`}
+      title={`Agent ${args?.slug ?? ""}`}
       running={status.type === "running"}
       deps={[status.type]}
       node={
-        <Card icon={<FolderPlus className="size-4" />} title={`Workflow created: ${args?.slug ?? "…"}`} busy={status.type === "running"}>
+        <Card icon={<FolderPlus className="size-4" />} title={`Agent created: ${args?.slug ?? "…"}`} busy={status.type === "running"}>
           {args?.request && <p className="italic">“{args.request}”</p>}
-          {args?.slug && <p className="mt-1 font-mono text-xs">workflows/{args.slug}/</p>}
+          {args?.slug && <p className="mt-1 font-mono text-xs">agents/{args.slug}/</p>}
         </Card>
       }
     />
@@ -52,7 +52,7 @@ export const ScaffoldCard = makeAssistantToolUI<{ slug?: string; request?: strin
 });
 
 export const CheckCard = makeAssistantToolUI<Record<string, unknown>, string>({
-  toolName: "workflow_check",
+  toolName: "agent_check",
   render: ({ result, status }) => {
     const r = parse(result);
     if (!r) return <ShowOnCanvas id="plan" title="Plan" running deps={[status.type]} node={<Card icon={<ListChecks className="size-4" />} title="Checking the plan" busy />} />;

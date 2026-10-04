@@ -1,0 +1,216 @@
+# Example: an abstract request where the planner has nothing to look at.
+# Wave 1 discovers; the plan replans before the analysis is detailed.
+# In an agent this file is agents/competitor-memo/plan.yaml.
+version: 1
+revision: 1
+status: ready
+
+request: >-
+  Look at our main competitors, figure out how they position themselves, and
+  draft a positioning memo for us. Put it on our strategy page in Notion.
+
+goal: >-
+  A sourced positioning memo that compares our main competitors' positioning
+  with ours, published as a new page under the strategy page in Notion.
+
+done_when:
+  - the user confirmed which competitors the memo covers
+  - every confirmed competitor has a positioning profile with at least two sources
+  - the memo compares their positioning with ours and recommends where we stand apart
+  - the memo is a new child page under the strategy page; no existing Notion page changed
+
+params:
+  product_brief:
+    description: a short description of our product and customers (md or txt)
+  notion_parent:
+    description: URL or id of the Notion strategy page the memo goes under
+    type: text
+  notion_token:
+    description: token of the Notion integration the publishing stage's Notion tools use
+    type: secret
+    env: NOTION_TOKEN
+
+inputs:
+  - id: brief
+    kind: file
+    location: ${product_brief}
+    format: md
+    access: read
+
+outputs:
+  - id: notion_memo
+    kind: app
+    location: ${notion_parent}
+    format: notion page
+    overwrite: false
+
+agents:
+  checked: subagent list, 2026-09-26
+  available:
+    - scout
+    - researcher
+    - evidence-auditor
+    - worker
+    - reviewer
+    - oracle
+    - name: plan-critic
+      source: project
+
+unknowns:
+  - id: u1
+    text: who our main competitors are and where their positioning is stated
+    resolve_by: discovery
+    stage: discover
+    affects: [analyse]
+  - id: u2
+    text: who the memo is for
+    resolve_by: user
+    question: q1
+  - id: u3
+    text: whether children can write to Notion from this machine
+    resolve_by: planner
+    finding: the Notion MCP tools are listed in this Pi session; children inherit extensions
+
+stages:
+  - key: discover
+    title: Find the main competitors and their positioning sources
+    kind: judgment
+    kind_reason: which companies count as main competitors is a judgment of market overlap
+    pattern: worker
+    agent: researcher
+    consumes: [brief]
+    out:
+      - id: competitor_list
+        path: competitors.json
+        format: json
+        schema: {name: string, url: string, why_competitor: string, positioning_sources: [string]}
+    verify:
+      review: evidence-auditor
+      check: 4-8 competitors, each with at least two public positioning sources
+
+  - key: confirm-list
+    title: User confirms which competitors to cover
+    kind: decision
+    kind_reason: the scope of the memo is the user's call
+    pattern: approval
+    needs: [discover]
+    consumes: [competitor_list]
+    out:
+      - id: confirmed_list
+        path: decisions/confirmed-competitors.json
+        format: json
+
+  - key: analyse
+    provisional: true
+    resolves_after: discover
+    title: Profile each confirmed competitor's positioning
+    kind: judgment
+    kind_reason: reading messaging, audience and proof points needs judgment
+    intent: one positioning profile per confirmed competitor (claim, audience, pricing model, proof points), each with sources
+    needs: [confirm-list]
+    consumes: [confirmed_list, competitor_list]
+    out:
+      - id: profiles
+
+  - key: memo
+    title: Draft the positioning memo
+    kind: judgment
+    kind_reason: comparing positions and recommending ours is argument, not computation
+    pattern: worker
+    agent: worker
+    needs: [analyse]
+    consumes: [profiles, brief]
+    out:
+      - id: memo_draft
+        path: memo.md
+        format: md
+
+  - key: review-memo
+    title: Check the memo's claims against the profiles and sources
+    kind: judgment
+    kind_reason: whether a claim is supported needs reading the sources
+    pattern: reviewer
+    agent: reviewer
+    needs: [memo]
+    consumes: [memo_draft, profiles]
+    out:
+      - id: memo_review
+        path: memo-review.json
+        format: json
+        schema: {blocking: boolean, unsupported_claims: [string], notes: [string]}
+
+  - key: publish
+    title: Create the memo as a new child page in Notion
+    kind: side_effect
+    kind_reason: writes to the user's Notion workspace
+    pattern: worker
+    agent: worker
+    needs: [review-memo]
+    consumes: [memo_draft, memo_review]
+    approval: required
+    out:
+      - id: notion_memo
+        format: notion page
+    verify:
+      check: a new page exists under the parent with the memo's title; no other page changed
+
+
+assumptions:
+  - id: a1
+    text: the memo is at most two pages and written in English
+    source: default
+    confirm: true
+  - id: a2
+    text: public sources only (websites, pricing pages, press, reviews); no paid databases
+    source: default
+    confirm: true
+
+critique:
+  agent: plan-critic
+  run_id: example-critic-run
+  revision: 1
+  passes: 1
+  verdict: revise
+  findings:
+    - id: f1
+      severity: major
+      category: missing_stage
+      target: analyse
+      claim: analysis effort starts on whatever discovery returns; nobody confirms the competitor list first
+      disposition: accepted
+      note: added the confirm-list decision stage at the start of w2
+    - id: f2
+      severity: major
+      category: invented_detail
+      target: analyse
+      claim: an earlier draft fixed a profile schema and batch size before knowing how many competitors or what sources exist
+      disposition: accepted
+      note: analyse is now provisional, resolved after discover
+    - id: f3
+      severity: minor
+      category: unknown_misrouted
+      target: u3
+      claim: Notion access could fail for children even if the parent sees the tools
+      disposition: rejected
+      note: the publish wave reports failure without side effects; no need to probe now
+
+questions:
+  - id: q1
+    question: Who is the memo for?
+    why: sets depth, tone and what the recommendation must cover
+    options: [leadership team, product and marketing, sales]
+    default: leadership team
+    blocks: [memo]
+    answer: leadership team
+  - id: q2
+    question: New child page, or replace the content of an existing page?
+    why: replacing is an overwrite in Notion
+    options: [new child page, replace an existing page]
+    default: new child page
+    blocks: [publish]
+    answer: new child page
+
+limits:
+  max_parallel: 4
+  max_retries: 2
+  max_batch: 20

@@ -8,22 +8,22 @@ import { DiffEditor } from "./code-editor";
 
 export type Changes = { branch: string; base: string; files: { path: string; status: string }[] };
 
-const changed = () => window.dispatchEvent(new Event("workflows-changed"));
+const changed = () => window.dispatchEvent(new Event("agents-changed"));
 
 // the checked-out branch and what differs from main (on main: uncommitted edits), kept current while edits happen
 export function useChanges(slug: string, version?: unknown) {
   const [data, setData] = useState<Changes | null>(null);
-  const load = useCallback(() => void api<Changes>(`/w/${slug}/changes`).then(setData, () => setData(null)), [slug]);
+  const load = useCallback(() => void api<Changes>(`/a/${slug}/changes`).then(setData, () => setData(null)), [slug]);
   useEffect(() => {
     load();
-    window.addEventListener("workflows-changed", load);
-    return () => window.removeEventListener("workflows-changed", load);
+    window.addEventListener("agents-changed", load);
+    return () => window.removeEventListener("agents-changed", load);
   }, [load, version]);
   return data;
 }
 
 export const BranchChip = ({ branch }: { branch: string }) => (
-  <span title="The branch checked out in this workflow" className={`flex items-center gap-1 rounded-full px-2 py-0.5 font-mono text-xs font-normal ${branch === "main" ? "bg-muted" : "bg-violet-100 text-violet-800"}`}>
+  <span title="The branch checked out in this agent" className={`flex items-center gap-1 rounded-full px-2 py-0.5 font-mono text-xs font-normal ${branch === "main" ? "bg-muted" : "bg-violet-100 text-violet-800"}`}>
     <GitBranch className="size-3" /> {branch}
   </span>
 );
@@ -31,7 +31,7 @@ export const BranchChip = ({ branch }: { branch: string }) => (
 // a file next to main's copy (on main: the last commit's), side by side
 export function DiffView({ slug, path }: { slug: string; path: string }) {
   const [sides, setSides] = useState<{ before: string | null; after: string | null } | null>(null);
-  useEffect(() => void api<{ before: string | null; after: string | null }>(`/w/${slug}/diff?path=${encodeURIComponent(path)}`).then(setSides, () => setSides({ before: null, after: null })), [slug, path]);
+  useEffect(() => void api<{ before: string | null; after: string | null }>(`/a/${slug}/diff?path=${encodeURIComponent(path)}`).then(setSides, () => setSides({ before: null, after: null })), [slug, path]);
   if (sides === null) return null;
   if (sides.before === sides.after) return <p className="text-muted-foreground text-sm">No difference from main.</p>;
   return (
@@ -47,14 +47,14 @@ export function DiffView({ slug, path }: { slug: string; path: string }) {
 
 export async function discardEdits(slug: string, path: string) {
   if (!confirm(`Discard your edits to ${path}? It goes back to how main has it.`)) return false;
-  await send(`/w/${slug}/discard?path=${encodeURIComponent(path)}`, "POST");
+  await send(`/a/${slug}/discard?path=${encodeURIComponent(path)}`, "POST");
   changed();
   return true;
 }
 
 export async function discardBranch(slug: string, name: string) {
   if (!confirm(`Discard ${name}? Every change on it is deleted.`)) return false;
-  await send(`/w/${slug}/discard-branch?name=${encodeURIComponent(name)}`, "POST");
+  await send(`/a/${slug}/discard-branch?name=${encodeURIComponent(name)}`, "POST");
   changed();
   return true;
 }

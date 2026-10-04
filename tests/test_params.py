@@ -1,7 +1,7 @@
-"""Param values (workflow_params.py) and how the compiler uses them: where values
+"""Param values (agent_params.py) and how the compiler uses them: where values
 come from, how each type compiles, and that secrets are never written down.
 
-One scenario, like test_workflow.py: values written by an earlier test are
+One scenario, like test_agent.py: values written by an earlier test are
 read back by a later one, so these run in file order (pytest's default,
 undisturbed by any randomizing plugin).
 """
@@ -19,7 +19,7 @@ pytestmark = pytest.mark.xdist_group("params")
 
 SCRIPTS = SKILL / "scripts"
 sys.path.insert(0, str(SCRIPTS))
-import workflow_params as wp
+import agent_params as wp
 
 spec = importlib.util.spec_from_file_location("compile_wave", SCRIPTS / "compile_wave.py")
 cw = importlib.util.module_from_spec(spec)

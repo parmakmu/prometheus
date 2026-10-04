@@ -4,7 +4,7 @@ import { createContext, useContext, useEffect, useRef, useState, type ReactNode 
 import { ArrowLeft, PanelRight, X } from "lucide-react";
 import { useAgent } from "./agent";
 
-// The right-hand canvas: what the agent shows (a plan, a created workflow, the critic's verdict) and
+// The right-hand canvas: what the agent shows (a plan, a created agent, the critic's verdict) and
 // what you select on the left. Tool cards push their full view here and leave a chip in the chat.
 type Item = { key: string; title: string; node: ReactNode; onClose?: () => void; scoped?: boolean }; // onClose: what closing its tab means; scoped: belongs to the conversation (a tool card), gone when it changes
 type Canvas = { items: Item[]; selected: string | null; show: (item: Item) => void; remove: (key: string) => void; select: (key: string | null) => void };
@@ -13,7 +13,7 @@ const CanvasContext = createContext<Canvas | null>(null);
 export const useCanvas = () => useContext(CanvasContext)!;
 
 // Sits above the chat runtime, which remounts per conversation. When the conversation changes, the tabs its
-// tool cards made go, while the ones you opened yourself (a workflow, Files, the terminal) stay. Done while
+// tool cards made go, while the ones you opened yourself (an agent, Files, the terminal) stay. Done while
 // rendering, so the new conversation's cards add theirs after.
 export function CanvasProvider({ children }: { children: ReactNode }) {
   const { base: scope } = useAgent();

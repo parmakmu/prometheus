@@ -1,19 +1,19 @@
 /**
- * Prometheus: commands and tools for creating workflows.
+ * Prometheus: commands and tools for creating agents.
  *
  * Commands
- *   /workflow-new <request>                       plan a new workflow (model)
- *   /workflow-list [slug]                         list workflows (no model)
- *   /workflow-export <slug> <dest> [--keep-state] copy a workflow elsewhere (no model)
- *   /workflow-refresh <slug | --all>              update workflows to this skill version (no model)
+ *   /agent-new <request>                       plan a new agent (model)
+ *   /agent-list [slug]                         list agents (no model)
+ *   /agent-export <slug> <dest> [--keep-state] copy an agent elsewhere (no model)
+ *   /agent-refresh <slug | --all>              update agents to this skill version (no model)
  *
  * Tools for the model
- *   workflow_scaffold  create a workflow (only after /workflow-new in this session)
- *   workflow_check     validate a workflow's plan and compile-check its waves
+ *   agent_scaffold  create an agent (only after /agent-new in this session)
+ *   agent_check     validate an agent's plan and compile-check its waves
  *
- * Changing a workflow happens inside it: cd workflows/<slug>, pi, /workflow-revise.
+ * Changing an agent happens inside it: cd agents/<slug>, pi, /agent-revise.
  *
- * The logic lives in the skill's Python scripts (.pi/skills/workflow/scripts);
+ * The logic lives in the skill's Python scripts (.pi/skills/agent/scripts);
  * this file runs them and formats their JSON.
  */
 import { defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -21,17 +21,17 @@ import { Type } from "typebox";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const WORKFLOWS = "workflows";
+const AGENTS = "agents";
 
 // --- prompts sent to the model ------------------------------------------------
 
-// Says it comes from /workflow-new: the role tells the model to refuse plain planning requests, and
+// Says it comes from /agent-new: the role tells the model to refuse plain planning requests, and
 // a model that can't tell this message from a typed one refused it (it looks the same in the session).
-const NEW_PROMPT = (request: string) => `The user ran \`/workflow-new\`: this is the planning request it authorizes, not a
-plain message. Plan a new workflow for the request below. Follow
-\`.pi/skills/workflow/SKILL.md\` from step 1; workflows go under
-\`workflows/\`. Use the \`workflow_scaffold\` tool to create the workflow and
-\`workflow_check\` to validate and compile-check it. The subagent tool is already
+const NEW_PROMPT = (request: string) => `The user ran \`/agent-new\`: this is the planning request it authorizes, not a
+plain message. Plan a new agent for the request below. Follow
+\`.pi/skills/agent/SKILL.md\` from step 1; agents go under
+\`agents/\`. Use the \`agent_scaffold\` tool to create the agent and
+\`agent_check\` to validate and compile-check it. The subagent tool is already
 active: do not call subagents_enable.
 
 Request (copy it verbatim into the plan): ${request}`;
@@ -42,16 +42,16 @@ Request (copy it verbatim into the plan): ${request}`;
 function findRoot(start: string): string | undefined {
 	let dir = path.resolve(start);
 	for (;;) {
-		if (fs.existsSync(path.join(dir, ".pi", "APPEND_SYSTEM.md")) && fs.existsSync(path.join(dir, WORKFLOWS))) return dir;
+		if (fs.existsSync(path.join(dir, ".pi", "APPEND_SYSTEM.md")) && fs.existsSync(path.join(dir, AGENTS))) return dir;
 		const parent = path.dirname(dir);
 		if (parent === dir) return undefined;
 		dir = parent;
 	}
 }
 
-/** Python for the skill scripts: $PI_WORKFLOW_PYTHON, else the nearest .venv (see pyproject.toml), else python3. */
+/** Python for the skill scripts: $PI_AGENT_PYTHON, else the nearest .venv (see pyproject.toml), else python3. */
 function pythonFor(start: string): string {
-	if (process.env.PI_WORKFLOW_PYTHON) return process.env.PI_WORKFLOW_PYTHON;
+	if (process.env.PI_AGENT_PYTHON) return process.env.PI_AGENT_PYTHON;
 	const bin = process.platform === "win32" ? path.join("Scripts", "python.exe") : path.join("bin", "python");
 	for (let dir = path.resolve(start); ; dir = path.dirname(dir)) {
 		if (fs.existsSync(path.join(dir, ".venv", bin))) return path.join(dir, ".venv", bin);
@@ -83,7 +83,7 @@ async function runScript(
 	args: string[],
 	signal?: AbortSignal,
 ): Promise<ScriptResult> {
-	const file = path.join(root, ".pi", "skills", "workflow", "scripts", script);
+	const file = path.join(root, ".pi", "skills", "agent", "scripts", script);
 	const py = pythonFor(root);
 	const r = await pi.exec(py, [file, ...args], { cwd: root, timeout: 120_000, signal });
 	let data: any;
@@ -116,9 +116,9 @@ function table(rows: string[][]): string {
 function slugs(root: string, prefix = ""): string[] {
 	try {
 		return fs
-			.readdirSync(path.join(root, WORKFLOWS))
-			// .pi/plan.yaml: where the plan lived before; /workflow-refresh moves it
-			.filter((d) => d.startsWith(prefix) && ["plan.yaml", ".pi/plan.yaml"].some((f) => fs.existsSync(path.join(root, WORKFLOWS, d, f))))
+			.readdirSync(path.join(root, AGENTS))
+			// .pi/plan.yaml: where the plan lived before; /agent-refresh moves it
+			.filter((d) => d.startsWith(prefix) && ["plan.yaml", ".pi/plan.yaml"].some((f) => fs.existsSync(path.join(root, AGENTS, d, f))))
 			.sort();
 	} catch {
 		return [];
@@ -126,9 +126,9 @@ function slugs(root: string, prefix = ""): string[] {
 }
 
 async function check(pi: ExtensionAPI, root: string, slug: string, signal?: AbortSignal) {
-	const workflow = path.join(root, WORKFLOWS, slug);
-	const v = await runScript(pi, root, "validate_plan.py", [path.join(workflow, "plan.yaml")], signal);
-	const c = await runScript(pi, root, "compile_wave.py", ["--workflow", workflow, "--check"], signal);
+	const agent = path.join(root, AGENTS, slug);
+	const v = await runScript(pi, root, "validate_plan.py", [path.join(agent, "plan.yaml")], signal);
+	const c = await runScript(pi, root, "compile_wave.py", ["--agent", agent, "--check"], signal);
 	return {
 		valid: v.data?.valid ?? false,
 		status: v.data?.status,
@@ -145,7 +145,7 @@ async function check(pi: ExtensionAPI, root: string, slug: string, signal?: Abor
 export default function prometheus(pi: ExtensionAPI) {
 	// Completion callbacks get no context, so remember the session's cwd.
 	let sessionCwd = process.cwd();
-	// Set by /workflow-new, used up by the scaffold it leads to: a plain message never creates a workflow.
+	// Set by /agent-new, used up by the scaffold it leads to: a plain message never creates an agent.
 	let newRequested = false;
 	pi.on("session_start", async (_event, ctx) => {
 		sessionCwd = ctx.cwd;
@@ -155,6 +155,11 @@ export default function prometheus(pi: ExtensionAPI) {
 		const py = pythonFor(root);
 		const r = await pi.exec(py, ["-c", "import dotenv, pydantic, pydantic_settings, ruamel.yaml, typer"], { cwd: root, timeout: 10_000 });
 		if (r.code !== 0) ctx.ui.notify(`The skill scripts' Python packages are missing for ${py}. Run \`uv sync\` in ${root}, then restart pi.`, "warning");
+		// agents were called workflows, in workflows/: not moved for you (a pi session may be running inside one)
+		const old = path.join(root, "workflows");
+		const left = fs.existsSync(old) ? fs.readdirSync(old).filter((d) => fs.existsSync(path.join(old, d, "plan.yaml"))) : [];
+		if (left.length)
+			ctx.ui.notify(`Agents used to be called workflows: ${left.join(", ")} ${left.length === 1 ? "is" : "are"} still in workflows/. Move them with \`mv workflows/* ${AGENTS}/\` in ${root}, then /agent-refresh --all.`, "warning");
 	});
 
 	const completeSlug = (prefix: string) => {
@@ -165,11 +170,11 @@ export default function prometheus(pi: ExtensionAPI) {
 
 	/** Show text in the conversation without starting a model turn. */
 	const show = (title: string, body: string) =>
-		pi.sendMessage({ customType: "workflow", content: `${title}\n\n${body}`, display: true }, { triggerTurn: false });
+		pi.sendMessage({ customType: "agent", content: `${title}\n\n${body}`, display: true }, { triggerTurn: false });
 
 	const rootOrWarn = (ctx: ExtensionContext) => {
 		const root = findRoot(ctx.cwd);
-		if (!root) ctx.ui.notify("Start pi inside the Prometheus folder to use the workflow commands.", "error");
+		if (!root) ctx.ui.notify("Start pi inside the Prometheus folder to use the agent commands.", "error");
 		return root;
 	};
 
@@ -181,12 +186,12 @@ export default function prometheus(pi: ExtensionAPI) {
 		pi.sendUserMessage(text);
 	};
 
-	// the scaffold script is reachable only through workflow_scaffold, which checks for /workflow-new
+	// the scaffold script is reachable only through agent_scaffold, which checks for /agent-new
 	pi.on("tool_call", (event, ctx) => {
 		if (!findRoot(ctx.cwd)) return;
 		const command = (event.input as { command?: string }).command ?? "";
-		if ((event.toolName === "bash" || event.toolName === "powershell") && /scaffold_workflow\.py/.test(command))
-			return { block: true, reason: "Create workflows with workflow_scaffold, and only after the user ran /workflow-new." };
+		if ((event.toolName === "bash" || event.toolName === "powershell") && /scaffold_agent\.py/.test(command))
+			return { block: true, reason: "Create agents with agent_scaffold, and only after the user ran /agent-new." };
 		const shell = event.toolName === "bash" || event.toolName === "powershell";
 		const path_ = (event.input as { path?: string }).path ?? "";
 		// any route to a new package: install commands, uvx / uv tool / uv run --with, or writing the package list itself
@@ -194,16 +199,16 @@ export default function prometheus(pi: ExtensionAPI) {
 			((event.toolName === "write" || event.toolName === "edit") && /(^|[\\/])(pyproject\.toml|uv\.lock)$/.test(path_)) ||
 			(shell && /(pyproject\.toml|uv\.lock)/.test(command) && /\bsed\s+-i|>|\btee\b|\bmv\b|\bcp\b|\bperl\s+-\w*i|\btruncate\b|\bpython3?\b|\bnode\b/.test(command));
 		if ((shell && /\buv\s+(?:pip\s+)?(?:add|install)\b|\bpip3?\s+install\b|\buvx\b|\buv\s+tool\s+(?:install|run)\b|\buv\s+run\b[^\n;&|]*\s--with\b|add_package\.py/.test(command)) || packageFile)
-			return { block: true, reason: "Python packages are added with workflow_add_package (the packages and why they are needed), which asks the user to approve them. Do not run uv add, pip install, uvx or uv run --with, edit pyproject.toml or uv.lock, or run add_package.py yourself. Name the workflow (slug) when you call it." };
+			return { block: true, reason: "Python packages are added with agent_add_package (the packages and why they are needed), which asks the user to approve them. Do not run uv add, pip install, uvx or uv run --with, edit pyproject.toml or uv.lock, or run add_package.py yourself. Name the agent (slug) when you call it." };
 	});
 
 	// --- commands ---------------------------------------------------------------
-	pi.registerCommand("workflow-new", {
-		description: "Plan a new workflow from a request: /workflow-new <what you want done>",
+	pi.registerCommand("agent-new", {
+		description: "Plan a new agent from a request: /agent-new <what you want done>",
 		handler: async (args, ctx) => {
 			if (!rootOrWarn(ctx)) return;
 			if (!args.trim()) {
-				ctx.ui.notify("Usage: /workflow-new <what you want done>", "warning");
+				ctx.ui.notify("Usage: /agent-new <what you want done>", "warning");
 				return;
 			}
 			newRequested = true;
@@ -212,8 +217,8 @@ export default function prometheus(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerCommand("workflow-list", {
-		description: "List workflows and where each one stands: /workflow-list [slug]",
+	pi.registerCommand("agent-list", {
+		description: "List agents and where each one stands: /agent-list [slug]",
 		getArgumentCompletions: completeSlug,
 		handler: async (args, ctx) => {
 			const root = rootOrWarn(ctx);
@@ -224,14 +229,14 @@ export default function prometheus(pi: ExtensionAPI) {
 				const s = res.summary ?? {};
 				// a markdown list: one line each, in the terminal and the web app alike
 				show(
-					`Workflow ${slug}`,
+					`Agent ${slug}`,
 					[
 						`- **Status:** ${res.status}, revision ${s.revision ?? "?"}`,
 						`- **Active run:** ${s.run?.id ?? "none"}${s.run ? `, next wave ${s.next_wave ?? "none"}` : ""}`,
 						`- **Waves to go${s.run ? "" : " in a new run"}:** ${(s.waves ?? []).map((w: any) => `${w.id} (${w.stages.join(", ")}${w.ends_with === "none" ? "" : `, then ${w.ends_with}`})`).join("; ") || "none"}`,
 						`- **Provisional stages:** ${(s.provisional ?? []).join(", ") || "none"}`,
 						`- **Open questions:** ${s.open_questions ?? 0}; **approvals:** ${(s.approvals ?? []).join(", ") || "none"}`,
-						`- **Missing params:** ${(s.workflow?.missing_params ?? []).join(", ") || "none"}; **secrets:** ${(s.workflow?.missing_secrets ?? []).join(", ") || "none"}`,
+						`- **Missing params:** ${(s.agent?.missing_params ?? []).join(", ") || "none"}; **secrets:** ${(s.agent?.missing_secrets ?? []).join(", ") || "none"}`,
 						`- **Plan valid:** ${res.valid ? "yes" : "no"}; **compiles:** ${res.compiles ? "yes" : "no"}`,
 						...res.errors.map((e: string) => `- Error: ${e}`),
 						...Object.entries(res.compile_errors as Record<string, string[]>).flatMap(([w, es]) => es.map((e) => `- Compile ${w}: ${e}`)),
@@ -239,14 +244,14 @@ export default function prometheus(pi: ExtensionAPI) {
 				);
 				return;
 			}
-			const res = await runScript(pi, root, "list_workflows.py", ["--root", WORKFLOWS]);
+			const res = await runScript(pi, root, "list_agents.py", ["--root", AGENTS]);
 			const list: any[] = Array.isArray(res.data) ? res.data : [];
 			if (list.length === 0) {
-				show("Workflows", "No workflows yet. Create one with /workflow-new <request>.");
+				show("Agents", "No agents yet. Create one with /agent-new <request>.");
 				return;
 			}
 			// five short columns: the state says what is under way and what waits; the rest only when it matters
-			const rows = [["Workflow", "State", "Runs", "Last run", "Skill"]];
+			const rows = [["Agent", "State", "Runs", "Last run", "Skill"]];
 			for (const b of list) {
 				const open = (b.open_questions ?? []).length;
 				rows.push([
@@ -258,15 +263,15 @@ export default function prometheus(pi: ExtensionAPI) {
 					].filter(Boolean).join("; "),
 					String(b.runs ?? 0),
 					b.last_run ? `${b.last_run.id} ${b.last_run.status}` : "-",
-					!b.prometheus_version ? "unknown" : b.stale ? "update: /workflow-refresh" : "current",
+					!b.prometheus_version ? "unknown" : b.stale ? "update: /agent-refresh" : "current",
 				]);
 			}
-			show("Workflows", table(rows));
+			show("Agents", table(rows));
 		},
 	});
 
-	pi.registerCommand("workflow-export", {
-		description: "Copy a workflow elsewhere: /workflow-export <slug> <dest> [--keep-state]",
+	pi.registerCommand("agent-export", {
+		description: "Copy an agent elsewhere: /agent-export <slug> <dest> [--keep-state]",
 		getArgumentCompletions: completeSlug,
 		handler: async (args, ctx) => {
 			const root = rootOrWarn(ctx);
@@ -275,10 +280,10 @@ export default function prometheus(pi: ExtensionAPI) {
 			const keep = parts.includes("--keep-state");
 			const [slug, dest] = parts.filter((p) => p !== "--keep-state");
 			if (!slug || !dest) {
-				ctx.ui.notify("Usage: /workflow-export <slug> <destination folder> [--keep-state]", "warning");
+				ctx.ui.notify("Usage: /agent-export <slug> <destination folder> [--keep-state]", "warning");
 				return;
 			}
-			const res = await runScript(pi, root, "export_workflow.py", [path.join(WORKFLOWS, slug), dest, ...(keep ? ["--keep-state"] : [])]);
+			const res = await runScript(pi, root, "export_agent.py", [path.join(AGENTS, slug), dest, ...(keep ? ["--keep-state"] : [])]);
 			const d = res.data ?? {};
 			if (!d.ok) {
 				show(`Export ${slug} failed`, d.error ?? res.stderr.trim());
@@ -287,7 +292,7 @@ export default function prometheus(pi: ExtensionAPI) {
 			show(
 				`Exported ${slug} (${d.mode})`,
 				[
-					`to: ${d.workflow}`,
+					`to: ${d.agent}`,
 					`plan valid there: ${d.valid}${d.errors?.length ? ` — ${d.errors.join("; ")}` : ""}`,
 					`params to set: ${(d.missing_params ?? []).join(", ") || "none"}   secrets to add to .env: ${(d.missing_secrets ?? []).join(", ") || "none"}`,
 					`start: ${d.start}`,
@@ -296,8 +301,8 @@ export default function prometheus(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerCommand("workflow-refresh", {
-		description: "Update workflows to Prometheus's skill version: /workflow-refresh <slug | --all>",
+	pi.registerCommand("agent-refresh", {
+		description: "Update agents to Prometheus's skill version: /agent-refresh <slug | --all>",
 		getArgumentCompletions: (prefix) => {
 			const found = completeSlug(prefix) ?? [];
 			const all = "--all".startsWith(prefix) ? [{ value: "--all", label: "--all" }] : [];
@@ -308,31 +313,31 @@ export default function prometheus(pi: ExtensionAPI) {
 			if (!root) return;
 			const [target] = firstWord(args);
 			if (!target) {
-				ctx.ui.notify("Usage: /workflow-refresh <slug | --all>", "warning");
+				ctx.ui.notify("Usage: /agent-refresh <slug | --all>", "warning");
 				return;
 			}
 			const targets = target === "--all" ? slugs(root) : [target];
 			const rows = [["slug", "refreshed", "version", "plan valid", "compiles", "first error"]];
 			for (const slug of targets) {
-				// --all leaves a workflow already at this Prometheus's version alone; a named one is always refreshed
-				const res = await runScript(pi, root, "scaffold_workflow.py", [slug, "--root", WORKFLOWS, "--refresh", ...(target === "--all" ? ["--if-stale"] : [])]);
+				// --all leaves an agent already at this Prometheus's version alone; a named one is always refreshed
+				const res = await runScript(pi, root, "scaffold_agent.py", [slug, "--root", AGENTS, "--refresh", ...(target === "--all" ? ["--if-stale"] : [])]);
 				const c = await check(pi, root, slug);
 				const firstErr = c.errors[0] ?? Object.values(c.compile_errors as Record<string, string[]>).flat()[0] ?? "";
 				rows.push([slug, res.data?.skipped ? "skipped (current)" : String(res.data?.ok ?? false), String(res.data?.prometheus_version ?? ""), String(c.valid), String(c.compiles), firstErr.slice(0, 80)]);
 			}
-			show("Refreshed workflows", table(rows));
+			show("Refreshed agents", table(rows));
 		},
 	});
 
 	// --- tools ------------------------------------------------------------------
 	pi.registerTool(
 		defineTool({
-			name: "workflow_scaffold",
-			label: "Create workflow",
+			name: "agent_scaffold",
+			label: "Create agent",
 			description:
-				"Create a new workflow at workflows/<slug>/ with the plan skeleton, agents, commands and a copy of the planning skill. Only after the user ran /workflow-new.",
-			promptSnippet: "Create a workflow",
-			promptGuidelines: ["Use workflow_scaffold to create a workflow instead of running scaffold_workflow.py yourself."],
+				"Create a new agent at agents/<slug>/ with the plan skeleton, agents, commands and a copy of the planning skill. Only after the user ran /agent-new.",
+			promptSnippet: "Create an agent",
+			promptGuidelines: ["Use agent_scaffold to create an agent instead of running scaffold_agent.py yourself."],
 			parameters: Type.Object({
 				slug: Type.String({ description: "short lowercase slug: letters, digits and dashes" }),
 				request: Type.String({ description: "the user's request, verbatim" }),
@@ -342,10 +347,10 @@ export default function prometheus(pi: ExtensionAPI) {
 				if (!root) throw new Error("not inside the Prometheus folder");
 				if (!newRequested)
 					throw new Error(
-						"workflows are created only through /workflow-new. Do not plan this request; answer it normally, and if it is multi-step work, tell the user they can run `/workflow-new <request>`.",
+						"agents are created only through /agent-new. Do not plan this request; answer it normally, and if it is multi-step work, tell the user they can run `/agent-new <request>`.",
 					);
-				const res = await runScript(pi, root, "scaffold_workflow.py", [params.slug, "--root", WORKFLOWS, "--request", params.request], signal);
-				if (res.data === undefined) throw new Error(`scaffold_workflow.py failed: ${(res.stderr || res.stdout).trim().slice(0, 2000)}`);
+				const res = await runScript(pi, root, "scaffold_agent.py", [params.slug, "--root", AGENTS, "--request", params.request], signal);
+				if (res.data === undefined) throw new Error(`scaffold_agent.py failed: ${(res.stderr || res.stdout).trim().slice(0, 2000)}`);
 				if (res.data.ok) newRequested = false;
 				return { content: [{ type: "text" as const, text: JSON.stringify(res.data, null, 2) }], details: res.data };
 			},
@@ -354,15 +359,15 @@ export default function prometheus(pi: ExtensionAPI) {
 
 	pi.registerTool(
 		defineTool({
-			name: "workflow_check",
-			label: "Check workflow",
+			name: "agent_check",
+			label: "Check agent",
 			description:
-				"Validate workflows/<slug>/plan.yaml and compile-check every concrete pending wave. Returns errors, warnings and a summary.",
-			promptSnippet: "Validate and compile-check a workflow plan",
+				"Validate agents/<slug>/plan.yaml and compile-check every concrete pending wave. Returns errors, warnings and a summary.",
+			promptSnippet: "Validate and compile-check an agent plan",
 			promptGuidelines: [
-				"Use workflow_check after every change to a workflow plan, instead of running validate_plan.py or compile_wave.py yourself.",
+				"Use agent_check after every change to an agent plan, instead of running validate_plan.py or compile_wave.py yourself.",
 			],
-			parameters: Type.Object({ slug: Type.String({ description: "the workflow's slug" }) }),
+			parameters: Type.Object({ slug: Type.String({ description: "the agent's slug" }) }),
 			async execute(_id, params, signal, _onUpdate, ctx) {
 				const root = findRoot(ctx.cwd);
 				if (!root) throw new Error("not inside the Prometheus folder");
@@ -374,16 +379,16 @@ export default function prometheus(pi: ExtensionAPI) {
 
 	pi.registerTool(
 		defineTool({
-			name: "workflow_add_package",
+			name: "agent_add_package",
 			label: "Add package",
 			description:
-				"Add Python packages to workflows/<slug>/pyproject.toml (uv add). The user is shown the packages and your reason and must approve first: say plainly why the workflow needs them, in terms of what they do for the user's work.",
-			promptSnippet: "Add a Python package to a workflow, after the user approves it",
-			promptGuidelines: ["To add a Python package to a workflow use workflow_add_package with the reason; never uv add or pip install. If the user declines, work without it or ask what to do instead."],
+				"Add Python packages to agents/<slug>/pyproject.toml (uv add). The user is shown the packages and your reason and must approve first: say plainly why the agent needs them, in terms of what they do for the user's work.",
+			promptSnippet: "Add a Python package to an agent, after the user approves it",
+			promptGuidelines: ["To add a Python package to an agent use agent_add_package with the reason; never uv add or pip install. If the user declines, work without it or ask what to do instead."],
 			parameters: Type.Object({
-				slug: Type.String({ description: "the workflow's slug" }),
+				slug: Type.String({ description: "the agent's slug" }),
 				packages: Type.Array(Type.String(), { description: "requirements as uv add takes them: openpyxl, pandas>=2, httpx[http2]" }),
-				reason: Type.String({ description: "why the workflow needs them, in a sentence the user can judge" }),
+				reason: Type.String({ description: "why the agent needs them, in a sentence the user can judge" }),
 			}),
 			async execute(_id, params, signal, _onUpdate, ctx) {
 				const root = findRoot(ctx.cwd);
@@ -391,9 +396,9 @@ export default function prometheus(pi: ExtensionAPI) {
 				if (!/^[a-z0-9][a-z0-9-]*$/.test(params.slug)) throw new Error("bad slug");
 				if (!ctx.hasUI) throw new Error("adding a package needs the user's approval and no one can be asked here: do not add it");
 				if (!params.packages.length || !params.reason.trim()) throw new Error("name the packages and say why they are needed");
-				const yes = await ctx.ui.confirm("Add a Python package?", `${params.packages.join(", ")} (workflow ${params.slug})\n\nWhy: ${params.reason.trim()}`);
+				const yes = await ctx.ui.confirm("Add a Python package?", `${params.packages.join(", ")} (agent ${params.slug})\n\nWhy: ${params.reason.trim()}`);
 				if (!yes) return { content: [{ type: "text" as const, text: "The user declined. Do not add it: work without it, or ask the user what to do instead." }], details: { declined: true } };
-				const res = await runScript(pi, root, "add_package.py", [...params.packages, "--reason", params.reason, "--workflow", path.join(root, WORKFLOWS, params.slug)], signal);
+				const res = await runScript(pi, root, "add_package.py", [...params.packages, "--reason", params.reason, "--agent", path.join(root, AGENTS, params.slug)], signal);
 				if (res.data === undefined) throw new Error(`add_package.py failed: ${(res.stderr || res.stdout).trim().slice(0, 2000)}`);
 				return { content: [{ type: "text" as const, text: JSON.stringify(res.data, null, 2) }], details: res.data };
 			},

@@ -1,4 +1,4 @@
-"""prometheus_version.py names which Prometheus a workflow's skill copy came from; refresh stamps and uses it."""
+"""prometheus_version.py names which Prometheus an agent's skill copy came from; refresh stamps and uses it."""
 import subprocess
 import sys
 
@@ -7,12 +7,12 @@ from conftest import SKILL
 sys.path.insert(0, str(SKILL / "scripts"))
 import prometheus_version as pv
 
-SCAFFOLD = SKILL / "scripts" / "scaffold_workflow.py"
+SCAFFOLD = SKILL / "scripts" / "scaffold_agent.py"
 
 
 def fake_prometheus(tmp_path):
     root = tmp_path / "prom"
-    skill = root / ".pi" / "skills" / "workflow"
+    skill = root / ".pi" / "skills" / "agent"
     (skill / "scripts").mkdir(parents=True)
     (root / "pyproject.toml").write_text('[project]\nname = "prometheus"\nversion = "1.2.3"\n\n[tool.x]\nversion = "9"\n')
     (skill / "scripts" / "a.py").write_text("one\n")
@@ -40,7 +40,7 @@ def test_a_clean_tree_is_version_plus_commit_and_each_dirty_content_has_its_own_
 
 
 def test_a_commit_outside_the_skill_and_templates_keeps_the_version(tmp_path):
-    # a docs or tests commit must not make every workflow stale
+    # a docs or tests commit must not make every agent stale
     skill, git = fake_prometheus(tmp_path)
     before = pv.current(skill)
     (tmp_path / "prom" / "README.md").write_text("docs\n")
@@ -61,17 +61,17 @@ def test_a_stamped_copy_reports_its_stamp_and_a_foreign_project_has_none(tmp_pat
     assert pv.current(skill) is None
 
 
-def test_refresh_stamps_the_version_names_it_in_the_commit_and_skips_a_current_workflow(tmp_path, run_py):
+def test_refresh_stamps_the_version_names_it_in_the_commit_and_skips_a_current_agent(tmp_path, run_py):
     assert run_py([SCAFFOLD, "ver", "--root", tmp_path, "--request", "x"]).data["ok"]
     wf = tmp_path / "ver"
     version = pv.current()
-    assert (wf / ".pi" / "skills" / "workflow" / pv.VERSION_FILE).read_text().strip() == version
+    assert (wf / ".pi" / "skills" / "agent" / pv.VERSION_FILE).read_text().strip() == version
     assert pv.installed(wf) == version
 
     skipped = run_py([SCAFFOLD, "ver", "--root", tmp_path, "--refresh", "--if-stale"]).data
     assert skipped["ok"] and "already at" in skipped["skipped"] and skipped["prometheus_version"] == version
 
-    (wf / ".pi" / "skills" / "workflow" / pv.VERSION_FILE).write_text("0.0.1+old\n")
+    (wf / ".pi" / "skills" / "agent" / pv.VERSION_FILE).write_text("0.0.1+old\n")
     subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(wf), "commit", "-qam", "old"], check=True)
     refreshed = run_py([SCAFFOLD, "ver", "--root", tmp_path, "--refresh", "--if-stale"]).data
     assert refreshed["ok"] and refreshed["was"] == "0.0.1+old" and refreshed["prometheus_version"] == version

@@ -48,19 +48,19 @@ function FileBody({ name, size: bytes, text, onDownload, save }: { name: string;
   );
 }
 
-// one file of a workflow (a path from its root), opened in the drawer; editable ones save to a change branch
+// one file of an agent (a path from its root), opened in the drawer; editable ones save to a change branch
 export function FileView({ slug, path, editable }: { slug: string; path: string; editable?: boolean }) {
   const [file, setFile] = useState<{ size: number; text: string | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reload, setReload] = useState(0); // a discard puts the file back: read it again, into a fresh editor
   useEffect(() => {
     setFile(null);
-    api<{ size: number; text: string | null }>(`/w/${slug}/file?path=${encodeURIComponent(path)}`).then(setFile, (e: Error) => setError(e.message));
+    api<{ size: number; text: string | null }>(`/a/${slug}/file?path=${encodeURIComponent(path)}`).then(setFile, (e: Error) => setError(e.message));
   }, [slug, path, reload]);
   const save = async (text: string) => {
-    const r = await sendJson<{ branch: string; mode: string }>(`/w/${slug}/file?path=${encodeURIComponent(path)}`, "PUT", text);
-    window.dispatchEvent(new Event("workflows-changed"));
-    return r.mode === "planning" ? "Saved. The workflow has no run yet, so this edits its plan directly." : `Saved on ${r.branch}. Review and merge it from the Workspace.`;
+    const r = await sendJson<{ branch: string; mode: string }>(`/a/${slug}/file?path=${encodeURIComponent(path)}`, "PUT", text);
+    window.dispatchEvent(new Event("agents-changed"));
+    return r.mode === "planning" ? "Saved. The agent has no run yet, so this edits its plan directly." : `Saved on ${r.branch}. Review and merge it from the Workspace.`;
   };
   const c = useChanges(slug);
   const [diff, setDiff] = useState(false);
@@ -84,7 +84,7 @@ export function FileView({ slug, path, editable }: { slug: string; path: string;
       </div>
       {diff && differs && <DiffView slug={slug} path={path} />}
       <div className={diff && differs ? "hidden" : ""}>
-        <FileBody name={path} {...file} save={editable ? save : undefined} onDownload={() => void download(`/w/${slug}/download?path=${encodeURIComponent(path)}`, path.split("/").pop()!)} />
+        <FileBody name={path} {...file} save={editable ? save : undefined} onDownload={() => void download(`/a/${slug}/download?path=${encodeURIComponent(path)}`, path.split("/").pop()!)} />
       </div>
     </div>
   );

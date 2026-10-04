@@ -46,7 +46,7 @@ export function Conversations() {
 
   return (
     <>
-      {/* a heading as the sidebar's title; whose they are (prometheus's, or that workflow's) in a lighter word */}
+      {/* a heading as the sidebar's title; whose they are (prometheus's, or that agent's) in a lighter word */}
       <div className="flex items-center justify-between gap-2 px-6 pt-6 pb-1.5">
         <span className="truncate text-base font-semibold">
           Conversations <span className="text-muted-foreground text-sm font-normal">· {label}</span>

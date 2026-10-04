@@ -1,6 +1,6 @@
-# Tutorial: your first workflow
+# Tutorial: your first agent
 
-In this tutorial we'll build a workflow together that copies a folder of emails into an Excel file. You'll plan it, run it, approve the one step that writes a file, look over what the run taught the workflow, and then run it a second time. That second run is the real payoff: it does the same job with almost no model work at all. Finally, you'll change the workflow twice: once by asking for a change yourself, and once by letting it suggest improvements from how its runs went.
+In this tutorial we'll build an agent together that copies a folder of emails into an Excel file. You'll plan it, run it, approve the one step that writes a file, look over what the run taught the agent, and then run it a second time. That second run is the real payoff: it does the same job with almost no model work at all. Finally, you'll change the agent twice: once by asking for a change yourself, and once by letting it suggest improvements from how its runs went.
 
 It takes about fifteen minutes, and you don't need any emails of your own. We'll make three small samples in step 2.
 
@@ -19,20 +19,20 @@ You also need a model configured in Pi, as for any Pi session.
 
 ## 1. Set up prometheus
 
-prometheus is the agent that plans workflows. Start it in the folder where you cloned this repository:
+prometheus is the agent that plans agents. Start it in the folder where you cloned this repository:
 
 ```sh
 uv sync
 pi
 ```
 
-`uv sync` installs the Python packages the scripts use. When Pi starts, it asks whether to trust the folder. **Accept**: the `/workflow-*` commands exist only in a trusted folder.
+`uv sync` installs the Python packages the scripts use. When Pi starts, it asks whether to trust the folder. **Accept**: the `/agent-*` commands exist only in a trusted folder.
 
-Check: type `/workflow-list`. It answers that there are no workflows yet.
+Check: type `/agent-list`. It answers that there are no agents yet.
 
 ## 2. Create some emails to read
 
-The workflow needs something to read, so make three small emails. Each is different on purpose: one is plain text, one is HTML with a copy recipient, and one has an empty subject. Open a second terminal and run:
+The agent needs something to read, so make three small emails. Each is different on purpose: one is plain text, one is HTML with a copy recipient, and one has an empty subject. Open a second terminal and run:
 
 ```sh
 mkdir -p ~/tutorial-emails && cd ~/tutorial-emails
@@ -77,27 +77,27 @@ ls
 
 You should see the three files. Note the folder's full path, which `echo ~/tutorial-emails` prints, because the run will ask for it in step 5.
 
-## 3. Plan the workflow
+## 3. Plan the agent
 
 With the emails in place, go back to the prometheus terminal and describe the job:
 
 ```text
-/workflow-new I want to read the emails in a folder and save them in an Excel file
+/agent-new I want to read the emails in a folder and save them in an Excel file
 ```
 
-prometheus now plans. You will see it look at what it can, draft a **plan**, and have a second agent, the plan critic, review the draft. Then it asks you whatever it couldn't sensibly guess. In real sessions for this job, that was a single question: should each row hold the email's full text, or a summary of it? Choose the full text. It's copied exactly, and once the workflow has its programs, it costs nothing to produce.
+prometheus now plans. You will see it look at what it can, draft a **plan**, and have a second agent, the plan critic, review the draft. Then it asks you whatever it couldn't sensibly guess. In real sessions for this job, that was a single question: should each row hold the email's full text, or a summary of it? Choose the full text. It's copied exactly, and once the agent has its programs, it costs nothing to produce.
 
-It won't ask where your emails are. That depends on the machine the workflow runs on, so the run asks instead.
+It won't ask where your emails are. That depends on the machine the agent runs on, so the run asks instead.
 
-When prometheus says the workflow is ready, look at what it made:
+When prometheus says the agent is ready, look at what it made:
 
 ```sh
-ls -a workflows/emails-to-excel
+ls -an agents/emails-to-excel
 ```
 
-You should see at least `plan.yaml`, `gates` and `scripts`, plus the workflow's own `.pi` and `.git`.
+You should see at least `plan.yaml`, `gates` and `scripts`, plus the agent's own `.pi` and `.git`.
 
-The plan is the part to look at now. Open `workflows/emails-to-excel/plan.yaml`: near the top are the goal and what counts as done (*from a real run*):
+The plan is the part to look at now. Open `agents/emails-to-excel/plan.yaml`: near the top are the goal and what counts as done (*from a real run*):
 
 ```yaml
 goal: >-
@@ -116,27 +116,27 @@ read-emails      extract the fields from every email
 build-workbook   write the .xlsx
 ```
 
-Yours may name them differently or add a stage, but the shape is the same: look at the input, extract, write. To see what the workflow still needs before it can run, type `/workflow-list emails-to-excel`.
+Yours may name them differently or add a stage, but the shape is the same: look at the input, extract, write. To see what the agent still needs before it can run, type `/agent-list emails-to-excel`.
 
-## 4. Start the workflow agent
+## 4. Start the agent
 
-prometheus only plans. The workflow is a Pi agent of its own, and it does the work. Open a third terminal in the prometheus folder and start it:
+prometheus only plans. The agent is a Pi agent of its own, and it does the work. Open a third terminal in the prometheus folder and start it:
 
 ```sh
-cd workflows/emails-to-excel
+cd agents/emails-to-excel
 pi
 ```
 
 Accept the trust prompt: Pi asks once per folder, and this is a new one.
 
-Check: `/workflow-status` reports that the plan is ready and that no run has started.
+Check: `/agent-status` reports that the plan is ready and that no run has started.
 
 ## 5. Run it
 
 Start the run:
 
 ```text
-/workflow-run
+/agent-run
 ```
 
 The agent asks you to confirm the new run, then asks for the one value it doesn't have: the folder of emails. Give it the absolute path from step 2, such as `/Users/you/tutorial-emails`.
@@ -159,7 +159,7 @@ The agent then checks each `done_when` line from the plan, and tells you whether
 
 ## 6. Look at the result
 
-The agent now asks you to review what the run changed. Leave that question open for a moment and check the result first. In the workflow's folder, the workbook is in the run's `outputs` folder:
+The agent now asks you to review what the run changed. Leave that question open for a moment and check the result first. In the agent's folder, the workbook is in the run's `outputs` folder:
 
 ```sh
 ls runs/*/outputs
@@ -201,9 +201,9 @@ discovery.md  email-rows.json  unparsed-emails.json
 
 Back to the agent's question. The run wrote two small programs, one that reads the emails and one that builds the workbook, so later runs can reuse them instead of writing them again.
 
-Nothing a run writes reaches the workflow until you have seen it. So the programs wait on a **branch** of the workflow's own git repository, not yet on `main`. The agent summarises what is on the branch and asks you to **merge**, **keep** or **discard** it.
+Nothing a run writes reaches the agent until you have seen it. So the programs wait on a **branch** of the agent's own git repository, not yet on `main`. The agent summarises what is on the branch and asks you to **merge**, **keep** or **discard** it.
 
-Choose **merge**. The programs are now part of the workflow:
+Choose **merge**. The programs are now part of the agent:
 
 ```sh
 ls scripts
@@ -224,14 +224,14 @@ git log --oneline main
 Now see what the merge bought you. Start a second run:
 
 ```text
-/workflow-run
+/agent-run
 ```
 
 The agent asks whether to start a new run (yes) and whether the input changed (no).
 
 Watch how it differs. `read-emails` and `build-workbook` now run the programs you merged, as plain commands, in about a tenth of a second each, with no model involved. Only `discover` still uses a model. The run writes no programs, so there is no branch to review at the end.
 
-*From real runs of this workflow:*
+*From real runs of this agent:*
 
 | | First run | A later run |
 |---|---|---|
@@ -244,10 +244,10 @@ Watch how it differs. `read-emails` and `build-workbook` now run the programs yo
 
 Look at that table again: `discover` is now the only stage still using a model. It earned its place on the first run, when nobody knew what your emails looked like. But if your emails always arrive in the same format, it's reading samples just to report what you already know.
 
-So let's take it out. Changing a workflow between runs is the job of `/workflow-revise`. In the workflow agent, type:
+So let's take it out. Changing an agent between runs is the job of `/agent-revise`. In the agent, type:
 
 ```text
-/workflow-revise drop the discover stage: the email format is stable now, so read-emails shouldn't need its report
+/agent-revise drop the discover stage: the email format is stable now, so read-emails shouldn't need its report
 ```
 
 The second half of that request matters. `read-emails` reads `discover`'s report, so the agent needs to know what it should do without it.
@@ -260,31 +260,31 @@ When it's done, it shows you the change and asks you to **merge**, **keep** or *
 git log --oneline main
 ```
 
-The newest commit is your change, and `git tag` shows it has a new revision number. From the next run on, the workflow follows the new plan. If the stage programs still pass their gates without the report, no model is called at all; if one needs adjusting, a model is shown the error and fixes the program once, and you review that fix like any other.
+The newest commit is your change, and `git tag` shows it has a new revision number. From the next run on, the agent follows the new plan. If the stage programs still pass their gates without the report, no model is called at all; if one needs adjusting, a model is shown the error and fixes the program once, and you review that fix like any other.
 
-> If your emails *do* change format one day, the gate on `read-emails` will catch it, and the run will stop and tell you. You can fix the program then with another `/workflow-revise`.
+> If your emails *do* change format one day, the gate on `read-emails` will catch it, and the run will stop and tell you. You can fix the program then with another `/agent-revise`.
 
-## 10. Let the workflow suggest improvements
+## 10. Let the agent suggest improvements
 
-`/workflow-revise` is for changes you already have in mind. `/workflow-improve` is for the ones you haven't spotted yet. It reads back through the workflow's earlier sessions and runs, looking for trouble: failed steps, work done twice, waves that had to be relaunched, money spent where it didn't need to be. Then it proposes fixes, each with the evidence that prompted it. Type:
+`/agent-revise` is for changes you already have in mind. `/agent-improve` is for the ones you haven't spotted yet. It reads back through the agent's earlier sessions and runs, looking for trouble: failed steps, work done twice, waves that had to be relaunched, money spent where it didn't need to be. Then it proposes fixes, each with the evidence that prompted it. Type:
 
 ```text
-/workflow-improve
+/agent-improve
 ```
 
-Even runs that look smooth from the outside leave something to find. *From a real run of this workflow:* it noticed that, after the reviewer had approved a change, the agent went on to check the plan again, twice in one session, which never changed the outcome. It proposed a one-line lesson so the agent would stop doing that.
+Even runs that look smooth from the outside leave something to find. *From a real run of this agent:* it noticed that, after the reviewer had approved a change, the agent went on to check the plan again, twice in one session, which never changed the outcome. It proposed a one-line lesson so the agent would stop doing that.
 
-If it finds nothing new, it says so. You can also point it at something you've noticed, such as `/workflow-improve the approval question is hard to answer`.
+If it finds nothing new, it says so. You can also point it at something you've noticed, such as `/agent-improve the approval question is hard to answer`.
 
 For each proposal, the agent explains in plain words what it noticed, what it would change, and what would stay as it is if you skip it. If you want the details, the evidence and the exact edit are in the chat just above the question. Answer **apply** or **skip** for each one. It may well have only one or two suggestions, or none, after runs this short, and that's fine.
 
-If you applied anything, the changes wait on an `improve/…` branch, and you review it like any other: read the summary, then **merge** or **discard**. Every proposal, applied or skipped, is remembered in `improvements.yaml`, so the next `/workflow-improve` won't suggest a fix you've already turned down.
+If you applied anything, the changes wait on an `improve/…` branch, and you review it like any other: read the summary, then **merge** or **discard**. Every proposal, applied or skipped, is remembered in `improvements.yaml`, so the next `/agent-improve` won't suggest a fix you've already turned down.
 
 ## What you have done
 
-Well done: that's the whole life of a workflow. You planned it with `/workflow-new`, ran it with `/workflow-run`, approved a side effect, reviewed and merged what the first run wrote, and watched the second run reuse it at a fifth of the cost. Then you changed it twice: once with `/workflow-revise`, for a change you had in mind, and once with `/workflow-improve`, for the ones the workflow found itself. Every change went through a branch you reviewed.
+Well done: that's the whole life of an agent. You planned it with `/agent-new`, ran it with `/agent-run`, approved a side effect, reviewed and merged what the first run wrote, and watched the second run reuse it at a fifth of the cost. Then you changed it twice: once with `/agent-revise`, for a change you had in mind, and once with `/agent-improve`, for the ones the agent found itself. Every change went through a branch you reviewed.
 
-Every workflow you build from here works the same way, however different the job.
+Every agent you build from here works the same way, however different the job.
 
 ## Where to go next
 

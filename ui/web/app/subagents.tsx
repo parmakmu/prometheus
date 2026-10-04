@@ -18,7 +18,7 @@ export type Child = {
   // a command child (no model): the program it ran and the gate after it, or a map stage's split / merge
   program?: { op?: string; script?: string | null; command?: string | null; gate?: string | null; exit?: number | null; gateExit?: number | null };
 };
-const isProgram = (c: Child) => !!c.program || c.agent === "workflow-batcher";
+const isProgram = (c: Child) => !!c.program || c.agent === "batcher";
 type Wave = { id: string; state: string; startedAt: number | null; endedAt: number | null; cost: number | null; children: Child[] };
 
 const DONE = new Set(["complete", "completed", "done", "succeeded"]);
@@ -75,7 +75,7 @@ type Report = {
   criteriaSatisfied?: { id?: string; status?: string; evidence?: string }[]; diffSummary?: string; changedFiles?: string[]; testsAddedOrUpdated?: string[];
   commandsRun?: { command?: string; result?: string; summary?: string }[]; validationOutput?: string[]; reviewFindings?: string[]; residualRisks?: string[]; manualNotes?: string;
 };
-const inWorkflow = (p: string) => p.replace(/^.*\/workflows\/[^/]+\//, ""); // a path as the workflow's folder sees it
+const inAgent = (p: string) => p.replace(/^.*\/agents\/[^/]+\//, ""); // a path as the agent's folder sees it
 
 function AcceptanceReport({ r }: { r: Report }) {
   const list = (label: string, items?: string[]) =>
@@ -101,7 +101,7 @@ function AcceptanceReport({ r }: { r: Report }) {
       {r.changedFiles?.length ? (
         <div>
           <p className="text-muted-foreground text-xs font-medium">Files changed</p>
-          {r.changedFiles.map((f) => <p key={f} title={f} className="font-mono text-xs">{inWorkflow(f)}</p>)}
+          {r.changedFiles.map((f) => <p key={f} title={f} className="font-mono text-xs">{inAgent(f)}</p>)}
         </div>
       ) : null}
       {list("Tests added or updated", r.testsAddedOrUpdated)}
