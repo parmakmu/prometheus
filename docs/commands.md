@@ -194,6 +194,7 @@ You don't call these. They are here so you can read a tool result or a refusal t
 |---|---|---|
 | [`workflow_scaffold`](#workflow_scaffold) | prometheus | create the folder for the workflow being planned |
 | [`workflow_check (prometheus)`](#workflow_check-prometheus) | prometheus | check a workflow's plan from prometheus |
+| [`workflow_add_package`](#workflow_add_package) | both | add a Python package, after you approve it and its reason |
 | [`workflow_check`](#workflow_check) | Workflow | check the plan and say where the workflow stands |
 | [`workflow_new_run`](#workflow_new_run) | Workflow | start a run |
 | [`workflow_compile`](#workflow_compile) | Workflow | turn the next wave into a pi-subagents call, or say what must happen first |
@@ -257,11 +258,11 @@ Starts a run.
 workflow_new_run({ note? })
 ```
 
-**States:** `planned`, `ready` → `between_waves`
+**States:** `planned`, `ready`, `branch_review`, `change_draft`, `change_ready` → `between_waves`
 
-Creates `runs/<id>/` (`<date>-<n>`) as the active run. Commits leftover changes: before the first run on `main`, since that is planning; after it on the run's branch `run/<id>`.
+Creates `runs/<id>/` (`<date>-<n>`) as the active run. A run always starts from `main`: with a run or change branch checked out, it commits that branch's leftovers to it, switches to `main` and keeps the branch for review (`left_branch` in the result). Commits leftover changes: before the first run on `main`, since that is planning; after it on the run's branch `run/<id>`.
 
-**Refusals:** [a run is active](troubleshooting.md#a-run-is-already-active) · [a branch is not reviewed](troubleshooting.md#branch-not-reviewed) · [the plan is not ready](troubleshooting.md#plan-not-ready)
+**Refusals:** [a run is active](troubleshooting.md#a-run-is-already-active) · [main's plan is not ready while a branch is checked out](troubleshooting.md#branch-not-reviewed) · [the plan is not ready](troubleshooting.md#plan-not-ready)
 
 ### workflow_compile
 
@@ -401,6 +402,21 @@ workflow_merge({ action: "merge" | "keep" | "discard", summary? })
 Uncommitted changes are committed on the branch first.
 
 **Refusals:** [the plan is not ready](troubleshooting.md#merge-a-plan-that-is-not-ready) · [conflict with `main`](troubleshooting.md#merge-conflicts-with-main)
+
+### workflow_add_package
+
+Adds Python packages to the workflow's `pyproject.toml`, after you approve them.
+
+```text
+workflow_add_package({ packages: ["openpyxl", …], reason })            (in a workflow)
+workflow_add_package({ slug, packages: ["openpyxl", …], reason })      (in prometheus, for a workflow it is planning)
+```
+
+**States:** all but `wave_running`; not on `main` once a run exists (packages change where a change can be reviewed)
+
+It shows you the packages and the reason, and runs `uv add` only on a yes; on a no it tells the agent to work without the package or ask you. `uv add`, `pip install` and the script behind the tool are blocked for the agent in bash. A stage's subagent can't ask, so it is told to report the package it needs and why, and the agent asks you afterwards. Requirements are checked first: names with optional extras and version bounds, nothing else (no URLs, flags or paths).
+
+**Refusals:** [package not in pyproject.toml](troubleshooting.md#package-not-in-pyprojecttoml)
 
 ### workflow_set_params
 

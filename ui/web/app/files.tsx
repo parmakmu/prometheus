@@ -1,133 +1,91 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronRight, Copy, Download, FileText, Folder, FolderUp, Trash2, Upload } from "lucide-react";
-import { api, download, send } from "./api";
-
-type Entry = { name: string; dir: boolean; size: number; modified: string };
-type Listing = { root: string; dir: string; path: string; entries: Entry[] };
+import { useEffect, useState } from "react";
+import { Download, Lock, Trash2 } from "lucide-react";
+import { api, download, sendJson } from "./api";
+import { CodeEditor } from "./code-editor";
+import { BranchChip, DiffView, discardEdits, useChanges } from "./changes";
 
 const size = (n: number) => (n > 1e6 ? `${(n / 1e6).toFixed(1)} MB` : n > 1e3 ? `${(n / 1e3).toFixed(1)} kB` : `${n} B`);
-const join = (...p: string[]) => p.filter(Boolean).join("/");
 
-// Your input files, on the server: workflows read them from here (read-only). Give a run the path shown.
-export function FilesPanel() {
-  const [dir, setDir] = useState("");
-  const [list, setList] = useState<Listing | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const filesInput = useRef<HTMLInputElement>(null);
-  const folderInput = useRef<HTMLInputElement>(null);
-  const load = useCallback(() => {
-    api<Listing>(`/files?dir=${encodeURIComponent(dir)}`).then(setList, (e: Error) => setError(e.message));
-  }, [dir]);
-  useEffect(load, [load]);
-
-  const uploadAll = async (files: FileList | null) => {
-    if (!files?.length) return;
-    setError(null);
-    for (const [i, f] of [...files].entries()) {
-      const rel = join(dir, (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name);
-      setBusy(`uploading ${i + 1} of ${files.length}: ${rel}`);
-      try {
-        await send(`/files?path=${encodeURIComponent(rel)}`, "PUT", f);
-      } catch (e) {
-        setError(String((e as Error).message));
-        break;
-      }
+// a file's text, or a note that it has no preview; `editable` makes it an editor with a Save button
+function FileBody({ name, size: bytes, text, onDownload, save }: { name: string; size: number; text: string | null; onDownload: () => void; save?: (text: string) => Promise<string> }) {
+  const [draft, setDraft] = useState(text ?? "");
+  const [saved, setSaved] = useState(text ?? "");
+  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const dirty = draft !== saved;
+  const doSave = async () => {
+    if (!save || !dirty || busy) return;
+    setBusy(true);
+    try {
+      setNote({ ok: true, text: await save(draft) });
+      setSaved(draft);
+    } catch (e) {
+      setNote({ ok: false, text: (e as Error).message });
     }
-    setBusy(null);
-    load();
+    setBusy(false);
   };
-  const remove = async (name: string) => {
-    if (!confirm(`Delete ${name}?`)) return;
-    await send(`/files?path=${encodeURIComponent(join(dir, name))}`, "DELETE").catch((e) => setError(e.message));
-    load();
-  };
-  const crumbs = dir ? dir.split("/") : [];
-
   return (
     <div>
-      <p className="text-muted-foreground text-xs tracking-wide uppercase">Your files</p>
-      <div className="mt-1 flex flex-wrap items-center gap-1 text-sm">
-        <button type="button" onClick={() => setDir("")} className="font-medium hover:underline">files</button>
-        {crumbs.map((c, i) => (
-          <span key={i} className="flex items-center gap-1">
-            <ChevronRight className="text-muted-foreground size-3.5" />
-            <button type="button" onClick={() => setDir(crumbs.slice(0, i + 1).join("/"))} className="hover:underline">{c}</button>
-          </span>
-        ))}
+      <div className="text-muted-foreground mb-2 flex items-center gap-2 text-xs">
+        <span className="truncate font-mono">{name}</span>
+        <span>{size(bytes)}</span>
+        {!save && <span className="bg-muted flex items-center gap-1 rounded-full px-2 py-0.5"><Lock className="size-3" /> read-only</span>}
+        {save && dirty && <span className="text-amber-700">unsaved</span>}
+        {save && (
+          <button type="button" disabled={!dirty || busy} onClick={() => void doSave()} className="bg-primary text-primary-foreground ml-auto rounded-md px-2 py-1 disabled:opacity-40">
+            {busy ? "Saving…" : "Save"}
+          </button>
+        )}
+        <button type="button" onClick={onDownload} className={`hover:text-foreground flex items-center gap-1 ${save ? "" : "ml-auto"}`}>
+          <Download className="size-3.5" /> Download
+        </button>
       </div>
-      {list && (
-        <button
-          type="button"
-          onClick={() => navigator.clipboard.writeText(list.path)}
-          title="Copy: give this path when a run asks for a folder"
-          className="bg-muted mt-2 flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left font-mono text-xs"
-        >
-          <Copy className="size-3.5 shrink-0" />
-          <span className="truncate">{list.path}</span>
-        </button>
-      )}
-      <div className="mt-3 flex gap-2">
-        <button type="button" onClick={() => filesInput.current?.click()} className="hover:bg-accent flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm">
-          <Upload className="size-4" /> Upload files
-        </button>
-        <button type="button" onClick={() => folderInput.current?.click()} className="hover:bg-accent flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm">
-          <FolderUp className="size-4" /> Upload a folder
-        </button>
-        <input ref={filesInput} type="file" multiple hidden onChange={(e) => void uploadAll(e.target.files)} />
-        <input ref={folderInput} type="file" hidden {...{ webkitdirectory: "" }} onChange={(e) => void uploadAll(e.target.files)} />
-      </div>
-      {busy && <p className="text-muted-foreground mt-2 text-xs">{busy}</p>}
-      {error && <p className="mt-2 text-xs text-red-600">{error}</p>}
-      <ul className="bg-card mt-3 divide-y overflow-hidden rounded-xl border">
-        {list?.entries.length === 0 && <li className="text-muted-foreground px-3 py-6 text-center text-sm">Empty. Upload the files your workflows should read.</li>}
-        {list?.entries.map((e) => (
-          <li key={e.name} className="group flex items-center gap-2 px-3 py-2 text-sm">
-            {e.dir ? <Folder className="text-primary size-4 shrink-0" /> : <FileText className="text-muted-foreground size-4 shrink-0" />}
-            {e.dir ? (
-              <button type="button" onClick={() => setDir(join(dir, e.name))} className="truncate hover:underline">{e.name}</button>
-            ) : (
-              <span className="truncate">{e.name}</span>
-            )}
-            <span className="text-muted-foreground ml-auto shrink-0 text-xs">{e.dir ? "" : size(e.size)}</span>
-            {!e.dir && (
-              <button type="button" title="Download" onClick={() => void download(`/files/download?path=${encodeURIComponent(join(dir, e.name))}`, e.name)} className="text-muted-foreground hover:text-foreground">
-                <Download className="size-3.5" />
-              </button>
-            )}
-            <button type="button" title="Delete" onClick={() => void remove(e.name)} className="text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-red-600">
-              <Trash2 className="size-3.5" />
-            </button>
-          </li>
-        ))}
-      </ul>
+      {note && <p className={`mb-2 text-xs ${note.ok ? "text-emerald-700" : "text-red-600"}`}>{note.text}</p>}
+      {text === null ? <p className="text-muted-foreground text-sm">No preview for this file: download it instead.</p> : <CodeEditor name={name} value={text} onChange={save ? setDraft : undefined} onSave={() => void doSave()} />}
     </div>
   );
 }
 
-// a workflow's results (runs/<id>/outputs/), to download
-export function Outputs({ slug }: { slug: string }) {
-  const [files, setFiles] = useState<{ run: string; path: string; size: number }[] | null>(null);
+// one file of a workflow (a path from its root), opened in the drawer; editable ones save to a change branch
+export function FileView({ slug, path, editable }: { slug: string; path: string; editable?: boolean }) {
+  const [file, setFile] = useState<{ size: number; text: string | null } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [reload, setReload] = useState(0); // a discard puts the file back: read it again, into a fresh editor
   useEffect(() => {
-    api<{ run: string; path: string; size: number }[]>(`/w/${slug}/outputs`).then(setFiles, () => setFiles([]));
-  }, [slug]);
-  if (!files) return null;
+    setFile(null);
+    api<{ size: number; text: string | null }>(`/w/${slug}/file?path=${encodeURIComponent(path)}`).then(setFile, (e: Error) => setError(e.message));
+  }, [slug, path, reload]);
+  const save = async (text: string) => {
+    const r = await sendJson<{ branch: string; mode: string }>(`/w/${slug}/file?path=${encodeURIComponent(path)}`, "PUT", text);
+    window.dispatchEvent(new Event("workflows-changed"));
+    return r.mode === "planning" ? "Saved. The workflow has no run yet, so this edits its plan directly." : `Saved on ${r.branch}. Review and merge it from the Workspace.`;
+  };
+  const c = useChanges(slug);
+  const [diff, setDiff] = useState(false);
+  const differs = !!c?.files.some((f) => f.path === path);
+  if (error) return <p className="text-xs text-red-600">{error}</p>;
+  if (!file) return null;
+  const tab = (on: boolean) => `rounded-md px-2 py-1 text-xs ${on ? "bg-accent font-medium" : "text-muted-foreground hover:bg-accent/60"}`;
   return (
-    <ul className="bg-card divide-y overflow-hidden rounded-xl border">
-      {files.length === 0 && <li className="text-muted-foreground px-3 py-4 text-center text-sm">No results yet</li>}
-      {files.map((f) => (
-        <li key={f.path} className="flex items-center gap-2 px-3 py-2 text-sm">
-          <FileText className="text-muted-foreground size-4 shrink-0" />
-          <span className="truncate">{f.path.split("/").pop()}</span>
-          <span className="text-muted-foreground font-mono text-xs">{f.run}</span>
-          <span className="text-muted-foreground ml-auto text-xs">{size(f.size)}</span>
-          <button type="button" title="Download" onClick={() => void download(`/w/${slug}/download?path=${encodeURIComponent(f.path)}`, f.path.split("/").pop()!)} className="text-muted-foreground hover:text-foreground">
-            <Download className="size-3.5" />
-          </button>
-        </li>
-      ))}
-    </ul>
+    <div>
+      <div className="mb-3 flex items-center gap-2">
+        {c && <BranchChip branch={c.branch} />}
+        {differs && (
+          <>
+            <button type="button" onClick={() => setDiff(false)} className={tab(!diff)}>File</button>
+            <button type="button" onClick={() => setDiff(true)} className={tab(diff)}>Changes</button>
+            <button type="button" onClick={() => void discardEdits(slug, path).then((done) => done && (setDiff(false), setReload((n) => n + 1))).catch((e: Error) => alert(e.message))} className="text-muted-foreground ml-auto flex items-center gap-1 text-xs hover:text-red-600">
+              <Trash2 className="size-3.5" /> Discard edits
+            </button>
+          </>
+        )}
+      </div>
+      {diff && differs && <DiffView slug={slug} path={path} />}
+      <div className={diff && differs ? "hidden" : ""}>
+        <FileBody name={path} {...file} save={editable ? save : undefined} onDownload={() => void download(`/w/${slug}/download?path=${encodeURIComponent(path)}`, path.split("/").pop()!)} />
+      </div>
+    </div>
   );
 }

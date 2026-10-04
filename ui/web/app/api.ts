@@ -40,3 +40,11 @@ export async function download(path: string, name: string) {
   Object.assign(document.createElement("a"), { href: url, download: name }).click();
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
+
+// like `send`, but returns the answer; a refusal's text is the error
+export async function sendJson<T>(path: string, method: "PUT" | "POST", body: BodyInit): Promise<T> {
+  const r = await fetch(`${API}${path}`, { method, headers: authHeaders(), body });
+  if (r.status === 403) throw new Error(NO_ACCESS);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json() as Promise<T>;
+}

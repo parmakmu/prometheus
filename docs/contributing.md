@@ -79,6 +79,8 @@ The suite covers plan validation and derived waves, params, map batching, scaffo
 
 [`tests/test_workflow.py`](../tests/test_workflow.py) is one continuous scenario (scaffold, compile, run, replan, merge, export): later tests use what earlier ones left on disk, so its tests run in file order. Don't add a test-randomizing plugin, put a new check where the state it needs exists, and rerun the whole file rather than one test from it.
 
+The suite runs on all cores (pytest-xdist, `-n auto --dist loadgroup` in `pyproject.toml`; about 28 s instead of 71 s). Tests that share state are kept on one worker by an `xdist_group` mark: the whole of `test_workflow.py`, the state-machine walk, the tests reading `test_run_finish.py`'s `finished` run, and `test_params.py`. A new test that uses a module-scoped fixture or state another test left belongs in its file's group. To debug one test serially: `uv run pytest -n 0 -k <name>`.
+
 ## Rules for a change
 
 - **A validator rule** gets a broken-variant case in [`tests/test_validator.py`](../tests/test_validator.py).

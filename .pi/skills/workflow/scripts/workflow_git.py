@@ -82,10 +82,16 @@ def head(workflow):
 
 
 def branch(workflow):
-    """The checked-out branch (None without a repo)."""
-    if not available() or not is_repo(workflow):
+    """The checked-out branch (None without a repo, or with a detached HEAD). Read from .git/HEAD, as
+    `git symbolic-ref --short HEAD` would answer: every result's state asks, and a git process each
+    time was most of a state's cost."""
+    if not is_repo(workflow):
         return None
-    return git(workflow, "symbolic-ref", "--short", "-q", "HEAD", check=False).stdout.strip() or None
+    try:
+        ref = (Path(workflow) / ".git" / "HEAD").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return ref.removeprefix("ref: refs/heads/") if ref.startswith("ref: refs/heads/") else None
 
 
 def identity(workflow):
@@ -168,10 +174,14 @@ def is_review_branch(name):
 
 
 def unmerged_branches(workflow):
+    """Run and change branches waiting for review: those with commits main lacks, and the checked-out one even
+    without any (begin-change leaves the edits uncommitted, so a fresh revise/ branch still sits at main's tip)."""
     if not available() or not is_repo(workflow):
         return []
     r = git(workflow, "branch", "--no-merged", MAIN, "--format=%(refname:short)", check=False)
-    return [b for b in r.stdout.split() if is_review_branch(b)]
+    waiting = [b for b in r.stdout.split() if is_review_branch(b)]
+    current = branch(workflow)
+    return waiting + [current] if is_review_branch(current) and current not in waiting else waiting
 
 
 # --- commands -----------------------------------------------------------------
@@ -240,6 +250,12 @@ def review():
 AT_REVIEW = "Uncommitted changes at review"
 
 
+def leave_branch(workflow):
+    """Commit what is uncommitted to the checked-out branch and switch to main; the branch is kept."""
+    commit(workflow, AT_REVIEW)  # leftovers belong to the branch
+    git(workflow, "switch", "-q", MAIN)
+
+
 def merge_message(workflow, b, summary, steps):
     """`r<rev>: <branch>`, then the summary, the files changed and the branch's own steps (not the review's leftovers)."""
     stat = git(workflow, "diff", "--cached", "--stat").stdout.rstrip()
@@ -265,8 +281,7 @@ def merge(action: Annotated[str, typer.Option(help="merge | keep | discard")],
         if errors or why_not_ready(workflow, plan):
             refuse(f"the plan on {b} is {plan.get('status')}" + (f" with errors {errors[:3]}" if errors else "")
                    + ": only a ready, valid plan can reach main. Finish the change (critic, workflow_record_critique), or keep or discard the branch.")
-    commit(workflow, AT_REVIEW)  # leftovers belong to the branch
-    git(workflow, "switch", "-q", MAIN)
+    leave_branch(workflow)
     if action == "merge":
         # one commit on main per merged branch (a squash); the branch's commits were its working steps
         steps = [s for s in git(workflow, "log", "--reverse", "--format=%s", f"{MAIN}..{b}").stdout.splitlines() if s != AT_REVIEW]

@@ -12,8 +12,11 @@ package = false
 [dependency-groups]
 dev = [
     "pytest>=8.3",
+    "pytest-xdist>=3.8.0",
     "ruff>=0.16.9",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# all cores; tests marked xdist_group (a shared scenario or module fixture) stay together on one worker
+addopts = "-n auto --dist loadgroup"

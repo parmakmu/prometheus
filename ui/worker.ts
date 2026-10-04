@@ -11,14 +11,16 @@
  *
  * Events Pi emits while no run is open (a wave's completion notice) are not delivered yet.
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
 import { createServer, type ServerResponse } from "node:http";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { EventType } from "@ag-ui/core";
 import { EventEncoder } from "@ag-ui/encoder";
-import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
+// Pi itself: the global install the router found (it names it for pi-subagents too), loaded by path
+const PI_ROOT = process.env.PI_SUBAGENTS_PI_CODING_AGENT_PACKAGE_ROOT!;
+const { createAgentSession, SessionManager } = await import(pathToFileURL(path.join(PI_ROOT, "dist", "index.js")).href);
 
 const CWD = path.resolve(process.env.AGENT_CWD ?? path.join(import.meta.dirname, ".."));
 const SOCKET = process.env.WORKER_SOCKET ?? path.join(CWD, ".pi", "worker.sock");
@@ -80,7 +82,7 @@ const noop = () => {};
 // in the chat), which takes keys for its handleInput. Whole frames: a page that connects late, or misses
 // one, just shows the latest. Pi's theme and keybindings by file (the package's exports leave them out;
 // by path they are the very modules the extensions get).
-const PI = path.dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent")));
+const PI = path.join(PI_ROOT, "dist");
 const piModule = (p: string) => import(pathToFileURL(path.join(PI, p)).href);
 const { theme, initTheme } = await piModule("modes/interactive/theme/theme.js");
 const { KeybindingsManager } = await piModule("core/keybindings.js");
@@ -333,15 +335,60 @@ const settled = async () => {
     await idle();
 };
 
+// A command such as /workflow-run reaches Pi's session as the prompt it sends the model, not as what you typed. The
+// worker notes which command a prompt came from in the session itself (a custom entry, which the model never sees
+// and the terminal ignores), so the history shows "/workflow-run" as you typed it: not the prompt, and not as two
+// versions of one message (the page's "/workflow-run" and the session's prompt, which it showed as branches 1/2, 2/2).
+const COMMAND_ENTRY = "prometheus-ui-command";
+const hashOf = (text: string) => createHash("sha256").update(text.trim()).digest("hex").slice(0, 16);
+let commandPending = ""; // the command just sent, until its prompt arrives as a user message
+function noteCommandPrompt(message: any) {
+    const prompt = textOf(message?.content).trim();
+    if (!commandPending || !prompt || prompt === commandPending) return;
+    session.sessionManager.appendCustomEntry(COMMAND_ENTRY, { command: commandPending, prompt: hashOf(prompt) });
+    commandPending = "";
+}
+const commandsByPrompt = () =>
+    new Map<string, string>(
+        session.sessionManager
+            .getEntries()
+            .filter((e: any) => e.type === "custom" && e.customType === COMMAND_ENTRY && e.data?.prompt)
+            .map((e: any) => [e.data.prompt, e.data.command]),
+    );
+
+// What a thinking block says: its text, else the readable summaries in its provider data (OpenRouter keeps them in
+// the block's signature as reasoning_details), else a note that the model sent its reasoning encrypted (OpenAI's
+// models through OpenRouter often do), so the Details say why there is nothing to read rather than show nothing.
+const HIDDEN_THOUGHT = "(The model kept this reasoning private: it sent it encrypted, with no readable summary.)";
+function thoughtOf(block: any): string {
+    if (block?.thinking?.trim()) return block.thinking;
+    try {
+        const details = JSON.parse(block?.thinkingSignature ?? "");
+        const text = (Array.isArray(details) ? details : [details]).map((d: any) => d?.summary ?? d?.text ?? "").filter(Boolean).join("\n\n");
+        if (text.trim()) return text;
+    } catch {}
+    return HIDDEN_THOUGHT;
+}
+
 // The conversation so far, from Pi's session (the record that survives reloads and restarts), as AG-UI
-// messages. Ids are "pi-<index>": a run whose last user message has such an id brings nothing new.
+// messages: the current branch of its tree, root to leaf. Ids are "pi-<entry id>": a run whose last user message has
+// such an id brings nothing new, and an edit names the entry it rewinds to. An assistant message's thinking comes
+// first, as a reasoning message, so the page can show it in the turn's Details.
+const branchMessages = () =>
+    (session.sessionManager.getBranch() as any[])
+        .filter((e) => e.type === "message" || e.type === "custom_message")
+        .map((e) => ({ id: e.id, m: e.type === "message" ? e.message : { role: "custom", content: e.content, display: e.display } }));
+
 function snapshot() {
     const out: Record<string, unknown>[] = [];
-    session.messages.forEach((m: any, i: number) => {
-        const id = `pi-${i}`;
-        if (m.role === "user") out.push({ id, role: "user", content: textOf(m.content) });
+    const commands = commandsByPrompt();
+    for (const { id: entry, m } of branchMessages()) {
+        const id = `pi-${entry}`;
+        if (m.role === "user") out.push({ id, role: "user", content: commands.get(hashOf(textOf(m.content))) ?? textOf(m.content) });
         else if (m.role === "assistant") {
             const parts: any[] = Array.isArray(m.content) ? m.content : [];
+            const thinking = [...new Set(parts.filter((p) => p.type === "thinking").map(thoughtOf))].join("\n\n");
+            if (thinking) out.push({ id: `${id}-thinking`, role: "reasoning", content: thinking });
             const toolCalls = parts
                 .filter((p) => p.type === "toolCall")
                 .map((p) => ({ id: p.id, type: "function", function: { name: p.name, arguments: JSON.stringify(p.arguments ?? {}) } }));
@@ -350,13 +397,45 @@ function snapshot() {
             const limit = String(m.toolName).startsWith("workflow_") ? 20000 : 4000;
             out.push({ id, role: "tool", toolCallId: m.toolCallId, content: textOf(m.content).slice(0, limit) || "done" });
         } else if (m.role === "custom" && m.display !== false && textOf(m.content)) out.push({ id, role: "assistant", content: textOf(m.content) });
-    });
+    }
     return out;
+}
+
+// Editing a message of yours: Pi's session is a tree, so an edit is a real branch. POST /edit {entry} rewinds the
+// session to just before that message (Pi's navigateTree, as /tree does in the terminal; the old path stays in the
+// session as a branch), then the page sends the edited text, which continues from there. Only messages after the
+// last /workflow-… command: a workflow command acts on the disk (runs, commits), which rewinding the conversation
+// would not undo.
+function editRefusal(entry: string): string | null {
+    if (busy || session.isStreaming) return "The agent is working: edit once it has finished.";
+    const users = branchMessages().filter((x) => x.m.role === "user");
+    const at = users.findIndex((x) => x.id === entry);
+    if (at < 0) return "That message is not in this conversation's current branch.";
+    const commands = commandsByPrompt();
+    const lastCommand = users.reduce((n, x, i) => ((commands.get(hashOf(textOf(x.m.content))) ?? textOf(x.m.content)).trim().startsWith("/workflow-") ? i : n), -1);
+    if (at <= lastCommand) return "Only messages after the last workflow command can be edited: the command's work (runs, commits) would not be undone.";
+    return null;
+}
+function edit(req: any, res: ServerResponse) {
+    let body = "";
+    req.on("data", (c: Buffer) => (body += c));
+    req.on("end", async () => {
+        const entry = String(JSON.parse(body || "{}").entry ?? "").replace(/^pi-/, "");
+        const why = editRefusal(entry);
+        if (why) {
+            res.writeHead(409, { "Content-Type": "text/plain" });
+            return res.end(why);
+        }
+        await session.navigateTree(entry, { summarize: false });
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+    });
 }
 
 let turn = 0;
 let asking = false; // ask_user_question is running
 const opened = new Set<string>(); // text/reasoning blocks whose START this run has sent
+const thought = new Set<string>(); // reasoning blocks that have streamed some text
 let partial: any = null; // the assistant message being written, for a page that attaches mid-way
 session.subscribe((event: any) => {
     if (process.env.DEBUG) console.error("pi:", event.type, event.assistantMessageEvent?.type ?? event.toolName ?? "", event.type === "message_end" ? JSON.stringify({ role: event.message?.role, stop: event.message?.stopReason, err: event.message?.errorMessage, text: textOf(event.message?.content).slice(0, 200) }) : "");
@@ -368,6 +447,7 @@ session.subscribe((event: any) => {
     if (event.type === "message_start" && event.message?.role === "assistant") turn++;
     if (event.type === "message_update") partial = event.message;
     if (event.type === "message_end") partial = null;
+    if (event.type === "message_end" && event.message?.role === "user") noteCommandPrompt(event.message);
     if (event.toolName === "ask_user_question") asking = event.type === "tool_execution_start";
     if (!sink) return;
     if (event.type === "message_update") {
@@ -384,9 +464,11 @@ session.subscribe((event: any) => {
         else if (e.type === "text_delta") (text(), emit({ type: EventType.TEXT_MESSAGE_CONTENT, messageId, delta: e.delta }));
         else if (e.type === "text_end") (text(), emit({ type: EventType.TEXT_MESSAGE_END, messageId }), opened.delete(messageId));
         else if (e.type === "thinking_start") reasoning();
-        else if (e.type === "thinking_delta") (reasoning(), emit({ type: EventType.REASONING_MESSAGE_CONTENT, messageId, delta: e.delta }));
+        else if (e.type === "thinking_delta") (reasoning(), thought.add(messageId), emit({ type: EventType.REASONING_MESSAGE_CONTENT, messageId, delta: e.delta }));
         else if (e.type === "thinking_end") {
             reasoning();
+            // nothing streamed: a summary from the block's provider data, or the note that it is encrypted
+            if (!thought.delete(messageId)) emit({ type: EventType.REASONING_MESSAGE_CONTENT, messageId, delta: thoughtOf(e.partial?.content?.[e.contentIndex]) });
             emit({ type: EventType.REASONING_MESSAGE_END, messageId });
             emit({ type: EventType.REASONING_END, messageId });
             opened.delete(messageId);
@@ -458,10 +540,13 @@ async function run(input: any, res: ServerResponse) {
     lastCommand = text.startsWith("/") ? text.split(/\s/)[0] : "";
     try {
         if (text.startsWith("/") && (await builtin(text))) return finish({ type: "success" });
+        commandPending = text.startsWith("/") ? text : ""; // an extension's command: its prompt is noted when it arrives
         if (process.env.DEBUG) console.error("prompt:", text, "streaming:", session.isStreaming);
         if (session.isStreaming) await session.followUp(text);
         else await session.prompt(text);
         await settled();
+        commandPending = ""; // a command that sent no prompt (it only showed something) leaves nothing to note
+        emit({ type: EventType.MESSAGES_SNAPSHOT, messages: snapshot() }); // the page's messages get Pi's ids (edits name them)
         await panelsClosed();
         finish({ type: "success" });
     } catch (err) {
@@ -582,17 +667,23 @@ function setModel(req: any, res: ServerResponse) {
     });
 }
 
+// whether a command needs text after it, read from the usage its description shows: `<x>` required, `[x]` or none
+// optional. The page runs a command with nothing required at once, and fills in one that needs input.
+const argsOf = (description: string) => (/<[^>]+>/.test(description.replace(/\[[^\]]*\]/g, "")) ? "required" : /\[[^\]]+\]/.test(description) ? "optional" : "none");
+
 function commands(res: ServerResponse) {
     const runner = (session as any)._extensionRunner;
     const list = (runner?.getRegisteredCommands?.() ?? []).map((c: any) => ({
         name: c.invocationName ?? c.name,
         description: c.description ?? "",
+        args: argsOf(c.description ?? ""),
     }));
     res.writeHead(200, { "Content-Type": "application/json" });
     // this agent's own first (/workflow-…); the other extensions' (some only make sense in the terminal) after
     const ours = (c: any) => (c.name.startsWith("workflow-") ? 0 : 1);
     for (const c of list) c.group = ours(c) ? "Other extensions" : "main"; // main: this agent's own
-    const pi = Object.entries(BUILTIN).map(([name, description]) => ({ name, description, group: "pi" }));
+    // Pi's own all run without text: what they need they ask (/model's picker, /thinking's choice, /name's field)
+    const pi = Object.entries(BUILTIN).map(([name, description]) => ({ name, description, group: "pi", args: "optional" }));
     res.end(JSON.stringify([...list.filter((c: any) => !ours(c)), ...pi, ...list.filter((c: any) => ours(c))].sort((a: any, b: any) => (a.group === "main" ? 0 : a.group === "pi" ? 1 : 2) - (b.group === "main" ? 0 : b.group === "pi" ? 1 : 2) || a.name.localeCompare(b.name))));
 }
 
@@ -614,6 +705,7 @@ createServer((req, res) => {
         });
         return;
     }
+    if (req.method === "POST" && req.url === "/edit") return edit(req, res);
     const pm = req.url.match(/^\/panel\/([\w-]+)\/(stream|input|resize|action)$/);
     if (pm) return panelRoute(pm[1], pm[2], req, res);
     if (req.method !== "POST" || req.url !== "/agent") {

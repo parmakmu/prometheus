@@ -256,8 +256,9 @@ class Compiler:
             lit(f"\nWrite this stage's program at {script}, then run it{run_as} to write the outputs; do not process "
                 "items by hand. Later runs reuse it" + (", running it with exactly these arguments without a model"
                 if command else "") + ": take every input and output location as a command-line argument "
-                f"(nothing of this run hard-coded), use the packages {self.workflow / 'pyproject.toml'} lists (add one it "
-                f"lacks with `uv add --project {self.workflow} <package>`; never a `# /// script` block), "
+                f"(nothing of this run hard-coded), use the packages {self.workflow / 'pyproject.toml'} lists (if it "
+                "needs one the file lacks, do not add it yourself: the user must approve a new package, and you cannot ask. "
+                "Say which package and why in your answer, or fail the stage; never a `# /// script` block), "
                 "and say how to run it in its docstring.\n")
         elif kind == "deterministic":
             lit("\nThis is mechanical work: write a program that does it, run it, and keep the program "

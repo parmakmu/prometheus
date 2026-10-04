@@ -52,4 +52,5 @@ def test_a_program_runs_with_uv_in_the_workflows_environment(tmp_path):
                         "out": [{"id": "book", "path": "out.xlsx"}], "verify": {"check": "One row per email."}}]}
     c = cw.Compiler(tmp_path, plan, {}, tmp_path / "runs" / "r1", {}, set())
     assert c.program_command(c.stages["export"]).startswith(f"uv run {tmp_path / 'scripts' / 'export.py'} ")
-    assert f"uv add --project {tmp_path} <package>" in c.task("export", c.stages["export"], set())
+    task = c.task("export", c.stages["export"], set())
+    assert "do not add it yourself" in task and "uv add" not in task

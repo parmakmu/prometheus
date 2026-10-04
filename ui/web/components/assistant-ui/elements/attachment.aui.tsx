@@ -2,6 +2,7 @@
 
 import {
   type PropsWithChildren,
+  useEffect,
   useState,
   type FC,
   isValidElement,
@@ -9,7 +10,6 @@ import {
 import {
   XIcon,
   PlusIcon,
-  FileText,
   Loader2Icon,
   AlertCircleIcon,
 } from "lucide-react";
@@ -32,13 +32,9 @@ import {
   DialogContent,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import {
-  Avatar,
-  AvatarImage,
-  AvatarFallback,
-} from "@/components/ui/avatar";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { useAttachmentSrc } from "@/hooks/use-attachment-src";
+import { FileIcon } from "@/app/references";
 import { cn } from "@/lib/utils";
 
 type AttachmentPreviewProps = {
@@ -91,20 +87,38 @@ const AttachmentPreviewDialog: FC<PropsWithChildren> = ({ children }) => {
   );
 };
 
+// a picture's own thumbnail; any other file, its type icon and extension (FileIcon, as in the workspace)
 const AttachmentThumb: FC = () => {
   const src = useAttachmentSrc();
-
+  const name = useAuiState((s) => s.attachment.name);
+  const ext = name.includes(".") ? name.split(".").pop()!.slice(0, 5) : "file";
+  if (src) return <img src={src} alt="" className="aui-attachment-tile-image size-full object-cover" />;
   return (
-    <Avatar className="aui-attachment-tile-avatar h-full w-full rounded-none">
-      <AvatarImage
-        src={src}
-        alt="Attachment preview"
-        className="aui-attachment-tile-image rounded-none object-cover"
-      />
-      <AvatarFallback>
-        <FileText className="aui-attachment-tile-fallback-icon text-muted-foreground/80 size-6 stroke-[1.5]" />
-      </AvatarFallback>
-    </Avatar>
+    <div className="aui-attachment-tile-fallback flex size-full flex-col items-center justify-center gap-0.5">
+      <FileIcon name={name} className="size-6" />
+      <span className="text-muted-foreground text-[9px] font-medium uppercase">{ext}</span>
+    </div>
+  );
+};
+
+// beside the thumbnail in the composer: the name, then an image's size in pixels or a file's in bytes
+const AttachmentLabel: FC = () => {
+  const name = useAuiState((s) => s.attachment.name);
+  const bytes = useAuiState((s) => s.attachment.file?.size);
+  const src = useAttachmentSrc();
+  const [pixels, setPixels] = useState<string | null>(null);
+  useEffect(() => {
+    if (!src) return;
+    const img = new Image();
+    img.onload = () => setPixels(`${img.naturalWidth}×${img.naturalHeight}`);
+    img.src = src;
+  }, [src]);
+  const size = bytes === undefined ? "" : bytes > 1e6 ? `${(bytes / 1e6).toFixed(1)} MB` : bytes > 1e3 ? `${Math.round(bytes / 1e3)} kB` : `${bytes} B`;
+  return (
+    <span className="flex min-w-0 items-baseline gap-1.5 pr-6 text-sm">
+      <span className="truncate font-medium">{name}</span>
+      <span className="text-muted-foreground shrink-0 text-xs">{pixels ?? size}</span>
+    </span>
   );
 };
 
@@ -166,7 +180,8 @@ const AttachmentUI: FC = () => {
             <TooltipTrigger asChild>
               <div
                 className={cn(
-                  "aui-attachment-tile bg-muted hover:after:bg-foreground/10 focus-visible:ring-ring/50 relative size-14 cursor-pointer overflow-hidden rounded-[calc(var(--composer-radius,1rem)-var(--composer-padding,8px))] transition-transform outline-none after:pointer-events-none after:absolute after:inset-0 after:rounded-[inherit] after:ring-1 after:ring-black/10 after:transition-colors after:ring-inset focus-visible:ring-1 active:scale-[0.96] motion-reduce:transition-none dark:after:ring-white/10",
+                  "aui-attachment-tile bg-muted hover:after:bg-foreground/10 focus-visible:ring-ring/50 relative cursor-pointer overflow-hidden rounded-[calc(var(--composer-radius,1rem)-var(--composer-padding,8px))] transition-transform outline-none after:pointer-events-none after:absolute after:inset-0 after:rounded-[inherit] after:ring-1 after:ring-black/10 after:transition-colors after:ring-inset focus-visible:ring-1 active:scale-[0.96] motion-reduce:transition-none dark:after:ring-white/10",
+                  isComposer ? "flex h-8 max-w-72 items-center gap-1.5 rounded-lg border bg-transparent ps-1.5 after:hidden" : "size-14",
                   isError &&
                     "after:ring-destructive/60 dark:after:ring-destructive/60",
                 )}
@@ -187,7 +202,10 @@ const AttachmentUI: FC = () => {
                   isError ? ", upload failed" : isUploading ? ", uploading" : ""
                 }`}
               >
-                <AttachmentThumb />
+                <div className={cn("shrink-0 overflow-hidden", isComposer ? "flex size-5 items-center justify-center rounded-sm [&_img]:size-4 [&_span]:hidden" : "size-full")}>
+                  <AttachmentThumb />
+                </div>
+                {isComposer && <AttachmentLabel />}
                 {isUploading && (
                   <div
                     aria-hidden="true"
@@ -225,7 +243,7 @@ const AttachmentRemove: FC = () => {
     <AttachmentPrimitive.Remove asChild>
       <TooltipIconButton
         tooltip="Remove file"
-        className="aui-attachment-tile-remove absolute end-1 top-1 size-5 rounded-full bg-black/50! text-white after:absolute after:-inset-1.5 hover:bg-black/70! hover:text-white! active:scale-[0.96] motion-reduce:transition-none"
+        className="aui-attachment-tile-remove absolute end-1.5 top-1.5 size-5 rounded-full bg-black/50! text-white after:absolute after:-inset-1.5 hover:bg-black/70! hover:text-white! active:scale-[0.96] motion-reduce:transition-none"
         side="top"
       >
         <XIcon className="aui-attachment-remove-icon size-3 stroke-[2.5]" />

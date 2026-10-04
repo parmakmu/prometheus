@@ -1,6 +1,7 @@
 # The workflow's repo versions the plan with its gates, agents and skill copy.
-# Runs, per-machine values (.env, which may hold secrets) and installs stay out.
+# Runs, files uploaded in the web app, per-machine values (.env, which may hold secrets) and installs stay out.
 runs/
+uploads/
 .env
 .env.*
 .pi/npm/

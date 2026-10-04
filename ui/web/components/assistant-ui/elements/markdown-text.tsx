@@ -9,13 +9,15 @@ import {
   useIsMarkdownCodeBlock,
 } from "@assistant-ui/react-markdown";
 import remarkGfm from "remark-gfm";
-import { type FC, memo, useMemo, useRef } from "react";
+import { type ComponentPropsWithoutRef, type FC, memo, useMemo, useRef } from "react";
 import type { TextMessagePartProps } from "@assistant-ui/react";
 import { CheckIcon, CopyIcon } from "lucide-react";
 
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { cn } from "@/lib/utils";
+import { useAgent } from "@/app/agent";
+import { download } from "@/app/api";
 
 type MarkdownTextProps = Partial<TextMessagePartProps> & {
   components?: Parameters<typeof memoizeMarkdownComponents>[0];
@@ -83,6 +85,35 @@ const CodeHeader: FC<CodeHeaderProps> = ({ language, code }) => {
   );
 };
 
+// A path the agent wrote as a link (runs/<id>/outputs/x.xlsx, or the same under the workflow's folder) means
+// nothing to the browser: in a workflow's chat it downloads from that workflow's folder instead.
+function workflowPath(href: string, slug: string | null): string | null {
+  if (!slug || /^(https?:|mailto:|#)/i.test(href)) return null;
+  const inFolder = href.match(new RegExp(`/workflows/${slug}/(.+)$`));
+  const rel = inFolder ? inFolder[1] : href.startsWith("/") ? null : href.replace(/^\.\//, "");
+  return rel ? decodeURIComponent(rel) : null;
+}
+
+const Link: FC<ComponentPropsWithoutRef<"a">> = ({ className, href, onClick, ...props }) => {
+  const { slug } = useAgent();
+  const rel = href ? workflowPath(href, slug) : null;
+  return (
+    <a
+      className={cn("aui-md-a text-primary hover:text-primary/80 underline underline-offset-2", className)}
+      href={rel ? `#${rel}` : href}
+      onClick={
+        rel
+          ? (e) => {
+              e.preventDefault();
+              void download(`/w/${slug}/download?path=${encodeURIComponent(rel)}`, rel.split("/").pop() ?? rel).catch(() => alert(`Could not download ${rel}`));
+            }
+          : onClick
+      }
+      {...props}
+    />
+  );
+};
+
 const defaultComponents = memoizeMarkdownComponents({
   h1: ({ className, ...props }) => (
     <h1
@@ -147,15 +178,7 @@ const defaultComponents = memoizeMarkdownComponents({
       {...props}
     />
   ),
-  a: ({ className, ...props }) => (
-    <a
-      className={cn(
-        "aui-md-a text-primary hover:text-primary/80 underline underline-offset-2",
-        className,
-      )}
-      {...props}
-    />
-  ),
+  a: Link,
   blockquote: ({ className, ...props }) => (
     <blockquote
       className={cn(

@@ -366,7 +366,7 @@ def project_packages(root: Path):
 
 def package_problem(script: Path, packages, runs_with_uv: bool):
     """Why a Python gate or stage program would fail before doing its work, or None. Its packages
-    are the workflow's, listed in pyproject.toml (`uv add <package>`); `uv run` syncs that
+    are the workflow's, listed in pyproject.toml (added with `workflow_add_package`); `uv run` syncs that
     environment before running the script."""
     try:
         text = script.read_text(encoding="utf-8")
@@ -374,7 +374,7 @@ def package_problem(script: Path, packages, runs_with_uv: bool):
     except (OSError, SyntaxError, ValueError) as exc:
         return f"cannot be parsed: {exc}"
     if SCRIPT_BLOCK_RE.search(text):
-        return "declares packages in a `# /// script` block; list them in the workflow's pyproject.toml instead (`uv add <package>`) and remove the block"
+        return "declares packages in a `# /// script` block; list them in the workflow's pyproject.toml instead (`workflow_add_package`) and remove the block"
     names = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -386,7 +386,7 @@ def package_problem(script: Path, packages, runs_with_uv: bool):
         missing = [n for n in third_party if norm_package(IMPORT_PACKAGES.get(n, n)) not in packages]
         if missing:
             return (f"imports {', '.join(missing)}, which the workflow's pyproject.toml does not list: "
-                    f"`uv add {' '.join(IMPORT_PACKAGES.get(n, n) for n in missing)}`")
+                    f"add {' '.join(IMPORT_PACKAGES.get(n, n) for n in missing)} with workflow_add_package (the user approves it, so give the reason)")
     if third_party and not runs_with_uv:
         return f"imports {', '.join(third_party)}, so its command must run it with `uv run` (the workflow's environment), not python3"
     return None

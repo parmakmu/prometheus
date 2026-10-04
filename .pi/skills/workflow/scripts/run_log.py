@@ -125,9 +125,14 @@ def new(note: Annotated[str | None, typer.Option(help="what this run is for")] =
     plan, run = open_workflow(need_run=False)
     if run is not None:
         refuse(f"run {run.id} is active: continue it, or stop it first (workflow_stop_run)")
-    b = workflow_git.branch(Path.cwd())
-    if b not in (None, workflow_git.MAIN):
-        refuse(f"branch {b} is checked out and not reviewed: review it first (workflow_merge: merge, keep or discard)")
+    left = workflow_git.branch(Path.cwd())
+    if workflow_git.is_review_branch(left):  # a run starts from main: the branch (a change or a finished run's) stays for review
+        if why := check_ready(workflow_git.main_plan(Path.cwd()) or {}):
+            refuse(f"the plan on main is not ready to run ({why}); {left} is still checked out")
+        workflow_git.leave_branch(Path.cwd())
+        plan, _ = open_workflow(need_run=False)
+    elif left not in (None, workflow_git.MAIN):
+        refuse(f"branch {left} is checked out and is not a branch to review: switch to main first")
     if why := check_ready(plan):
         refuse(why)
     today = datetime.datetime.now().astimezone().date().isoformat()  # local date
@@ -146,7 +151,8 @@ def new(note: Annotated[str | None, typer.Option(help="what this run is for")] =
                       "started_at": now(), **({"note": note} if note else {}), "stages": {}, "launches": []})
     (run.dir / "work").mkdir(parents=True)
     run.save()
-    emit({"ok": True, "run": rid, "path": str(run.dir.resolve()), "commit": commit_sha})
+    emit({"ok": True, "run": rid, "path": str(run.dir.resolve()), "commit": commit_sha,
+          **({"left_branch": left, "note": f"switched to main for this run; {left} is kept for review"} if workflow_git.is_review_branch(left) else {})})
 
 
 @app.command()

@@ -14,7 +14,7 @@ Read the discovery outputs (or the user's request), `plan.yaml`, and
 if a kind may change.
 
 1. Write gates for the stages you make concrete into `gates/` (a package
-   they import: `uv add <package>`), and new agents into `.pi/agents/`
+   they import: `workflow_add_package`, which asks the user), and new agents into `.pi/agents/`
    (`<skill>/references/agent-profiles.md`).
 2. One `workflow_replan` call: `findings` for the resolved unknowns, and
    each provisional stage whose `resolves_after` is done, in full and

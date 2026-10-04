@@ -9,6 +9,7 @@ Creates <root>/<slug>/ from templates/workflow/ (at the repo root, outside the s
   runs/                          one folder per run: state, work files, outputs (see validate_plan.py)
   gates/                         gate scripts, written while planning
   scripts/                       stage programs (a stage's `script:`), written by its first run
+  uploads/                       files the user attaches in the web app's chat; not in git
   .env                           per-machine param values (workflow_params.py); not in git
   .pi/skills/workflow/           a copy of this skill (rules, validator, compiler, run protocol)
 
@@ -18,7 +19,7 @@ The template holds AGENTS.md, pyproject.toml (Python deps for `uv sync`),
 workflow-batcher) and the plan skeleton.
 
 --refresh rewrites the template files and the skill copy in an existing
-workflow. It never touches plan.yaml, .env, runs/, gates/, scripts/ or agents
+workflow. It never touches plan.yaml, .env, runs/, uploads/, gates/, scripts/ or agents
 the plan added. Values an older workflow kept in .pi/params.yaml move to .env.
 
 The workflow is its own git repo (workflow_git.py); both modes commit the result.
@@ -199,7 +200,7 @@ def main(
         if path.is_dir():
             shutil.rmtree(path)
             removed.append(str(rel) + "/")
-    for directory in ("runs", "gates", "scripts"):
+    for directory in ("runs", "gates", "scripts", "uploads"):
         (workflow / directory).mkdir(parents=True, exist_ok=True)
     for directory in ("gates", "scripts"):  # git drops empty folders: checking out main after a run would delete them
         (workflow / directory / ".gitkeep").touch()

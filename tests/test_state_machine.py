@@ -24,6 +24,9 @@ from conftest import SKILL, fake_critic
 from test_run_finish import PLAN
 from typer.testing import CliRunner
 
+# the walk is built once and read by every test here: one worker, so it isn't rebuilt on each
+pytestmark = pytest.mark.xdist_group("state-walk")
+
 sys.path.insert(0, str(SKILL / "scripts"))
 import compile_wave
 import plan_edit
@@ -42,6 +45,12 @@ ids = count(1)
 
 def git(wf, *args):
     return subprocess.run(["git", "-C", str(wf), *args], capture_output=True, text=True, check=False).stdout.strip()
+
+
+def main_commit(wf):
+    """main's commit, read from its ref file (twice per move, so not a git process each); git if the ref is packed."""
+    ref = wf / ".git" / "refs" / "heads" / "main"
+    return ref.read_text(encoding="utf-8").strip() if ref.is_file() else git(wf, "rev-parse", "main")
 
 
 def running_launch(wf):
@@ -147,10 +156,10 @@ def walk(tmp_path_factory):
                 continue  # refused by the extension's guard, not a script: nothing here to try
             wf = tmp / f"c{next(copies)}"
             shutil.copytree(src, wf, symlinks=True)
-            main, had_runs = git(wf, "rev-parse", "main"), before[1]
+            main, had_runs = main_commit(wf), before[1]
             accepted, data = invoke(wf, move)
             after = key(wf)
-            tried[(before, move)] = Try(accepted, after, git(wf, "rev-parse", "main") != main, listed(where, move), had_runs, data)
+            tried[(before, move)] = Try(accepted, after, main_commit(wf) != main, listed(where, move), had_runs, data)
             if accepted and after not in seen:
                 seen[after] = wf
                 queue.append(wf)

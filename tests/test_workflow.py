@@ -8,11 +8,15 @@ they are defined (no randomizing plugin is installed), which this relies on.
 import datetime
 import json
 import os
+import shutil
 import types
 from pathlib import Path
 
 import pytest
 from conftest import HERE, ROOT, SKILL, fake_critic, git_in
+
+# one continuous scenario (state on disk, module fixtures): its tests run in order on one worker
+pytestmark = pytest.mark.xdist_group("workflow-scenario")
 
 
 def ws(compiled_json_path: Path) -> str:
@@ -122,6 +126,8 @@ def test_refresh_moves_params_yaml_into_env(env):
     assert "MAIL_DIR='/old/mail'" in (env.b / ".env").read_text(encoding="utf-8").splitlines()
     assert ".env" in (env.b / ".gitignore").read_text(encoding="utf-8").splitlines()
     assert env.git("ls-files", ".env").stdout.strip() == ""
+    # the web app's chat uploads: a folder that exists and stays out of git
+    assert (env.b / "uploads").is_dir() and "uploads/" in (env.b / ".gitignore").read_text(encoding="utf-8").splitlines()
     (env.b / ".env").write_text("", encoding="utf-8")
 
 
@@ -515,9 +521,15 @@ def test_stop_keeps_the_run_and_returns_its_branch_for_review(env):
     assert "status: stopped" in (env.run_dir / "run.yaml").read_text(encoding="utf-8").splitlines()
 
 
-def test_no_new_run_while_a_run_branch_waits_for_review(env):
+def test_a_new_run_starts_from_main_and_keeps_the_branch_waiting_for_review(env):
     r = env.run(["run_log.py", "new"])
-    assert "not reviewed" in (r.data or {}).get("error", "")
+    assert r.data, r
+    assert r.data["left_branch"] == f"run/{env.rid}" and env.git("branch", "--show-current").stdout.strip() == "main"
+    assert env.git("merge-base", "--is-ancestor", f"{env.main0}", f"run/{env.rid}").returncode == 0  # the kept branch still has its commits
+    # put the scenario back as it was: the extra run and its branch gone, the kept branch checked out again
+    shutil.rmtree(Path(r.data["path"]))
+    env.git("switch", "-q", f"run/{env.rid}")
+    assert env.git("branch", "--list", f"run/{r.data['run']}").stdout.strip() == ""  # the new run made no branch yet
 
 
 def test_merge_run_branch(env):
@@ -777,7 +789,7 @@ def test_prometheus_extension_registers_commands_and_tools(env, ext):
         {"cmd": "workflow-list", "complete": "inv"},
     ])
     env.prometheus_ext_report = report
-    assert (len(report["commands"]), len(report["tools"])) == (4, 2)
+    assert (len(report["commands"]), len(report["tools"])) == (4, 3)
 
 
 @skip_extensions
@@ -821,6 +833,24 @@ def test_missing_packages_message(env, ext):
 
 
 @skip_extensions
+def test_packages_are_added_only_through_the_approval_tool(env, ext):
+    # a new Python package is the user's call: no uv add / pip install from the model, and the tool refuses without a user to ask
+    # also every other way to a package: uvx, uv run --with, writing the package list itself
+    commands = ("uv add openpyxl", "pip install x", "python -m pip3 install x", "python .pi/skills/workflow/scripts/add_package.py x --reason y",
+                "uvx ruff check", "uv run --with openpyxl scripts/a.py", "sed -i s/a/b/ pyproject.toml", "uv run scripts/a.py", "cat pyproject.toml")
+    blocked = [True] * 7 + [False, False]
+    for name, cwd, tool_args, project in (("prometheus", env.prometheus, {"slug": "invoice-check"}, "workflows/invoice-check/pyproject.toml"),
+                                          ("workflow", env.b, {}, "pyproject.toml")):
+        steps = [{"toolCall": {"toolName": "bash", "input": {"command": c}}} for c in commands]
+        steps += [{"toolCall": {"toolName": "edit", "input": {"path": project}}}, {"toolCall": {"toolName": "write", "input": {"path": project.replace("pyproject.toml", "uv.lock")}}}]
+        steps.append({"tool": "workflow_add_package", "params": {"packages": ["openpyxl"], "reason": "", **tool_args}})
+        report = drive(ext, ext.tmp / ".ext" / f"{name}.ts", cwd, steps)
+        assert [s["blocked"] for s in report["steps"][:-1]] == [*blocked, True, True], name
+        assert "workflow_add_package" in report["steps"][0]["reason"], name
+        assert "error" in report["steps"][-1], name  # no reason (or no one to ask): nothing is installed
+
+
+@skip_extensions
 def test_workflow_extension_registers_commands_and_tools(env, ext):
     steps = [
         {"cmd": "workflow-status", "args": ""},
@@ -846,7 +876,7 @@ def test_workflow_extension_registers_commands_and_tools(env, ext):
     ]
     report = drive(ext, ext.tmp / ".ext" / "workflow.ts", env.b, steps)
     env.workflow_ext_report = report
-    assert (len(report["commands"]), len(report["tools"])) == (4, 12)
+    assert (len(report["commands"]), len(report["tools"])) == (4, 13)
 
 
 @skip_extensions

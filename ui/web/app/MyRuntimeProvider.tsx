@@ -8,6 +8,7 @@ import {
 import { HttpAgent } from "@ag-ui/client";
 import { useAgUiRuntime } from "@assistant-ui/react-ag-ui";
 import { API, authHeaders } from "./api";
+import { filesAdapter } from "./attachments";
 
 type StoredThread = {
   id: string;
@@ -74,6 +75,7 @@ export function MyRuntimeProvider({
     [currentThreadId, version],
   );
 
+  const attachments = useMemo(() => filesAdapter(agentPath.startsWith("/w/") ? agentPath.split("/")[2] : null), [agentPath]);
   const runtime = useAgUiRuntime({
     agent,
     logger: {
@@ -82,6 +84,7 @@ export function MyRuntimeProvider({
     },
     adapters: {
       threadList: threadListAdapter,
+      attachments,
     },
   });
 

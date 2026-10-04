@@ -10,8 +10,8 @@ It takes about fifteen minutes, and you don't need any emails of your own. We'll
 
 | You need | Check | Install |
 |---|---|---|
-| Pi 0.99.2 (not 1.0: [why](troubleshooting.md#every-wave-fails-at-startup)) | `pi --version` | `npm install -g @earendil-works/pi-coding-agent@0.99.2` |
-| pi-subagents | `ls ~/.pi/agent/npm/node_modules/pi-subagents` | `pi install npm:pi-subagents` |
+| Pi 1.0.1 or later (0.99.2 also works) | `pi --version` | `npm install -g @earendil-works/pi-coding-agent` |
+| pi-subagents 0.75.0 or later with Pi 1.0 ([why](troubleshooting.md#every-wave-fails-at-startup)) | `grep version ~/.pi/agent/npm/node_modules/pi-subagents/package.json` | `pi install npm:pi-subagents` |
 | Python 3.14 and uv | `uv --version` | [docs.astral.sh/uv](https://docs.astral.sh/uv/) |
 | git | `git --version` | your system's package manager |
 

@@ -9,32 +9,20 @@ import { File } from "@/components/assistant-ui/elements/file";
 import { ThreadFollowupSuggestions } from "@/components/assistant-ui/elements/follow-up-suggestions.aui";
 import { Image } from "@/components/assistant-ui/elements/image";
 import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
-import {
-  Reasoning,
-  ReasoningContent,
-  ReasoningRoot,
-  ReasoningText,
-  ReasoningTrigger,
-} from "@/components/assistant-ui/elements/reasoning.aui";
-import { ToolFallback } from "@/components/assistant-ui/elements/tool-fallback.aui";
-import {
-  ToolGroupContent,
-  ToolGroupRoot,
-  ToolGroupTrigger,
-} from "@/components/assistant-ui/elements/tool-group.aui";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+import { useAgent } from "@/app/agent";
+import { sendJson } from "@/app/api";
+import { AnsweredQuestion } from "@/app/cards";
 import {
   ActionBarMorePrimitive,
   ActionBarPrimitive,
   AuiIf,
   type AssistantState,
-  BranchPickerPrimitive,
   ComposerPrimitive,
   ErrorPrimitive,
-  groupPartByType,
   MessagePrimitive,
   SuggestionPrimitive,
   ThreadPrimitive,
@@ -42,6 +30,7 @@ import {
   type ImageMessagePartComponent,
   type TextMessagePartComponent,
   type ToolCallMessagePartComponent,
+  useAui,
   useAuiState,
 } from "@assistant-ui/react";
 import {
@@ -49,15 +38,13 @@ import {
   ArrowUpIcon,
   AudioLinesIcon,
   CheckIcon,
-  ChevronLeftIcon,
   ChevronRightIcon,
   CopyIcon,
+  PencilIcon,
   DownloadIcon,
   MicIcon,
   MoreHorizontalIcon,
-  PencilIcon,
   PhoneIcon,
-  RefreshCwIcon,
   SquareIcon,
   ThumbsDownIcon,
   ThumbsUpIcon,
@@ -65,66 +52,28 @@ import {
 import {
   createContext,
   useContext,
+  useMemo,
+  useState,
+  useSyncExternalStore,
   type ComponentType,
+  type ReactNode,
   type FC,
-  type PropsWithChildren,
 } from "react";
-
-export type ThreadGroupPart = MessagePrimitive.GroupedParts.GroupPart;
 
 /**
  * Optional component overrides for the thread. `AssistantMessage` and
- * `Welcome` replace whole sections; the remaining slots override how the
- * assistant message renders tool calls and part groups. Tool UIs registered
- * by name (toolkit `render`, `useAssistantDataUI`) take precedence over
- * `ToolFallback`. When `TaskGroup` is set, tool calls that carry a nested
- * conversation and have no registered UI render through it instead of the
- * tool group; without it they render like any other tool call.
+ * `Welcome` replace whole sections; `ToolFallback` draws a tool call no tool UI is
+ * registered for (tool UIs registered by name take precedence).
  */
 export type ThreadComponents = {
   AssistantMessage?: ComponentType | undefined;
   Welcome?: ComponentType | undefined;
   ToolFallback?: ToolCallMessagePartComponent | undefined;
-  ToolGroup?:
-    | ComponentType<PropsWithChildren<{ group: ThreadGroupPart }>>
-    | undefined;
-  ReasoningGroup?:
-    | ComponentType<PropsWithChildren<{ group: ThreadGroupPart }>>
-    | undefined;
-  TaskGroup?: ComponentType<{ group: ThreadGroupPart }> | undefined;
 };
 
-
-const STANDALONE_TOOLS = new Set(["pi_panel", "pi_models", "ask_user_question", "workflow_scaffold", "workflow_check", "subagent"]);
-const messageGroupBy = groupPartByType({
-  reasoning: ["group-chainOfThought", "group-reasoning"],
-  "tool-call": ["group-chainOfThought", "group-tool"],
-  "standalone-tool-call": [],
-});
-
-type ThreadGroupKey =
-  | "group-chainOfThought"
-  | "group-reasoning"
-  | "group-tool"
-  | "group-task";
-
-const TASK_GROUP_PATH: readonly ThreadGroupKey[] = [
-  "group-chainOfThought",
-  "group-task",
-];
-
-const taskAwareGroupBy = (
-  part: Parameters<typeof messageGroupBy>[0],
-  context?: Parameters<typeof messageGroupBy>[1],
-): readonly ThreadGroupKey[] => {
-  const path = messageGroupBy(part, context);
-  return part.type === "tool-call" &&
-    part.messages !== undefined &&
-    path.length > 0 &&
-    !context?.toolUIs?.[part.toolName]?.length
-    ? TASK_GROUP_PATH
-    : path;
-};
+// tool calls that draw a card for you (a question, a panel, the created workflow, a wave's children): shown outside
+// the Details fold, where you can see and answer them
+const STANDALONE_TOOLS = new Set(["pi_panel", "pi_models", "ask_user_question", "workflow_scaffold", "subagent"]);
 
 export type ThreadProps = {
   components?: ThreadComponents | undefined;
@@ -174,17 +123,14 @@ export const Thread: FC<ThreadProps> = ({
   components = EMPTY_COMPONENTS,
   autoFocus = true,
 }) => {
-  const isEmpty = useAuiState(isNewChatView);
-
   return (
     <ThreadComponentsContext.Provider value={components}>
-      <ThreadRoot isEmpty={isEmpty} autoFocus={autoFocus} />
+      <ThreadRoot autoFocus={autoFocus} />
     </ThreadComponentsContext.Provider>
   );
 };
 
-const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({
-  isEmpty,
+const ThreadRoot: FC<{ autoFocus: boolean }> = ({
   autoFocus,
 }) => {
   const { Welcome = ThreadWelcome } = useContext(ThreadComponentsContext);
@@ -200,19 +146,20 @@ const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({
         ["--composer-padding" as string]: "8px",
       }}
     >
+      {/* bottom anchoring: follows new output only while you are at the bottom; scrolling up leaves you there
+          ("top" re-pinned the latest message on every re-render, pulling the view back while you scrolled) */}
       <ThreadPrimitive.Viewport
-        turnAnchor="top"
+        turnAnchor="bottom"
         data-slot="aui_thread-viewport"
-        className="relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth"
+        className="relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll"
       >
-        <div
-          className={cn(
-            "mx-auto flex w-full max-w-(--thread-max-width) flex-1 flex-col px-4 pt-4",
-            isEmpty && "justify-center",
-          )}
-        >
+        <div className="mx-auto flex w-full max-w-(--thread-max-width) flex-1 flex-col px-4 pt-4">
+          {/* the composer stays at the bottom in every state (a new chat, history loading, a re-sync); only the
+              welcome centres itself in the space above it, so nothing jumps when the history arrives */}
           <AuiIf condition={isNewChatView}>
-            <Welcome />
+            <div className="flex flex-1 flex-col justify-center">
+              <Welcome />
+            </div>
           </AuiIf>
           <AuiIf condition={isHistoryLoadingView}>
             <ThreadHistorySkeleton />
@@ -228,11 +175,7 @@ const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({
           </div>
 
           <ThreadPrimitive.ViewportFooter
-            className={cn(
-              "aui-thread-viewport-footer bg-background flex flex-col gap-4 overflow-visible pb-4 md:pb-6",
-              !isEmpty &&
-                "sticky bottom-0 mt-auto rounded-t-(--composer-radius)",
-            )}
+            className="aui-thread-viewport-footer bg-background sticky bottom-0 mt-auto flex flex-col gap-4 overflow-visible rounded-t-(--composer-radius) pb-4 md:pb-6"
           >
             <ThreadScrollToBottom />
             <ThreadFollowupSuggestions />
@@ -251,11 +194,12 @@ const ThreadMessage: FC = () => {
   const { AssistantMessage: AssistantMessageComponent = AssistantMessage } =
     useContext(ThreadComponentsContext);
   const role = useAuiState((s) => s.message.role);
-  const isEditing = useAuiState((s) => s.message.composer.isEditing);
   const isSpoken = useAuiState((s) => s.message.metadata.modality === "voice");
 
-  if (isEditing) return <EditComposer />;
+  const isEditing = useAuiState((s) => s.message.composer.isEditing);
+
   if (isSpoken) return <SpokenMessage />;
+  if (isEditing) return <EditComposer />;
   if (role === "user") return <UserMessage />;
   return <AssistantMessageComponent />;
 };
@@ -291,7 +235,7 @@ const SpokenMessage: FC = () => {
       data-role={role}
       data-voice-run={position}
       className={cn(
-        "aui-spoken-message bg-muted/40 mx-2 px-3 py-1.5 [contain-intrinsic-size:auto_48px] [content-visibility:auto]",
+        "aui-spoken-message bg-muted/40 mx-2 px-3 py-1.5",
         position === "single" && "rounded-xl py-2",
         position === "start" && "rounded-t-xl pt-2",
         position === "middle" && "-mt-6",
@@ -542,21 +486,225 @@ const MessageError: FC = () => {
   );
 };
 
-const AssistantMessage: FC = () => {
-  const {
-    ToolFallback: ToolFallbackComponent = ToolFallback,
-    ToolGroup,
-    ReasoningGroup,
-    TaskGroup: TaskGroupComponent,
-  } = useContext(ThreadComponentsContext);
-  const groupBy = TaskGroupComponent ? taskAwareGroupBy : messageGroupBy;
-  // tools that draw a card of their own (a panel, a question, canvas chips) show without the "N tool calls" fold
-  const content = useAuiState((s) => s.message.content);
-  const standalone = (indices: readonly number[]) =>
-    indices.every((i) => {
-      const c = content[i];
-      return c?.type === "tool-call" && STANDALONE_TOOLS.has(c.toolName);
+// A turn reads like Cowork's: from your message to your next one the agent writes several messages (one per model
+// call), and what it did on the way folds away: each stretch of steps (thoughts, tool calls, notes between them) is one
+// "Thought process" fold, drawn at the message where the stretch starts, with its steps from the later messages too.
+// Between the folds, in order, the things for you: cards (a question to answer, a panel, a launched wave) and replies
+// (a message's text after its last step).
+type Part = { type: string; toolName?: string; text?: string; args?: { async?: unknown; [k: string]: unknown }; argsText?: string; result?: unknown; isError?: boolean };
+type Msg = { id: string; role: string; content: readonly Part[] };
+
+// (a subagent call is a card only when it launches work, a wave or the critic, its status checks being steps; a
+// question only while it waits for you: answered, it is a step in the fold, "You answered: …")
+const isCard = (c: Part | undefined) =>
+  c?.type === "tool-call" &&
+  STANDALONE_TOOLS.has(c.toolName ?? "") &&
+  (c.toolName !== "subagent" || !!c.args?.async) &&
+  (c.toolName !== "ask_user_question" || c.result === undefined);
+
+// a message's parts: the steps (in the fold), the cards and the answer
+function split(content: readonly Part[]) {
+  let answerFrom = content.length;
+  while (answerFrom > 0 && content[answerFrom - 1]?.type === "text") answerFrom--;
+  const before = Array.from({ length: answerFrom }, (_, i) => i);
+  return {
+    steps: before.filter((i) => !isCard(content[i]) && !(content[i]?.type === "text" && !content[i]?.text?.trim())),
+    cards: before.filter((i) => isCard(content[i])),
+    answer: Array.from({ length: content.length - answerFrom }, (_, i) => answerFrom + i).filter((i) => content[i]?.text?.trim()),
+  };
+}
+
+// which turn a message is in: the messages after your last message before it, up to your next one
+function turnOf(messages: readonly Msg[], id: string) {
+  const i = messages.findIndex((m) => m.id === id);
+  let start = i;
+  while (start > 0 && messages[start - 1]?.role !== "user") start--;
+  let end = i;
+  while (end + 1 < messages.length && messages[end + 1]?.role !== "user") end++;
+  return { key: messages[start]?.id ?? id, first: i === start, messages: messages.slice(start, end + 1), last: end === messages.length - 1 };
+}
+
+// whether a turn's fold is open, shared by its messages
+const openTurns = new Set<string>();
+const turnListeners = new Set<() => void>();
+const subscribeTurns = (f: () => void) => (turnListeners.add(f), () => void turnListeners.delete(f));
+function useTurnOpen(key: string): [boolean, () => void] {
+  const open = useSyncExternalStore(subscribeTurns, () => openTurns.has(key), () => false);
+  const toggle = () => {
+    if (!openTurns.delete(key)) openTurns.add(key);
+    turnListeners.forEach((f) => f());
+  };
+  return [open, toggle];
+}
+
+// a thought; one the model kept private (the worker's note) is a single small line, not a repeated sentence
+const PRIVATE_THOUGHT = "(The model kept this reasoning private";
+const Thought = ({ text }: { text: string }) =>
+  text.startsWith(PRIVATE_THOUGHT) ? (
+    <p className="text-muted-foreground/70 text-xs" title={text}>Thought privately</p>
+  ) : (
+    <p className="text-muted-foreground text-sm leading-relaxed whitespace-pre-wrap">{text}</p>
+  );
+
+// What a step did, in words (as Cowork writes "Checking your task files"); the tool's name stays on hover
+const base = (p: unknown) => String(p ?? "").split("/").pop() ?? "";
+const STEP_WORDS: Record<string, (a: Record<string, unknown>) => string> = {
+  read: (a) => `Reading ${base(a.path ?? a.file_path)}`,
+  write: (a) => `Writing ${base(a.path ?? a.file_path)}`,
+  edit: (a) => `Editing ${base(a.path ?? a.file_path)}`,
+  bash: () => "Running a command",
+  ls: (a) => `Listing ${base(a.path) || "files"}`,
+  find: () => "Looking for files",
+  grep: () => "Searching files",
+  workflow_check: () => "Checking the plan",
+  workflow_new_run: () => "Starting a run",
+  workflow_compile: () => "Preparing the next wave",
+  workflow_log_start: () => "Noting the wave's launch",
+  workflow_log_finish: () => "Noting how the wave ended",
+  workflow_record_decision: () => "Recording your decision",
+  workflow_replan: () => "Adjusting the plan",
+  workflow_record_critique: () => "Recording the critic's review",
+  workflow_stop_run: () => "Stopping the run",
+  workflow_merge: (a) => (a.action === "merge" ? "Merging the changes" : a.action === "discard" ? "Discarding the branch" : "Keeping the branch for later"),
+  workflow_set_params: () => "Setting values",
+  workflow_add_package: () => "Adding a package",
+  workflow_sessions: () => "Reading earlier sessions",
+  workflow_scaffold: () => "Creating the workflow",
+  subagent: (a) => (a.action === "status" ? "Checking background work" : a.action === "mission.close" ? "Closing the background work" : "Starting background work"),
+};
+const stepWords = (toolName: string, a: Record<string, unknown>) => STEP_WORDS[toolName]?.(a) ?? toolName.replace(/_/g, " ");
+
+// a tool call in Details: one line in words, opening to its arguments and result
+function StepRow({ toolName, args, argsText, result, running, failed }: { toolName: string; args?: unknown; argsText?: string; result?: unknown; running: boolean; failed: boolean }) {
+  const [open, setOpen] = useState(false);
+  const a = (args ?? {}) as Record<string, unknown>;
+  return (
+    <div>
+      {/* expandable, so it says so: a chevron (› closed, ⌄ open) and a hover background, like the fold's own line */}
+      <button type="button" title={`${toolName}: show the call and its result`} onClick={() => setOpen((o) => !o)} className="text-muted-foreground hover:text-foreground hover:bg-accent/60 group -mx-1 flex max-w-full min-w-0 items-center gap-1.5 rounded px-1 text-left text-sm">
+        {running ? <span className="bg-primary size-1.5 shrink-0 animate-pulse rounded-full" /> : failed ? <span className="text-red-600">✗</span> : <CheckIcon className="size-3.5 shrink-0" />}
+        <span className="truncate">{stepWords(toolName, a)}</span>
+        <ChevronRightIcon className={cn("size-3.5 shrink-0 opacity-60 transition-transform group-hover:opacity-100", open && "rotate-90")} />
+      </button>
+      {open && (
+        <div className="mt-1 mb-1.5 space-y-1 ps-4">
+          <pre className="bg-muted overflow-auto rounded-md p-2 text-xs whitespace-pre-wrap">{argsText || JSON.stringify(a, null, 2)}</pre>
+          {result !== undefined && <pre className="bg-muted/60 max-h-72 overflow-auto rounded-md p-2 text-xs whitespace-pre-wrap">{typeof result === "string" ? result : JSON.stringify(result, null, 2)}</pre>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// a tool call no tool UI is registered for, where one is drawn from the message itself (a step drawn in the fold
+// goes through StepRow from the turn's data instead)
+const CompactTool: ToolCallMessagePartComponent = ({ toolName, args, argsText, result, status }) => (
+  <StepRow toolName={toolName} args={args} argsText={argsText} result={result} running={status.type === "running"} failed={status.type === "incomplete"} />
+);
+
+// The fold's content: every step of the turn, from the turn's messages, in order (thoughts, notes between steps, tool
+// calls, answered questions), all under the fold's line, so none sits under a card or a reply that came between them
+function FoldSteps({ parts, working, bare = false }: { parts: readonly Part[]; working: boolean; bare?: boolean }) {
+  return (
+    <div className={bare ? "my-1 space-y-1" : "ms-2 space-y-1 border-s-2 py-1 ps-4"}>
+      {parts.map((p, i) => {
+        if (p.type === "reasoning") return <Thought key={i} text={p.text ?? ""} />;
+        if (p.type === "text") return <p key={i} className="text-muted-foreground text-sm whitespace-pre-wrap">{p.text}</p>;
+        if (p.type !== "tool-call") return null;
+        if (p.toolName === "ask_user_question") return <AnsweredQuestion key={i} args={p.args as never} result={p.result} />;
+        return <StepRow key={i} toolName={p.toolName ?? ""} args={p.args} argsText={p.argsText} result={p.result} running={working && p.result === undefined} failed={!!p.isError} />;
+      })}
+    </div>
+  );
+}
+
+// What a turn shows, in order: stretches of steps (each one fold) and the things for you between them (cards and
+// replies). A stretch runs across messages until a card or a reply interrupts it, so the timeline holds: the steps
+// before a wave's line fold above it, the steps after it fold below it. Thoughts the model kept private (they say
+// nothing) and the record-keeping around a wave are left out; a stretch with nothing else is no fold at all.
+type Item = { kind: "step" | "card" | "answer"; msg: string; i: number; part: Part };
+
+// The agent's own record-keeping around a wave (writing its launch and its end into run.yaml, checking on it,
+// closing its mission): the wave's line already says all of it, so as steps they only read as separate events
+const BOOKKEEPING = new Set(["workflow_log_start", "workflow_log_finish"]);
+const isBookkeeping = (p: Part) =>
+  p.type === "tool-call" && (BOOKKEEPING.has(p.toolName ?? "") || (p.toolName === "subagent" && ["status", "mission.close"].includes(String(p.args?.action ?? ""))));
+const isPrivate = (p: Part) => p.type === "reasoning" && (p.text ?? "").startsWith(PRIVATE_THOUGHT);
+function turnItems(messages: readonly Msg[]): Item[] {
+  return messages
+    .filter((m) => m.role === "assistant")
+    .flatMap((m) => {
+      const { steps, cards, answer } = split(m.content);
+      return m.content.flatMap((part, i): Item[] => {
+        if (steps.includes(i)) return isPrivate(part) || isBookkeeping(part) ? [] : [{ kind: "step", msg: m.id, i, part }];
+        if (cards.includes(i)) return [{ kind: "card", msg: m.id, i, part }];
+        if (answer.includes(i)) return [{ kind: "answer", msg: m.id, i, part }];
+        return [];
+      });
     });
+}
+
+// one stretch of steps: "Working on it" while it is the agent's current stretch (the step under way beneath it), else
+// "Thought process"; opened, its steps on one indented bar
+// (a short finished stretch, one or two steps such as "Noting the wave's launch", needs no fold: its steps show as
+// plain lines, each still opening on its own)
+const FOLD_FROM = 3;
+function Fold({ id, steps, working }: { id: string; steps: Part[]; working: boolean }) {
+  const [open, toggle] = useTurnOpen(id);
+  if (!working && steps.length < FOLD_FROM) return <FoldSteps parts={steps} working={false} bare />;
+  const last = steps[steps.length - 1];
+  const now = last?.type === "tool-call" ? stepWords(last.toolName ?? "", (last.args ?? {}) as Record<string, unknown>) : last?.type === "reasoning" ? "Thinking" : "";
+  return (
+    <div>
+      <button type="button" onClick={toggle} className="text-muted-foreground hover:text-foreground my-1 flex items-center gap-1.5 text-sm">
+        {working && <span className="bg-primary size-1.5 animate-pulse rounded-full" />}
+        <span>{working ? "Working on it" : "Thought process"}</span>
+        <ChevronRightIcon className={cn("size-3.5 transition-transform", open && "rotate-90")} />
+      </button>
+      {working && !open && now && <p className="text-muted-foreground/80 -mt-0.5 mb-1 ps-3 text-xs">{now}</p>}
+      {open && <FoldSteps parts={steps} working={working} />}
+    </div>
+  );
+}
+
+const AssistantMessage: FC = () => {
+  const { ToolFallback: ToolFallbackComponent = CompactTool } = useContext(ThreadComponentsContext);
+  const id = useAuiState((s) => s.message.id);
+  const messages = useAuiState((s) => s.thread.messages) as unknown as readonly Msg[];
+  const threadRunning = useAuiState((s) => s.thread.isRunning);
+  const turn = useMemo(() => turnOf(messages, id), [messages, id]);
+  const items = useMemo(() => turnItems(turn.messages), [turn]);
+  const components = { Text: MarkdownText, Reasoning: ({ text }: { text: string }) => <Thought text={text} />, tools: { Fallback: ToolFallbackComponent } };
+  const working = threadRunning && turn.last;
+
+  // what this message draws: the folds of the stretches that start in it (with their steps from later messages), its
+  // cards, its reply
+  const blocks: ReactNode[] = [];
+  let answerStart = -1;
+  items.forEach((it, k) => {
+    if (it.msg !== id) return;
+    if (it.kind === "step") {
+      if (items[k - 1]?.kind === "step") return; // drawn by the fold its stretch started
+      let end = k;
+      while (items[end + 1]?.kind === "step") end++;
+      const isLast = end === items.length - 1;
+      blocks.push(<Fold key={`fold-${it.i}`} id={`${id}:${it.i}`} steps={items.slice(k, end + 1).map((x) => x.part)} working={working && isLast} />);
+    } else if (it.kind === "card") blocks.push(<MessagePrimitive.PartByIndex key={`card-${it.i}`} index={it.i} components={components} />);
+    else if (answerStart < 0) answerStart = blocks.push(null) - 1; // the reply's place (its parts follow together)
+  });
+  const answer = items.filter((it) => it.msg === id && it.kind === "answer");
+  if (answerStart >= 0)
+    blocks[answerStart] = (
+      // the reply: set apart from a fold or card above it, so it never reads as part of a step
+      <div key="answer" className={cn(answerStart > 0 && "mt-4")}>
+        {answer.map((it) => (
+          <MessagePrimitive.PartByIndex key={it.i} index={it.i} components={components} />
+        ))}
+      </div>
+    );
+  // the agent at work before anything shows: a fold line with nothing in it yet
+  if (working && !items.length && turn.first) blocks.push(<Fold key="starting" id={`${id}:start`} steps={[]} working />);
+  if (!blocks.length) return null; // its steps are in a fold above: nothing of its own
 
   const ACTION_BAR_PT = "pt-1.5";
   // Keep the action bar inside the contained root's paint box, then cancel its reserved space in flow.
@@ -566,96 +714,18 @@ const AssistantMessage: FC = () => {
     <MessagePrimitive.Root
       data-slot="aui_assistant-message-root"
       data-role="assistant"
-      className="fade-in slide-in-from-bottom-1 animate-in relative -mb-7.5 pb-7.5 duration-150 [contain-intrinsic-size:auto_200px] [content-visibility:auto]"
+      className={cn("fade-in slide-in-from-bottom-1 animate-in relative duration-150", answer.length > 0 && "-mb-7.5 pb-7.5")}
     >
-      <div
-        data-slot="aui_assistant-message-content"
-        className="text-foreground px-2 leading-relaxed wrap-break-word"
-      >
-        <MessagePrimitive.GroupedParts groupBy={groupBy}>
-          {({ part, children }) => {
-            switch (part.type) {
-              case "group-chainOfThought":
-                return <div data-slot="aui_chain-of-thought">{children}</div>;
-              case "group-task":
-                return TaskGroupComponent ? (
-                  <TaskGroupComponent group={part} />
-                ) : null;
-              case "group-tool":
-                if (standalone(part.indices)) return <>{children}</>;
-                if (ToolGroup) {
-                  return <ToolGroup group={part}>{children}</ToolGroup>;
-                }
-                return (
-                  <ToolGroupRoot variant="ghost">
-                    <ToolGroupTrigger
-                      count={part.indices.length}
-                      active={part.status.type === "running"}
-                    />
-                    <ToolGroupContent>{children}</ToolGroupContent>
-                  </ToolGroupRoot>
-                );
-              case "group-reasoning": {
-                if (ReasoningGroup) {
-                  return (
-                    <ReasoningGroup group={part}>{children}</ReasoningGroup>
-                  );
-                }
-                const running = part.status.type === "running";
-                return (
-                  <ReasoningRoot streaming={running}>
-                    <ReasoningTrigger active={running} />
-                    <ReasoningContent aria-busy={running}>
-                      <ReasoningText>{children}</ReasoningText>
-                    </ReasoningContent>
-                  </ReasoningRoot>
-                );
-              }
-              case "text":
-                return <MarkdownText />;
-              case "reasoning":
-                return <Reasoning {...part} />;
-              case "tool-call":
-                return part.toolUI ?? <ToolFallbackComponent {...part} />;
-              case "data":
-                return part.dataRendererUI;
-              case "file":
-                return (
-                  <div data-slot="aui_assistant-message-file" className="py-1">
-                    <File {...part} />
-                  </div>
-                );
-              case "image":
-                return (
-                  <div data-slot="aui_assistant-message-image" className="py-1">
-                    <Image {...part} />
-                  </div>
-                );
-              case "indicator":
-                return (
-                  <span
-                    data-slot="aui_assistant-message-indicator"
-                    className="animate-pulse font-sans"
-                    aria-label="Assistant is working"
-                  >
-                    {"●"}
-                  </span>
-                );
-              default:
-                return null;
-            }
-          }}
-        </MessagePrimitive.GroupedParts>
+      <div data-slot="aui_assistant-message-content" className="text-foreground px-2 leading-relaxed wrap-break-word">
+        {blocks}
         <MessageError />
       </div>
 
-      <div
-        data-slot="aui_assistant-message-footer"
-        className={cn("ms-2 flex items-center", ACTION_BAR_HEIGHT)}
-      >
-        <BranchPicker />
-        <AssistantActionBar />
-      </div>
+      {answer.length > 0 && (
+        <div data-slot="aui_assistant-message-footer" className={cn("ms-2 flex items-center", ACTION_BAR_HEIGHT)}>
+          <AssistantActionBar />
+        </div>
+      )}
     </MessagePrimitive.Root>
   );
 };
@@ -698,11 +768,6 @@ const AssistantActionBar: FC = () => {
           </TooltipIconButton>
         </ActionBarPrimitive.FeedbackNegative>
       </AuiIf>
-      <ActionBarPrimitive.Reload asChild>
-        <TooltipIconButton tooltip="Refresh">
-          <RefreshCwIcon />
-        </TooltipIconButton>
-      </ActionBarPrimitive.Reload>
       <ActionBarMorePrimitive.Root>
         <ActionBarMorePrimitive.Trigger asChild>
           <TooltipIconButton
@@ -743,10 +808,11 @@ const UserImagePart: ImageMessagePartComponent = (part) => (
 );
 
 const UserMessage: FC = () => {
+  const editable = useEditable();
   return (
     <MessagePrimitive.Root
       data-slot="aui_user-message-root"
-      className="fade-in slide-in-from-bottom-1 animate-in grid auto-rows-auto grid-cols-[minmax(72px,1fr)_auto] content-start gap-y-2 px-2 duration-150 [contain-intrinsic-size:auto_200px] [content-visibility:auto] [&:where(>*)]:col-start-2"
+      className="fade-in slide-in-from-bottom-1 animate-in grid auto-rows-auto grid-cols-[minmax(72px,1fr)_auto] content-start gap-y-2 px-2 duration-150 [&:where(>*)]:col-start-2"
       data-role="user"
     >
       <UserMessageAttachments />
@@ -757,89 +823,71 @@ const UserMessage: FC = () => {
             components={{ File: UserFilePart, Image: UserImagePart }}
           />
         </div>
-        <div className="aui-user-action-bar-wrapper absolute start-0 top-1/2 -translate-x-full -translate-y-1/2 pe-2 peer-empty:hidden rtl:translate-x-full">
-          <UserActionBar />
-        </div>
+        {editable && (
+          <div className="aui-user-action-bar-wrapper absolute start-0 top-1/2 -translate-x-full -translate-y-1/2 pe-2 rtl:translate-x-full">
+            <ActionBarPrimitive.Root hideWhenRunning autohide="always" className="aui-user-action-bar-root flex flex-col items-end">
+              <ActionBarPrimitive.Edit asChild>
+                <TooltipIconButton tooltip="Edit: continue the conversation from here" className="aui-user-action-edit">
+                  <PencilIcon />
+                </TooltipIconButton>
+              </ActionBarPrimitive.Edit>
+            </ActionBarPrimitive.Root>
+          </div>
+        )}
       </div>
-
-      <BranchPicker
-        data-slot="aui_user-branch-picker"
-        className="col-span-full col-start-1 -me-1 justify-end"
-      />
     </MessagePrimitive.Root>
   );
 };
 
-const UserActionBar: FC = () => {
-  return (
-    <ActionBarPrimitive.Root
-      hideWhenRunning
-      autohide="not-last"
-      className="aui-user-action-bar-root flex flex-col items-end"
-    >
-      <ActionBarPrimitive.Edit asChild>
-        <TooltipIconButton tooltip="Edit" className="aui-user-action-edit">
-          <PencilIcon />
-        </TooltipIconButton>
-      </ActionBarPrimitive.Edit>
-    </ActionBarPrimitive.Root>
-  );
-};
+// Editable: a message stored in Pi's session (id "pi-<entry>", so the worker can rewind to it) that comes after the
+// last /workflow-… command; the command and what precedes it stay as they are (the worker checks the same rule).
+function useEditable() {
+  const id = useAuiState((s) => s.message.id);
+  const messages = useAuiState((s) => s.thread.messages) as unknown as readonly Msg[];
+  return useMemo(() => {
+    if (!id.startsWith("pi-")) return false;
+    const textOf = (m: Msg) => m.content.map((p) => (p.type === "text" ? (p.text ?? "") : "")).join("").trim();
+    const at = messages.findIndex((m) => m.id === id);
+    const lastCommand = messages.reduce((n, m, i) => (m.role === "user" && textOf(m).startsWith("/workflow-") ? i : n), -1);
+    return at > lastCommand && !textOf(messages[at]!).startsWith("/workflow-");
+  }, [id, messages]);
+}
 
+// The edit box: Update first asks the worker to rewind Pi's session to just before this message, then sends the new
+// text, which the agent continues from (the old path stays in Pi's session as a branch; the terminal's /tree shows it)
 const EditComposer: FC = () => {
+  const aui = useAui();
+  const id = useAuiState((s) => s.message.id);
+  const { base } = useAgent();
+  const [error, setError] = useState<string | null>(null);
+  const update = async () => {
+    setError(null);
+    try {
+      await sendJson(`${base}/edit`, "POST", JSON.stringify({ entry: id }));
+      aui.message().composer().send(); // this message's edit composer: the edited text, as a branch from here
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
   return (
-    <MessagePrimitive.Root
-      data-slot="aui_edit-composer-wrapper"
-      className="flex flex-col px-2 [contain-intrinsic-size:auto_200px] [content-visibility:auto]"
-    >
+    <MessagePrimitive.Root data-slot="aui_edit-composer-wrapper" className="flex flex-col px-2">
       <ComposerPrimitive.Root className="aui-edit-composer-root border-foreground/10 focus-within:border-foreground/25 ms-auto flex w-full max-w-[85%] cursor-text flex-col rounded-(--composer-radius) border bg-(--composer-bg) transition-[border-color]">
-        <ComposerPrimitive.Input
-          className="aui-edit-composer-input text-foreground min-h-14 w-full resize-none bg-transparent px-4 pt-3 pb-1 text-base outline-none"
-          autoFocus
-        />
+        <ComposerPrimitive.Input className="aui-edit-composer-input text-foreground min-h-14 w-full resize-none bg-transparent px-4 pt-3 pb-1 text-base outline-none" autoFocus />
+        {error && <p className="mx-4 text-xs text-red-600">{error}</p>}
         <div className="aui-edit-composer-footer mx-2.5 mb-2.5 flex items-center gap-1.5 self-end">
           <ComposerPrimitive.Cancel asChild>
             <Button variant="ghost" size="sm" className="h-8 px-3">
               Cancel
             </Button>
           </ComposerPrimitive.Cancel>
-          <ComposerPrimitive.Send asChild>
-            <Button size="sm" className="h-8 px-3">
-              Update
-            </Button>
-          </ComposerPrimitive.Send>
+          <Button size="sm" className="h-8 px-3" onClick={() => void update()}>
+            Update
+          </Button>
         </div>
       </ComposerPrimitive.Root>
     </MessagePrimitive.Root>
   );
 };
 
-const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
-  className,
-  ...rest
-}) => {
-  return (
-    <BranchPickerPrimitive.Root
-      hideWhenSingleBranch
-      className={cn(
-        "aui-branch-picker-root text-muted-foreground -ms-2 me-2 inline-flex items-center text-xs",
-        className,
-      )}
-      {...rest}
-    >
-      <BranchPickerPrimitive.Previous asChild>
-        <TooltipIconButton tooltip="Previous">
-          <ChevronLeftIcon />
-        </TooltipIconButton>
-      </BranchPickerPrimitive.Previous>
-      <span className="aui-branch-picker-state font-medium">
-        <BranchPickerPrimitive.Number /> / <BranchPickerPrimitive.Count />
-      </span>
-      <BranchPickerPrimitive.Next asChild>
-        <TooltipIconButton tooltip="Next">
-          <ChevronRightIcon />
-        </TooltipIconButton>
-      </BranchPickerPrimitive.Next>
-    </BranchPickerPrimitive.Root>
-  );
-};
+
+

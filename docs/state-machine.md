@@ -57,6 +57,9 @@ stateDiagram-v2
     change_draft --> change_ready: record_critique
     change_ready --> ready: merge / keep / discard
     change_draft --> ready: keep / discard
+    branch_review --> between_waves: new_run (branch kept)
+    change_ready --> between_waves: new_run (branch kept)
+    change_draft --> between_waves: new_run (branch kept)
 
     main_draft --> change_draft: /workflow-revise
 ```
@@ -73,7 +76,7 @@ A run that ends with no commits has no branch, so it goes straight back to `read
 
 | Move (tool or command) | From | To | Refused by (script) |
 |---|---|---|---|
-| `workflow_new_run` | `planned`, `ready` | `between_waves` | `run_log new`: an active run; a branch other than `main` checked out; `P` ≠ ready (`validate_plan.check_ready`). Before the first run it commits leftovers on `main` (planning); after it, on the run's branch |
+| `workflow_new_run` | `planned`, `ready`, `branch_review`, `change_draft`, `change_ready` | `between_waves` (from a branch: it commits the branch's leftovers, switches to `main` and keeps the branch for review) | `run_log new`: an active run; a branch that is not a run or change branch checked out; `P` ≠ ready (`validate_plan.check_ready`; from a branch, `main`'s plan). Before the first run it commits leftovers on `main` (planning); after it, on the run's branch |
 | `workflow_compile` | `between_waves` | `between_waves` (writes `.compiled/`; commits the plan only when the wave can launch) | `compile_wave`: `P` ≠ ready (or edited after the critique), no active run, a wave running, no waves left, the wave already launched but not recorded, the last wave ended with a review and `reviewed` is not passed, preflight |
 | `workflow_log_start` | `between_waves` | `wave_running` | `run_log start`: a wave running; the wave is not the next one; `P` ≠ ready (nothing compiled from a draft) |
 | `workflow_log_finish` | `wave_running` | `between_waves` (wave done, or failed/blocked/stopped: its stages back to pending) | `run_log finish`: no running launch; pi-subagents still running (the refusal says whether its process is gone) or has no record, unless `result` and `status` are passed |

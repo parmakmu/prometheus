@@ -109,7 +109,9 @@ function firstWord(args: string): [string, string] {
 
 function table(rows: string[][]): string {
 	const widths = rows[0].map((_, i) => Math.max(...rows.map((r) => (r[i] ?? "").length)));
-	return rows.map((r) => r.map((c, i) => (c ?? "").padEnd(widths[i])).join("  ").trimEnd()).join("\n");
+	const text = rows.map((r) => r.map((c, i) => (c ?? "").padEnd(widths[i])).join("  ").trimEnd()).join("\n");
+	// shown as markdown: a fence keeps the line breaks and the column padding
+	return "```\n" + text + "\n```";
 }
 
 function slugs(root: string, prefix = ""): string[] {
@@ -186,11 +188,19 @@ export default function prometheus(pi: ExtensionAPI) {
 		const command = (event.input as { command?: string }).command ?? "";
 		if ((event.toolName === "bash" || event.toolName === "powershell") && /scaffold_workflow\.py/.test(command))
 			return { block: true, reason: "Create workflows with workflow_scaffold, and only after the user ran /workflow-new." };
+		const shell = event.toolName === "bash" || event.toolName === "powershell";
+		const path_ = (event.input as { path?: string }).path ?? "";
+		// any route to a new package: install commands, uvx / uv tool / uv run --with, or writing the package list itself
+		const packageFile =
+			((event.toolName === "write" || event.toolName === "edit") && /(^|[\\/])(pyproject\.toml|uv\.lock)$/.test(path_)) ||
+			(shell && /(pyproject\.toml|uv\.lock)/.test(command) && /\bsed\s+-i|>|\btee\b|\bmv\b|\bcp\b|\bperl\s+-\w*i|\btruncate\b|\bpython3?\b|\bnode\b/.test(command));
+		if ((shell && /\buv\s+(?:pip\s+)?(?:add|install)\b|\bpip3?\s+install\b|\buvx\b|\buv\s+tool\s+(?:install|run)\b|\buv\s+run\b[^\n;&|]*\s--with\b|add_package\.py/.test(command)) || packageFile)
+			return { block: true, reason: "Python packages are added with workflow_add_package (the packages and why they are needed), which asks the user to approve them. Do not run uv add, pip install, uvx or uv run --with, edit pyproject.toml or uv.lock, or run add_package.py yourself. Name the workflow (slug) when you call it." };
 	});
 
 	// --- commands ---------------------------------------------------------------
 	pi.registerCommand("workflow-new", {
-		description: "Plan a new workflow from a request",
+		description: "Plan a new workflow from a request: /workflow-new <what you want done>",
 		handler: async (args, ctx) => {
 			if (!rootOrWarn(ctx)) return;
 			if (!args.trim()) {
@@ -357,6 +367,34 @@ export default function prometheus(pi: ExtensionAPI) {
 				if (!root) throw new Error("not inside the Prometheus folder");
 				const res = await check(pi, root, params.slug, signal);
 				return { content: [{ type: "text" as const, text: JSON.stringify(res, null, 2) }], details: res };
+			},
+		}),
+	);
+
+	pi.registerTool(
+		defineTool({
+			name: "workflow_add_package",
+			label: "Add package",
+			description:
+				"Add Python packages to workflows/<slug>/pyproject.toml (uv add). The user is shown the packages and your reason and must approve first: say plainly why the workflow needs them, in terms of what they do for the user's work.",
+			promptSnippet: "Add a Python package to a workflow, after the user approves it",
+			promptGuidelines: ["To add a Python package to a workflow use workflow_add_package with the reason; never uv add or pip install. If the user declines, work without it or ask what to do instead."],
+			parameters: Type.Object({
+				slug: Type.String({ description: "the workflow's slug" }),
+				packages: Type.Array(Type.String(), { description: "requirements as uv add takes them: openpyxl, pandas>=2, httpx[http2]" }),
+				reason: Type.String({ description: "why the workflow needs them, in a sentence the user can judge" }),
+			}),
+			async execute(_id, params, signal, _onUpdate, ctx) {
+				const root = findRoot(ctx.cwd);
+				if (!root) throw new Error("not inside the Prometheus folder");
+				if (!/^[a-z0-9][a-z0-9-]*$/.test(params.slug)) throw new Error("bad slug");
+				if (!ctx.hasUI) throw new Error("adding a package needs the user's approval and no one can be asked here: do not add it");
+				if (!params.packages.length || !params.reason.trim()) throw new Error("name the packages and say why they are needed");
+				const yes = await ctx.ui.confirm("Add a Python package?", `${params.packages.join(", ")} (workflow ${params.slug})\n\nWhy: ${params.reason.trim()}`);
+				if (!yes) return { content: [{ type: "text" as const, text: "The user declined. Do not add it: work without it, or ask the user what to do instead." }], details: { declined: true } };
+				const res = await runScript(pi, root, "add_package.py", [...params.packages, "--reason", params.reason, "--workflow", path.join(root, WORKFLOWS, params.slug)], signal);
+				if (res.data === undefined) throw new Error(`add_package.py failed: ${(res.stderr || res.stdout).trim().slice(0, 2000)}`);
+				return { content: [{ type: "text" as const, text: JSON.stringify(res.data, null, 2) }], details: res.data };
 			},
 		}),
 	);

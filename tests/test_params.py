@@ -14,6 +14,9 @@ from pathlib import Path
 import pytest
 from conftest import SKILL
 
+# module fixtures shared by the tests here: keep them on one worker
+pytestmark = pytest.mark.xdist_group("params")
+
 SCRIPTS = SKILL / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 import workflow_params as wp

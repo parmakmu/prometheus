@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { AgentProvider, AgentRuntime } from "@/app/agent";
+import { CanvasProvider } from "@/app/canvas";
 
 import "./globals.css";
 import "@xterm/xterm/css/xterm.css";
@@ -20,7 +21,9 @@ export default function RootLayout({
     <html lang="en" className="h-dvh">
       <body className="h-dvh font-sans">
         <AgentProvider>
-          <AgentRuntime>{children}</AgentRuntime>
+          <CanvasProvider>
+            <AgentRuntime>{children}</AgentRuntime>
+          </CanvasProvider>
         </AgentProvider>
       </body>
     </html>

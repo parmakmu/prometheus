@@ -26,6 +26,7 @@ workflows/emails-to-excel/
   .pi/            the workflow agent: extension, agents, skill copy
   .env            this machine's values (not in git)
   runs/           one folder per run (not in git)
+  uploads/        files attached in the web app's chat (not in git)
 ```
 
 You run that folder whenever the job comes round again. Here's what the difference looked like for emails-to-excel, between a run where models did everything and one where the reviewed programs did the routine work:

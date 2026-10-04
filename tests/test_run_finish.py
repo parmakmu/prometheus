@@ -50,6 +50,10 @@ def ready_workflow(root, run_py, slug):
     return wf, wf / ".pi" / "skills" / "workflow" / "scripts"
 
 
+# the tests reading `finished` share one finished run: keep them on one worker (the rest spread out)
+FINISHED = pytest.mark.xdist_group("run-finish")
+
+
 @pytest.fixture(scope="module")
 def finished(tmp_path_factory, run_py):
     tmp = tmp_path_factory.mktemp("finish")
@@ -74,20 +78,24 @@ def finished(tmp_path_factory, run_py):
     return r.data
 
 
+@FINISHED
 def test_the_last_wave_finishes_the_run(finished):
     assert (finished["wave_status"], finished["run_status"]) == ("done", "done")
 
 
+@FINISHED
 def test_finish_returns_what_the_parent_needs_not_the_log_entry(finished):
     assert "entry" not in finished and "commit" not in finished
     assert finished["next_wave"] is None  # the run is done
 
 
+@FINISHED
 def test_finish_returns_done_when_for_the_final_report(finished):
     # so the parent reports each criterion without reading the plan
     assert finished["done_when"] == ["counts.txt holds the line count.", "The count matches the file."]
 
 
+@FINISHED
 def test_finish_returns_the_mission_close_call(finished):
     assert (finished["mission_close"]["missionId"], finished["mission_close"]["missionStatus"]) == ("m-1", "completed")
 

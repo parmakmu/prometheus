@@ -29,7 +29,7 @@ The model-facing rules are in the skill: `SKILL.md` (planning), `references/run-
 
 - The agent is **Prometheus** (repo folder `prometheus/`, extension `.pi/extensions/prometheus/`).
   Commands keep the `workflow-` prefix (Pi has built-in `/new` and `/export`).
-- Runtime is the **Pi coding agent** (earendil-works/pi, built against **0.87.1**; the test suite also passes on 0.99.2 and 1.0.0, but live waves fail on 1.0.0 with pi-subagents 0.74.0: its async runner requires `@earendil-works/pi-agent-core/node`, an export pi-agent-core 1.0.0 dropped, so every background child fails at startup; stay on Pi 0.99.2 until pi-subagents supports 1.0) + **pi-subagents** (0.73.1; tests also pass on 0.74.0). Live runs so far were on the older versions.
+- Runtime is the **Pi coding agent** (earendil-works/pi, built against **0.87.1**; the test suite also passes on 0.99.2, 1.0.0 and 1.0.1. Live waves failed on Pi 1.0.0 with pi-subagents 0.74.0: its async runner required `@earendil-works/pi-agent-core/node`, an export pi-agent-core 1.0.0 dropped, so every background child failed at startup. pi-subagents 0.75.0 fixes it: the owner runs Pi 1.0.1 + pi-subagents 0.75.0 with subagents working (2026-10-04)) + **pi-subagents** (0.73.1; tests also pass on 0.74.0 and 0.75.0). Live runs so far were on the older versions.
 - Prometheus is **standalone**: this folder, `cd` + `pi`. Not a global install into `~/.pi/agent/`.
 - Plans are **YAML**.
 - Commands and tools live in **Pi extensions**, one self-contained `index.ts` per agent. No
@@ -127,8 +127,9 @@ Libraries: typer, pydantic (plan shape, in `validate_plan.py`; the cross-referen
   made an improve that found nothing leave an r+1 draft branch to review. At the end the user sees the diff and chooses
   merge (only a ready, valid plan; squashed into one commit on `main`, `r<rev>: <branch>` listing
   the branch's commits, so `main` stays linear with one commit per reviewed change, however many
-  the branch made; the branch is deleted) / keep / discard. New runs and changes refuse while another
-  branch is checked out, so reviews can't be skipped. Why: a run's discoveries are a proposal,
+  the branch made; the branch is deleted) / keep / discard. A new change refuses while another
+  branch is checked out; a new run starts from `main` (it commits the branch's leftovers, switches and
+  keeps the branch for review, only if main's plan is ready), so an edit made in the web app never leaks into a run. Why: a run's discoveries are a proposal,
   not a silent change to every later run; and the workflow owns its plan (Prometheus's old
   outside revise command, with no locks, was removed).
 - **Plan edits during a run go through `plan_edit.py`** (`workflow_replan`,
@@ -162,7 +163,7 @@ Libraries: typer, pydantic (plan shape, in `validate_plan.py`; the cross-referen
   usual acceptance gate. Values in `run:` are shell-quoted; secrets stay `"${ENV}"`. Why: run 7
   spent 35 s on two model children that only ran reviewed programs (~1 s as commands).
   `runs.host` is not open to raw workflow scripts, so the batcher (external-cli) does it.
-- **A workflow's packages are in its `pyproject.toml`** (`uv add`, locked in `uv.lock`), used by
+- **A workflow's packages are in its `pyproject.toml`** (`workflow_add_package`, which runs `uv add` only after the user approves the packages and the reason; locked in `uv.lock`), used by
   the skill scripts, gates and stage programs alike; gates and programs run with `uv run`, which
   syncs `.venv/` first, so no `uv sync` pause. The validator rejects a third-party import
   `pyproject.toml` doesn't list, a PEP 723 `# /// script` block, and packages run with `python3`;
@@ -223,7 +224,8 @@ Libraries: typer, pydantic (plan shape, in `validate_plan.py`; the cross-referen
 ## Web app (`ui/`, see `ui/README.md`)
 
 - **Router + one worker process per user and agent** (`router.ts`, `worker.ts`): the worker is the Pi
-  SDK (`createAgentSession`) in one folder, served as AG-UI on a unix socket. Why a process each, not
+  SDK (`createAgentSession`, from the global Pi install found with `npm root -g` and loaded by path: the repo
+  keeps no copy, so the page runs the terminal's Pi; a pinned copy had fallen behind at 0.99.2) in one folder, served as AG-UI on a unix socket. Why a process each, not
   SDK sessions in one process: the workflow extension loads `.env` into `process.env`, params read the
   environment first, and pi-subagents spawns children with it, so sessions sharing a process would read
   each other's params and secrets.
@@ -324,11 +326,11 @@ pi-subagents 0.73.1, with the `workflow` field from 0.74.0 (source in `~/.pi/age
 
 ## Status
 
-`uv run pytest`: 237 tests, including the validator's broken-variant cases, param tests, the
+`uv run pytest`: 248 tests, including the validator's broken-variant cases, param tests, the
 state machine's refusals and its walk (`tests/test_run_finish.py`, `tests/test_state_machine.py`), compiled
 waves run in a mock of `runs.run/runs.all` (real batch tool and gates, fake children), and both
-extensions type-checked and driven with Pi's real types. The 131 outside `tests/test_workflow.py`
-pass without Node or uv; that file's 102 (the scenario and the extensions) need `npm install` and uv.
+extensions type-checked and driven with Pi's real types. The 145 outside `tests/test_workflow.py`
+pass without Node or uv; that file's 103 (the scenario and the extensions) need `npm install` and uv.
 
 Verified in live runs of emails-to-excel (see `docs/design.md` and "The second run" in `docs/how-it-works.md`): planning with the
 critic and questions; discovery + replan; explicit acceptance; derived waves and run folders;
@@ -383,6 +385,9 @@ uv run ruff check
 `tests/test_workflow.py` is one continuous scenario: later tests use state earlier ones left on
 disk (a module-scoped `env` fixture carries run ids and paths), so its tests run in file order.
 Don't add a test-randomizing plugin, and put a new check where the state it needs exists.
+The suite runs in parallel (pytest-xdist, `-n auto --dist loadgroup`, ~28 s); tests sharing state carry an
+`xdist_group` mark (all of `test_workflow.py`, the state walk, `finished` in `test_run_finish.py`, `test_params.py`)
+so they stay on one worker. `-n 0` runs serially for debugging.
 
 When you add a validator rule, add a broken-variant case to `tests/test_validator.py`. When you
 change a script's JSON output, check both extensions that format it. When you add a refusal a

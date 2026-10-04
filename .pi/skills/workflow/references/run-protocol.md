@@ -68,7 +68,10 @@ tool, ask in chat and end the turn.
    compile only once the user chose to relaunch.
 3. Route:
    - no active run and a `run/…`, `revise/…`, `improve/…` or `change/…` branch checked out
-     (`git branch --show-current`) → **Reviewing a branch**
+     (`git branch --show-current`): a run always starts from `main`, and
+     `workflow_new_run` keeps that branch for later. Ask (question tool)
+     whether to review it now or start the run and review it later; review
+     → **Reviewing a branch**, run → **Starting a run**
    - `draft` or `needs_answers` with no run → planning: follow
      `<skill>/SKILL.md` on `main` (skip step 1; the plan file exists; if
      `request` is empty, ask for it and write it verbatim); on a change
@@ -197,7 +200,7 @@ once nothing else touches the repo.
 ## What you may edit
 
 The plan directly only before the first run (on `main`) or on a change
-branch, with `gates/`, `scripts/`, `.pi/agents/` and packages (`uv add`,
+branch, with `gates/`, `scripts/`, `.pi/agents/` and packages (`workflow_add_package`,
 into `pyproject.toml`). During a run only through the replan tools, plus
 `gates/`, `.pi/agents/` and packages while replanning; stage programs are
 the children's. Params only through `workflow_set_params`; `.env` never. Run

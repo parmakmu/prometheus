@@ -68,7 +68,7 @@ const REVISE_PROMPT = (change: string, branch: string, mode: string) => {
 		mode === "planning"
 			? "No run has started yet: plan (or continue planning) on main, editing plan.yaml directly."
 			: `You are on the change branch "${branch}", created from main with the revision bumped. Edit
-plan.yaml, gates/, scripts/ and .pi/agents/ directly (packages: uv add); anything in the plan may change. End with the
+plan.yaml, gates/, scripts/ and .pi/agents/ directly (packages: workflow_add_package); anything in the plan may change. End with the
 user's review of the branch and workflow_merge (merge, keep or discard).`;
 	return `Change this workflow's plan following the "Changing the plan" section
 of \`.pi/skills/workflow/references/changing.md\`. Launch no work stages.
@@ -95,7 +95,7 @@ any branch you mean to cite.
    one-offs; a proposal needs a repeat or a real cost.
 2. Give each proposal: the evidence (session file or run id), the file to change, the edit, and what
    it should prevent. Targets you may change here: plan.yaml, gates/, scripts/, .pi/agents/,
-   packages (uv add), and rules for this agent: short lines under the heading
+   packages (workflow_add_package), and rules for this agent: short lines under the heading
    "## Lessons for this workflow" at the end of \`.pi/APPEND_SYSTEM.md\` (add the heading if missing;
    /workflow-refresh keeps that section). Every line of it is sent with every turn, so write a rule only
    for a behaviour the evidence shows repeating, keep it to one or two sentences about this workflow,
@@ -273,6 +273,12 @@ function isProtected(root: string, file: string, planOpen: boolean): boolean {
 /** What only a reviewed branch changes once a run exists: gates, stage programs, agents, packages. */
 const BRANCH_FILES = /^(gates|scripts|\.pi[\\/]agents)[\\/]|^(pyproject\.toml|uv\.lock)$/;
 const SESSION_FILES = /[\\/]\.pi[\\/]agent[\\/]sessions[\\/]/;
+// adding a package is the user's call: only workflow_add_package, which asks, may do it
+// (also uvx, uv tool and uv run --with, which fetch packages for one command; and any write to the package list)
+const PACKAGE_INSTALL = /\buv\s+(?:pip\s+)?(?:add|install)\b|\bpip3?\s+install\b|\buvx\b|\buv\s+tool\s+(?:install|run)\b|\buv\s+run\b[^\n;&|]*\s--with\b|add_package\.py/;
+const PACKAGE_FILES = /(^|[\\/])(pyproject\.toml|uv\.lock)$/;
+const PACKAGE_FILES_WRITE = /(pyproject\.toml|uv\.lock)/;
+const SHELL_WRITE = /\bsed\s+-i|>|\btee\b|\bmv\b|\bcp\b|\bperl\s+-\w*i|\btruncate\b|\bpython3?\b|\bnode\b/;
 const PACKAGE_COMMAND = /\buv\s+(add|remove)\b/;
 
 /** run/, revise/, improve/ (and older change/) branches (loose and packed refs): ones waiting for review. */
@@ -354,6 +360,12 @@ export default function workflowAgent(pi: ExtensionAPI) {
 		const root = findRoot(ctx.cwd);
 		if (!root) return;
 		const input = event.input as { path?: string; command?: string };
+		const shellCommand = event.toolName === "bash" || event.toolName === "powershell" ? (input.command ?? "") : "";
+		const packageFile =
+			((event.toolName === "write" || event.toolName === "edit") && !!input.path && PACKAGE_FILES.test(path.relative(root, path.resolve(ctx.cwd, input.path)))) ||
+			(PACKAGE_FILES_WRITE.test(shellCommand) && SHELL_WRITE.test(shellCommand));
+		if (PACKAGE_INSTALL.test(shellCommand) || packageFile)
+			return { block: true, reason: "Python packages are added with workflow_add_package (the packages and why they are needed), which asks the user to approve them. Do not run uv add, pip install, uvx or uv run --with, edit pyproject.toml or uv.lock, or run add_package.py yourself. If you cannot ask (you are a stage's child), do not add the package: finish without it, or fail and name the package and why." };
 		if ((event.toolName === "bash" || event.toolName === "powershell") && GIT_WRITE.test(input.command ?? ""))
 			return {
 				block: true,
@@ -579,6 +591,29 @@ export default function workflowAgent(pi: ExtensionAPI) {
 		}),
 	);
 
+	pi.registerTool(
+		defineTool({
+			name: "workflow_add_package",
+			label: "Add package",
+			description:
+				"Add Python packages to this workflow's pyproject.toml (uv add). The user is shown the packages and your reason and must approve first: say plainly why the workflow needs them, in terms of what they do for the user's work. Packages change only on a run or change branch.",
+			promptSnippet: "Add a Python package, after the user approves it",
+			promptGuidelines: ["To add a Python package use workflow_add_package with the reason; never uv add or pip install. If the user declines, work without it or ask what to do instead."],
+			parameters: Type.Object({
+				packages: Type.Array(Type.String(), { description: "requirements as uv add takes them: openpyxl, pandas>=2, httpx[http2]" }),
+				reason: Type.String({ description: "why the workflow needs them, in a sentence the user can judge" }),
+			}),
+			async execute(_id, params, signal, _onUpdate, ctx) {
+				const root = mustRoot(ctx);
+				if (!ctx.hasUI) throw new Error("adding a package needs the user's approval and no one can be asked here: do not add it; finish without it, or fail and name the package and why");
+				if (!params.packages.length || !params.reason.trim()) throw new Error("name the packages and say why they are needed");
+				const yes = await ctx.ui.confirm("Add a Python package?", `${params.packages.join(", ")}\n\nWhy: ${params.reason.trim()}`);
+				if (!yes) return { content: [{ type: "text" as const, text: "The user declined. Do not add it: work without it, or ask the user what to do instead." }], details: { declined: true } };
+				return toolResult(await runScript(pi, root, "add_package.py", [...params.packages, "--reason", params.reason], signal), "add_package.py");
+			},
+		}),
+	);
+
 	/** A tool that runs one script: `args` turns the tool's parameters into the script's arguments. */
 	const scriptTool = <P extends TSchema>(tool: {
 		name: string;
@@ -645,7 +680,7 @@ export default function workflowAgent(pi: ExtensionAPI) {
 		name: "workflow_new_run",
 		label: "New run",
 		description:
-			"Start a run of this workflow: a folder runs/<id>/ for its state, work files and outputs, which becomes the active run. It starts from main; the run's own plan changes go to a branch run/<id>. Refuses while another run is active or another branch is checked out (review it first with workflow_merge).",
+			"Start a run of this workflow: a folder runs/<id>/ for its state, work files and outputs, which becomes the active run. It starts from main; the run's own plan changes go to a branch run/<id>. Always starts from main: a run or change branch checked out is committed and kept for review (the result's left_branch names it; tell the user it still waits for review), unless main's plan is not ready. Refuses while another run is active.",
 		promptGuidelines: ["Start a run only when there is no active run and the user wants to run the workflow."],
 		parameters: Type.Object({
 			note: Type.Optional(Type.String({ description: "what this run is for, in the user's words" })),

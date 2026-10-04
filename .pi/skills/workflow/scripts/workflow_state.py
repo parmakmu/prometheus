@@ -24,9 +24,9 @@ MOVES = {
     "between_waves": ["workflow_compile", "workflow_log_start", "workflow_record_decision", "workflow_replan", "workflow_stop_run"],
     "wave_running": ["workflow_log_finish"],
     "replan_draft": ["workflow_record_critique", "workflow_replan", "workflow_record_decision", "workflow_stop_run"],
-    "branch_review": ["workflow_merge", "workflow_record_critique"],
-    "change_draft": ["edit plan.yaml", "workflow_record_critique", "workflow_merge", "/workflow-revise", "/workflow-improve"],
-    "change_ready": ["workflow_merge", "edit plan.yaml", "workflow_record_critique", "/workflow-revise", "/workflow-improve"],
+    "branch_review": ["workflow_new_run", "workflow_merge", "workflow_record_critique"],
+    "change_draft": ["workflow_new_run", "edit plan.yaml", "workflow_record_critique", "workflow_merge", "/workflow-revise", "/workflow-improve"],
+    "change_ready": ["workflow_new_run", "workflow_merge", "edit plan.yaml", "workflow_record_critique", "/workflow-revise", "/workflow-improve"],
     "main_draft": ["/workflow-revise", "/workflow-improve"],
 }
 HINTS = {

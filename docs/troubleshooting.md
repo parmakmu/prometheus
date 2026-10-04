@@ -62,21 +62,21 @@ The model says it has no `subagent` tool.
 Background children require the host npm package (@earendil-works/pi-coding-agent) with its dependencies; … does not provide …
 ```
 
-**Cause.** The installed Pi and pi-subagents don't match. pi-subagents starts each background child with packages it expects Pi to provide, so when Pi stops providing one, every wave fails on its first child. With pi-subagents 0.74.0 this happens on Pi 1.0.0, which dropped `@earendil-works/pi-agent-core/node`; Pi 0.99.2 works.
+**Cause.** The installed Pi and pi-subagents don't match. pi-subagents starts each background child with packages it expects Pi to provide, so when Pi stops providing one, every wave fails on its first child. With pi-subagents 0.74.0 this happened on Pi 1.0, which dropped `@earendil-works/pi-agent-core/node`; pi-subagents 0.75.0 works with Pi 1.0.1.
 
-**Fix.** Install a Pi that pi-subagents supports (`npm install -g @earendil-works/pi-coding-agent@0.99.2`), or wait for a pi-subagents release that supports the newer Pi. Then run `/workflow-run`, and the active run relaunches the failed wave.
+**Fix.** Update pi-subagents (`pi update`, or `pi install npm:pi-subagents`) to a release that supports your Pi (0.75.0 or later for Pi 1.0), or install a Pi it supports. Then run `/workflow-run`, and the active run relaunches the failed wave.
 
 ## Starting a run
 
 ### Branch not reviewed
 
 ```text
-branch <run/…, revise/… or improve/…> is checked out and not reviewed: review it first
+the plan on main is not ready to run (…); <run/…, revise/… or improve/…> is still checked out
 ```
 
-**Cause.** New runs and changes start from `main`, and an earlier run or change left a branch you haven't reviewed yet.
+**Cause.** A run always starts from `main`. When a branch awaiting review is checked out, starting a run commits its leftovers, switches to `main` and keeps the branch for review, but only if the plan on `main` is ready. Here it isn't (a draft, or errors), so nothing was switched.
 
-**Fix.** Run `/workflow-run`. It shows you what the branch changes and asks whether to merge, keep or discard it.
+**Fix.** Review the branch (`/workflow-revise` or the workspace's *Review and merge*: merge, keep or discard), or change the plan on `main` until it is ready.
 
 ### Plan not ready
 
@@ -436,7 +436,7 @@ The same message names `scripts/<file>` for a stage program.
 
 **Cause.** Every package that a workflow's gates and stage programs use must be listed in its `pyproject.toml` and locked in `uv.lock`, so you can see them all in one place and review them with the branch. The same check reports a script with its own `# /// script` package block, and a gate that needs packages but runs with `python3` instead of `uv run`.
 
-**What the agent does.** The workflow agent adds the package with `uv add <package>`, or moves the block's packages into `pyproject.toml`.
+**What the agent does.** The workflow agent adds the package with `workflow_add_package`, which asks you to approve it and shows why it is needed, or moves the block's packages into `pyproject.toml`.
 
 ### Unknown critic run
 

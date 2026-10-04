@@ -193,8 +193,8 @@ A provisional stage is an outline filled in at replan:
 the stage they check; commands call them as `uv run ../gates/<script>`
 (children run in `work/`; `python3` is fine for a standard-library gate).
 Every package a gate or program imports is in the workflow's
-`pyproject.toml`: add one with `uv add <package>` (from the workflow root),
-never in the script itself. `uv run` syncs that environment first.
+`pyproject.toml`: add one with `workflow_add_package` (it asks the user to
+approve it, so give the reason), never in the script itself. `uv run` syncs that environment first.
 `workflow_check` rejects a third-party import `pyproject.toml` does not list,
 a `# /// script` block, and one run with `python3`. A typed gate's JSON
 becomes the child's structured output, so it excludes a returned `schema`.

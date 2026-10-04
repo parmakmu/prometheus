@@ -151,7 +151,7 @@ def test_gate_packages_come_from_the_workflows_pyproject(tmp_path):
     plan = copy.deepcopy(INV)
     st(plan, "compare")["verify"]["gate"] = "uv run ../gates/check_report.py ${report_dir}/Q3-invoice-variance.xlsx"
     errors, _warnings, _summary = validate_plan.validate(plan, workflow_root=tmp_path)
-    assert any("check_lines.py would fail" in e and "uv add not_listed_pkg" in e for e in errors), errors
+    assert any("check_lines.py would fail" in e and "workflow_add_package" in e and "not_listed_pkg" in e for e in errors), errors
     assert not any("check_report.py would fail" in e for e in errors), errors  # yaml is PyYAML's import name
 
 

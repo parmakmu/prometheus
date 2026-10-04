@@ -1,31 +1,28 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { useAui, AuiProvider, AuiConfig, Suggestions } from "@assistant-ui/react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useAui, useAuiState, AuiProvider, AuiConfig, Suggestions } from "@assistant-ui/react";
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
 import { Flame, FolderOpen, MoreHorizontal, PlusIcon, RefreshCw, SquareTerminal } from "lucide-react";
 import { AskCard, CheckCard, ModelsCard, PiPanelCard, QuestionCard, ScaffoldCard, SubagentCard } from "./cards";
-import { CanvasPanel, CanvasProvider, useCanvas } from "./canvas";
+import { CanvasPanel, useCanvas } from "./canvas";
 import { StatusBar } from "./status-bar";
 import { api } from "./api";
 import { useAgent } from "./agent";
 import { Conversations } from "./conversations";
-import { FilesPanel, Outputs } from "./files";
+import { Workspace, type Run, type WorkflowSummary } from "./workspace";
+import { References } from "./references";
 import { TerminalPanel } from "./terminal";
 import { SlashMenu } from "./slash-menu";
 
 
-type Run = { id: string; status: string; started_at?: string; finished_at?: string; note?: string | null; cost_usd: number };
-type Workflow = {
-  slug: string;
-  state: string;
+type Workflow = WorkflowSummary & {
   status: string;
   revision: number;
   goal: string;
   runs: number;
   stale: boolean;
   open_questions: string[];
-  unmerged: string[];
   recent_runs: Run[];
 };
 
@@ -64,9 +61,14 @@ function useWorkflows() {
   useEffect(() => {
     load();
     const t = setInterval(load, 15000);
-    return () => clearInterval(t);
+    window.addEventListener("workflows-changed", load); // a file was saved in the editor
+    return () => (clearInterval(t), window.removeEventListener("workflows-changed", load));
   }, [load]);
-  return { workflows, error, load };
+  // one workflow's fresh summary, for the live view of a run (cheaper than listing all of them)
+  const refresh = useCallback((slug: string) => {
+    api<Workflow>(`/w/${slug}/summary`).then((w) => setWorkflows((all) => all.map((x) => (x.slug === w.slug ? w : x))), () => {});
+  }, []);
+  return { workflows, error, load, refresh };
 }
 
 function RunsTable({ runs }: { runs: (Run & { slug?: string })[] }) {
@@ -104,38 +106,9 @@ function RunsTable({ runs }: { runs: (Run & { slug?: string })[] }) {
   );
 }
 
-// a workflow on the canvas: what you see when you select it on the left
-function WorkflowDetail({ w, open }: { w: Workflow; open: () => void }) {
-  const s = stateOf(w);
-  return (
-    <div>
-      <div className="from-primary/90 to-primary/60 text-primary-foreground rounded-2xl bg-gradient-to-br p-5 shadow">
-        <div className="flex items-start justify-between">
-          <span className="font-mono">{w.slug}</span>
-          <span className="rounded-full bg-white/20 px-2 py-0.5 text-xs">revision {w.revision}</span>
-        </div>
-        <p className="mt-6 text-sm opacity-90">{w.goal}</p>
-      </div>
-      <div className="mt-4 flex flex-wrap gap-2 text-xs">
-        <span className={`rounded-full px-2 py-0.5 font-medium ${s.tone}`}>{s.label}</span>
-        {w.open_questions.length > 0 && <span className="rounded-full bg-violet-100 px-2 py-0.5 text-violet-800">{w.open_questions.length} open question(s)</span>}
-        {w.unmerged.length > 0 && <span className="rounded-full bg-violet-100 px-2 py-0.5 text-violet-800">{w.unmerged.length} change(s) to review</span>}
-        {w.stale && <span className="bg-muted rounded-full px-2 py-0.5">update available</span>}
-      </div>
-      <button type="button" onClick={open} className="bg-primary text-primary-foreground mt-4 rounded-lg px-3 py-1.5 text-sm">
-        Open this workflow
-      </button>
-      <h3 className="mt-6 mb-2 text-sm font-semibold">Results</h3>
-      <Outputs slug={w.slug} />
-      <h3 className="mt-6 mb-2 text-sm font-semibold">Runs ({w.runs})</h3>
-      <RunsTable runs={w.recent_runs} />
-    </div>
-  );
-}
-
 function Sidebar({ workflows, error, load }: ReturnType<typeof useWorkflows>) {
   const aui = useAui();
-  const { show } = useCanvas();
+  const { show, select } = useCanvas();
   const { agent, setAgent } = useAgent();
   const entry = (active: boolean) => `w-full rounded-lg px-3 py-2 text-left ${active ? "bg-accent" : "hover:bg-accent/60"}`;
   return (
@@ -156,7 +129,7 @@ function Sidebar({ workflows, error, load }: ReturnType<typeof useWorkflows>) {
         </span>
       </div>
       <div className="max-h-[50%] overflow-y-auto px-2">
-        <button type="button" onClick={() => setAgent("/p")} className={entry(agent === "/p")}>
+        <button type="button" onClick={() => (setAgent("/p"), select(null))} className={entry(agent === "/p")}>
           <span className="flex items-center gap-2 text-sm font-medium">
             <Flame className="text-primary size-3.5" /> prometheus
           </span>
@@ -167,10 +140,7 @@ function Sidebar({ workflows, error, load }: ReturnType<typeof useWorkflows>) {
           <button
             key={w.slug}
             type="button"
-            onClick={() => {
-              setAgent(`/w/${w.slug}`);
-              show({ key: `workflow:${w.slug}`, title: w.slug, node: <WorkflowDetail w={w} open={() => setAgent(`/w/${w.slug}`)} /> });
-            }}
+            onClick={() => (setAgent(`/w/${w.slug}`), select(null))}
             className={entry(agent === `/w/${w.slug}`)}
           >
             <span className="flex items-center gap-2 text-sm">
@@ -180,12 +150,6 @@ function Sidebar({ workflows, error, load }: ReturnType<typeof useWorkflows>) {
             <span className="text-muted-foreground text-xs">{stateOf(w).label}</span>
           </button>
         ))}
-      </div>
-
-      <div className="px-2 pt-2">
-        <button type="button" onClick={() => show({ key: "files", title: "Files", node: <FilesPanel /> })} className="hover:bg-accent/60 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm">
-          <FolderOpen className="text-muted-foreground size-4" /> Files
-        </button>
       </div>
 
       <Conversations />
@@ -228,6 +192,9 @@ function Overview({ workflows }: { workflows: Workflow[] }) {
       )}
       <h3 className="mt-6 mb-2 text-sm font-semibold">Recent runs</h3>
       <RunsTable runs={runs} />
+      <div className="mt-6">
+        <References />
+      </div>
     </div>
   );
 }
@@ -281,12 +248,51 @@ function ChatHeader({ workflows }: { workflows: Workflow[] }) {
   );
 }
 
+// the whole chat takes dropped files, not only the composer: they become attachments (see attachments.ts)
+function DropZone({ children }: { children: ReactNode }) {
+  const aui = useAui();
+  const [over, setOver] = useState(false);
+  const hasFiles = (e: DragEvent) => [...(e.dataTransfer?.types ?? [])].includes("Files");
+  return (
+    <section
+      className="relative flex min-w-0 flex-1 flex-col"
+      onDragOver={(e) => hasFiles(e.nativeEvent) && (e.preventDefault(), setOver(true))}
+      onDragLeave={(e) => e.currentTarget.contains(e.relatedTarget as Node) || setOver(false)}
+      onDrop={(e) => {
+        setOver(false);
+        if (e.defaultPrevented || !hasFiles(e.nativeEvent)) return; // the composer's own dropzone already took it
+        e.preventDefault();
+        for (const f of e.dataTransfer.files) void aui.thread().composer().addAttachment(f);
+      }}
+    >
+      {children}
+      {over && <div className="bg-background/70 border-primary text-primary pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-2xl border-2 border-dashed text-sm font-medium">Drop files to attach them</div>}
+    </section>
+  );
+}
+
+// the workflow the workspace shows: the selected one, or (with the planner) the one being planned
 function Layout() {
   const data = useWorkflows();
+  const { slug } = useAgent();
+  const running = useAuiState((s) => s.thread.isRunning);
+  useEffect(() => {
+    if (!running) data.load(); // what the agent just did (a plan drafted, a wave finished) shows now, not at the next poll
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [running]);
+  const shown = data.workflows.find((w) => (slug ? w.slug === slug : w.state === "planning"));
+  // while its run is active the steps follow it every 2 s (wave starts, finishes, children done)
+  const live = shown?.active_run ? shown.slug : null;
+  useEffect(() => {
+    if (!live) return;
+    const t = setInterval(() => data.refresh(live), 2000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [live]);
   return (
     <div className="flex h-dvh">
       <Sidebar {...data} />
-      <section className="relative flex min-w-0 flex-1 flex-col">
+      <DropZone>
         <ChatHeader workflows={data.workflows} />
         <div className="min-h-0 flex-1">
           <Thread />
@@ -294,8 +300,8 @@ function Layout() {
         <QuestionCard />
         <SlashMenu />
         <StatusBar />
-      </section>
-      <CanvasPanel overviewTitle="Overview" overview={<Overview workflows={data.workflows} />} />
+      </DropZone>
+      <CanvasPanel workspace={shown ? <Workspace w={shown} /> : <Overview workflows={data.workflows} />} />
     </div>
   );
 }
@@ -318,15 +324,13 @@ export default function Home() {
   });
   return (
     <AuiProvider extends={aui} config={config}>
-      <CanvasProvider>
-        <ScaffoldCard />
-        <CheckCard />
-        <SubagentCard />
-        <PiPanelCard />
-        <AskCard />
-        <ModelsCard />
-        <Layout />
-      </CanvasProvider>
+      <ScaffoldCard />
+      <CheckCard />
+      <SubagentCard />
+      <PiPanelCard />
+      <AskCard />
+      <ModelsCard />
+      <Layout />
     </AuiProvider>
   );
 }

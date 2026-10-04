@@ -64,6 +64,8 @@ Reusing the program still left a model child to run it. In run 7, two children s
 
 Told to use "the standard library or what is installed", models hand-wrote their own XLSX readers and writers, about 100 lines each, instead of using openpyxl. Now programs and gates use the packages in the workflow's `pyproject.toml`, locked in `uv.lock`, and the validator rejects an import that `pyproject.toml` doesn't list. Per-script package headers (`# /// script`) were tried and rejected: dependencies should be reviewable in one file.
 
+A new package is the user's decision, since it is code that runs on their machine with their files. So the agent can't `uv add` or `pip install`: it calls `workflow_add_package` with the packages and a reason, the tool asks you, and only a yes runs `uv add`. The block is in code, in both extensions, because a rule in the prompt alone would let a model add the package and mention it afterwards. A stage's subagent can't ask, so its task says to report a missing package and why instead of adding it.
+
 Creating or refreshing a workflow runs `uv lock` up front. Before that, the first `uv run` wrote the lock file in the middle of a wave, and every run left a branch to review.
 
 ### A producer is told who reads its output
@@ -96,7 +98,7 @@ The plan has to be reusable on new input. So each run lives in `runs/<id>/`, rel
 
 ### `main` changes only by a reviewed merge
 
-What a run discovers is a proposal, not a silent change to every later run. So a run's first commit opens a `run/<id>` branch, a change you ask for opens a `revise/` or `improve/` branch, and you see the diff and choose. A merge is one commit, because a branch's commits are working steps, and `main` should read as one entry per reviewed change. New runs and changes refuse while another branch is checked out, so a review can't be skipped.
+What a run discovers is a proposal, not a silent change to every later run. So a run's first commit opens a `run/<id>` branch, a change you ask for opens a `revise/` or `improve/` branch, and you see the diff and choose. A merge is one commit, because a branch's commits are working steps, and `main` should read as one entry per reviewed change. A new change refuses while another branch is checked out, so a review can't be skipped. A new run always starts from `main`: it keeps a checked-out branch for later review rather than refusing, because an edit saved in the web app opens a `revise/` branch, and making the user merge or discard it before every run would force a review at the wrong moment; the run reads only main's reviewed plan.
 
 An earlier design let prometheus revise a workflow's plan from outside, with no locks. It was removed: the workflow owns its plan.
 

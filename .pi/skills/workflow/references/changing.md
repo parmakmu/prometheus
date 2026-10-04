@@ -28,7 +28,7 @@ critic is recorded (which raises the revision); gates, programs and agents alone
 
 1. If no change was given, ask what should change.
 2. Edit `plan.yaml` (anything), `gates/`, stage programs in `scripts/` and
-   `.pi/agents/` directly (packages: `uv add <package>`), following
+   `.pi/agents/` directly (packages: `workflow_add_package`, which asks the user), following
    `<skill>/SKILL.md` for what you touch; `workflow_check`. Delete a program
    to have the next run write it again.
 3. Critic (`<skill>/references/critic-contract.md`, with the changed stages in its task), then
