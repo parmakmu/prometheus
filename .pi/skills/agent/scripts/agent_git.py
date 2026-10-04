@@ -13,7 +13,6 @@ the user chose (or by planning before the first run):
   revise/<date>-<n>   a change to the plan asked for with /agent-revise
                       while no run is active (begin-change)
   improve/<date>-<n>  the same for /agent-improve (begin-change --kind improve)
-                      (older agents may hold change/<date>-<n>: still reviewed)
 When a run ends (done or stopped) or a change is ready, the user reviews the
 branch against main and chooses: merge (only a ready, valid plan; squashed
 into one commit on main, "r<revision>: <branch>" listing the branch's commits;
@@ -47,8 +46,7 @@ from validate_plan import check_ready, validate
 
 MAIN = "main"
 CHANGE_KINDS = ("revise", "improve")  # a change to the plan between runs: /agent-revise, /agent-improve
-LEGACY_CHANGE = "change"  # the one prefix both commands used before; still reviewed
-FALLBACK_IDENTITY = ["-c", "user.name=Prometheus", "-c", "user.email=prometheus@localhost"]
+FALLBACK_IDENTITY = ["-c", "user.name=prometheus", "-c", "user.email=prometheus@localhost"]
 app = typer.Typer(add_completion=False)
 
 
@@ -166,7 +164,7 @@ def run_branches(agent_dir):
 
 
 def is_change_branch(name):
-    return bool(name) and name.split("/")[0] in (*CHANGE_KINDS, LEGACY_CHANGE) and "/" in name
+    return bool(name) and name.split("/")[0] in CHANGE_KINDS and "/" in name
 
 
 def is_review_branch(name):
@@ -212,7 +210,7 @@ def begin_change(kind: Annotated[str, typer.Option(help="revise (/agent-revise) 
     b = branch(agent_dir)
     if is_change_branch(b):
         open_kind = b.split("/")[0]
-        if open_kind not in (kind, LEGACY_CHANGE):  # both commands used change/ once
+        if open_kind != kind:
             refuse(f"{b} is an open /agent-{open_kind} change: finish it first (review: merge, keep "
                    f"or discard), then start /agent-{kind}")
         emit({"ok": True, "branch": b, "mode": open_kind, "continued": True})

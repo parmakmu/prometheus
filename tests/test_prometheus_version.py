@@ -76,6 +76,6 @@ def test_refresh_stamps_the_version_names_it_in_the_commit_and_skips_a_current_a
     refreshed = run_py([SCAFFOLD, "ver", "--root", tmp_path, "--refresh", "--if-stale"]).data
     assert refreshed["ok"] and refreshed["was"] == "0.0.1+old" and refreshed["prometheus_version"] == version
     subject = subprocess.run(["git", "-C", str(wf), "log", "-1", "--format=%s"], capture_output=True, text=True, check=True).stdout.strip()
-    assert subject == f"Refresh from Prometheus {version} (was 0.0.1+old)"
+    assert subject == f"Refresh from prometheus {version} (was 0.0.1+old)"
     # an explicit refresh (no --if-stale) always runs
     assert "skipped" not in run_py([SCAFFOLD, "ver", "--root", tmp_path, "--refresh"]).data

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-import { ChevronDown, ChevronRight, CheckCircle2, Circle, Loader2, Lock, Pencil } from "lucide-react";
+import { ChevronDown, ChevronRight, CheckCircle2, Circle, Loader2, Pencil } from "lucide-react";
 import { useAui } from "@assistant-ui/react";
 import { api, send } from "./api";
 import { useAgent } from "./agent";
@@ -10,6 +10,7 @@ import { FileView } from "./files";
 import { BranchChip, ChangesSection } from "./changes";
 import { FileIcon, FolderIcon, References } from "./references";
 import { ChildName } from "./subagents";
+import { money, took } from "./format";
 
 export type Stage = { key: string; title?: string; status: "done" | "running" | null; children?: { done: number; failed: number; total: number; items?: { key: string; agent?: string; state?: string; run_id?: string | null }[] } };
 export type Run = { id: string; status: string; started_at?: string; finished_at?: string; note?: string | null; cost_usd: number };
@@ -61,7 +62,8 @@ function Tree({ slug, dir, depth = 0, editable }: { slug: string; dir: string; d
   );
 }
 
-function Node({ slug, path, dir, depth = 0, label, editable }: { slug: string; path: string; dir: boolean; depth?: number; label?: string; editable?: boolean }) {
+// `meta`: quiet facts at the row's end (a run's duration and cost)
+function Node({ slug, path, dir, depth = 0, label, meta, editable }: { slug: string; path: string; dir: boolean; depth?: number; label?: string; meta?: string; editable?: boolean }) {
   const { show, select } = useCanvas();
   const [open, setOpen] = useState(false);
   const key = `file:${slug}:${path}`;
@@ -75,12 +77,13 @@ function Node({ slug, path, dir, depth = 0, label, editable }: { slug: string; p
           {open ? <ChevronDown className="text-muted-foreground size-3.5 shrink-0" /> : <ChevronRight className="text-muted-foreground size-3.5 shrink-0" />}
           <FolderIcon name={name.split(" ")[0]} open={open} />
           <span className="truncate">{name}</span>
+          {meta && <span className="text-muted-foreground ml-auto shrink-0 text-xs">{meta}</span>}
         </button>
       ) : (
         <button type="button" onClick={() => (show({ key, title: name, node: <FileView slug={slug} path={path} editable={editable} /> }), select(key))} className={row} style={{ paddingLeft: 8 + depth * 14 + 18 }}>
           <FileIcon name={name} />
           <span className="min-w-0 flex-1 truncate">{name}</span>
-          {editable ? <Pencil className="size-3 shrink-0 text-emerald-700" aria-label="You can edit this file" /> : <Lock className="text-muted-foreground size-3 shrink-0" aria-label="Read-only" />}
+          {editable && <Pencil className="size-3 shrink-0 text-emerald-700" aria-label="You can edit this file" />}
         </button>
       )}
       {dir && open && <Tree slug={slug} dir={path} depth={depth + 1} editable={editable} />}
@@ -105,6 +108,13 @@ function Steps({ w }: { w: AgentSummary }) {
   return (
     <Section title="Steps" count={w.active_run ? `${w.stages_done}/${w.stages_total}` : undefined}>
       {w.active_run && <p className="text-muted-foreground px-2 pb-1 text-xs">Run <span className="font-mono">{w.active_run}</span></p>}
+      {/* none active: the ticks are the last run's (list_agents.py) */}
+      {!w.active_run && w.recent_runs[0] && (
+        <p className="text-muted-foreground px-2 pb-1 text-xs">
+          Last run <span className="font-mono">{w.recent_runs[0].id}</span> · {w.recent_runs[0].status}
+          {w.recent_runs[0].finished_at && ` · ${new Date(w.recent_runs[0].finished_at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`}
+        </p>
+      )}
       {w.active_run && <Now w={w} />}
       <ul>
         {w.stages.length === 0 && <li className="text-muted-foreground px-2 text-sm">No stages yet</li>}
@@ -153,13 +163,22 @@ function Input({ slug }: { slug: string }) {
   );
 }
 
-// each run is a folder: everything in it (its record, results, working files), read-only
+// each run a folder (its record, results, working files), read-only, with how long it took and what it cost; its
+// status only when it is not done. The latest run's results show right under it: what is usually wanted.
 function Output({ w }: { w: AgentSummary }) {
+  const [files, setFiles] = useState<{ run: string; path: string }[]>([]);
+  const latest = w.recent_runs[0];
+  useEffect(() => void api<{ run: string; path: string }[]>(`/a/${w.slug}/outputs`).then(setFiles, () => setFiles([])), [w.slug, latest?.id, latest?.status]);
   return (
     <Section title="Output" hint="read-only" count={String(w.recent_runs.length)}>
       {w.recent_runs.length === 0 && <p className="text-muted-foreground px-2 text-sm">No runs yet</p>}
       {w.recent_runs.map((r) => (
-        <Node key={r.id} slug={w.slug} path={`runs/${r.id}`} dir label={`${r.id} · ${r.status}`} />
+        <div key={r.id}>
+          <Node slug={w.slug} path={`runs/${r.id}`} dir label={r.status === "done" ? r.id : `${r.id} · ${r.status}`} meta={[took(r.started_at, r.finished_at), money(r.cost_usd)].filter(Boolean).join(" · ")} />
+          {r === latest && files.filter((f) => f.run === r.id).map((f) => (
+            <Node key={f.path} slug={w.slug} path={f.path} dir={false} depth={1} label={f.path.split("/").slice(3).join("/")} />
+          ))}
+        </div>
       ))}
     </Section>
   );
@@ -211,7 +230,8 @@ export function Workspace({ w }: { w: AgentSummary }) {
   return (
     <div className="flex min-h-full flex-col">
       <p className="mb-4 flex flex-wrap items-center gap-2 text-sm font-semibold">
-        Workspace · <span className="font-mono font-normal">{w.slug}</span>
+        {/* whose: the agent open in the chat (its name is in the chat's header and the sidebar) */}
+        Workspace
         {w.branch && <BranchChip branch={w.branch} />}
       </p>
       <ChangeBanner w={w} />

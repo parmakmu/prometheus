@@ -27,7 +27,7 @@ from typing import Annotated
 import prometheus_version
 import typer
 from runs import list_runs
-from utils import emit, pi_agent_dir, read_yaml
+from utils import emit, read_yaml
 
 SNIPPET = 240  # characters kept of a message, argument or result
 FAILURE = ("traceback", "exit code", "command not found", "no module named", "permission denied")
@@ -39,10 +39,8 @@ PLAN_SESSIONS = ("Improve this agent from how it actually went", "Change this ag
 
 
 def default_sessions_dir(agent_dir: Path) -> Path:
-    """The agent's Pi sessions: its own .pi/sessions (the template's `sessionDir`), else Pi's default
-    folder for its path, where agents from before that setting keep theirs."""
-    own = agent_dir / ".pi" / "sessions"
-    return own if own.is_dir() else pi_agent_dir() / "sessions" / f"--{str(agent_dir).strip('/').replace('/', '-')}--"
+    """The agent's Pi sessions: its own .pi/sessions (the template's `sessionDir`)."""
+    return agent_dir / ".pi" / "sessions"
 
 
 def moment(value):

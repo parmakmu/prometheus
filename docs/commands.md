@@ -89,7 +89,7 @@ Updates agents to this prometheus's template and skill.
 
 **Runs in:** prometheus
 
-Rewrites the files an agent got from prometheus: its extension, the skill and its references, the shared subagents. It keeps the plan, `.env`, runs, gates, stage programs, the agent's own agents and packages, and the `## Lessons for this agent` section of `.pi/APPEND_SYSTEM.md`. It writes the version to `.pi/skills/agent/VERSION` and names it in the commit: `Refresh from Prometheus 0.1.0+64ab6bc`, with `(was <version>)` added when the agent's previous version is known.
+Rewrites the files an agent got from prometheus: its extension, the skill and its references, the shared subagents. It keeps the plan, `.env`, runs, gates, stage programs, the agent's own agents and packages, and the `## Lessons for this agent` section of `.pi/APPEND_SYSTEM.md`. It writes the version to `.pi/skills/agent/VERSION` and names it in the commit: `Refresh from prometheus 0.1.0+64ab6bc`, with `(was <version>)` added when the agent's previous version is known.
 
 `--all` skips agents already at this version; an agent named on the command line is always refreshed.
 

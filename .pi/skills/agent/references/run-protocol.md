@@ -67,7 +67,7 @@ tool, ask in chat and end the turn.
    ask the question of **Running** step 5 for a failed wave first, and
    compile only once the user chose to relaunch.
 3. Route:
-   - no active run and a `run/…`, `revise/…`, `improve/…` or `change/…` branch checked out
+   - no active run and a `run/…`, `revise/…` or `improve/…` branch checked out
      (`git branch --show-current`): a run always starts from `main`, and
      `agent_new_run` keeps that branch for later. Ask (question tool)
      whether to review it now or start the run and review it later; review

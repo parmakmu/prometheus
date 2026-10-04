@@ -5,7 +5,7 @@ Part of the run protocol (`<skill>/references/run-protocol.md`); read when it se
 ## Reviewing a branch
 
 After a run ends with a `review`, after a change is ready, or whenever a
-`run/…`, `revise/…`, `improve/…` or (older) `change/…` branch is checked out with no run active
+`run/…`, `revise/…` or `improve/…` branch is checked out with no run active
 (`<python> <skill>/scripts/agent_git.py review`, `<python>` being the
 nearest `.venv/bin/python`).
 

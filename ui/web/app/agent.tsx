@@ -48,7 +48,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
   const slug = agent.startsWith("/a/") ? agent.slice(3) : null;
   const base = session ? `${agent}/s/${session}` : agent;
   return (
-    <AgentContext.Provider value={{ agent, slug, session, base, label: slug ?? "prometheus", setAgent: (a) => go(a, null), setSession: (s) => go(agent, s), open: (a, s, text, send = false) => (setDraft(text ? { text, send } : null), go(a, s)), draft, clearDraft: () => setDraft(null) }}>
+    <AgentContext.Provider value={{ agent, slug, session, base, label: slug ?? "Forge", setAgent: (a) => go(a, null), setSession: (s) => go(agent, s), open: (a, s, text, send = false) => (setDraft(text ? { text, send } : null), go(a, s)), draft, clearDraft: () => setDraft(null) }}>
       {children}
     </AgentContext.Provider>
   );

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
-import { makeAssistantToolUI, useAuiState } from "@assistant-ui/react";
+import { makeAssistantToolUI } from "@assistant-ui/react";
 import { useAgUiInterrupts, useAgUiSubmitInterruptResponses } from "@assistant-ui/react-ag-ui";
 import { ShowOnCanvas, useCanvas } from "./canvas";
 import { PanelView } from "./panel";
@@ -121,7 +121,7 @@ function QuestionForm({ q, onDone }: { q: Interrupt; onDone: (id: string) => voi
     <div className="bg-card rounded-xl border p-4 shadow-sm">
       <div className="flex items-center gap-2 text-sm font-semibold">
         <MessageCircleQuestion className="text-primary size-4" />
-        {asked?.header ?? "Prometheus asks"}
+        {asked?.header ?? "prometheus asks"}
       </div>
       <p className="mt-2 text-sm whitespace-pre-wrap">{asked?.question ?? q.message}</p>
       {values.length > 0 ? (
@@ -210,7 +210,6 @@ export const PiPanelCard = makeAssistantToolUI<{ title?: string }, string>({
 // the questions and the answers given
 function AskInline({ args, result }: { args?: { questions?: Question[] }; result?: string }) {
   const [open, done] = useOpenQuestions();
-  const running = useAuiState((s) => s.thread.isRunning) || open.length > 0;
   const q = result === undefined ? open.find((i) => (i.metadata as Meta | undefined)?.tool === "ask_user_question") : undefined;
   if (q)
     return (

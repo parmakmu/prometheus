@@ -5,7 +5,7 @@ fresh-context, read-only reviewer: it sees the plan file, not your reasoning.
 It is required once the plan validates, before asking the user anything, if
 the plan has a side_effect or judgment stage or more than 3 stages. If
 `plan-critic` is missing, stop and tell the user to run
-`/agent-refresh <slug>` in Prometheus.
+`/agent-refresh <slug>` in prometheus.
 
 ## Launch
 

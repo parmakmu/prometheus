@@ -60,10 +60,6 @@ def current(skill: Path = SKILL):
 
 
 def installed(agent_dir: Path):
-    """The version an agent was last refreshed to, or None (never stamped). An agent not refreshed since agents were
-    called workflows keeps it in its old skill folder: read there, it shows as out of date rather than unknown."""
-    for skill in ("agent", "workflow"):
-        stamp = Path(agent_dir) / ".pi" / "skills" / skill / VERSION_FILE
-        if stamp.is_file():
-            return stamp.read_text(encoding="utf-8").strip()
-    return None
+    """The version an agent was last refreshed to, or None (never stamped)."""
+    stamp = Path(agent_dir) / ".pi" / "skills" / "agent" / VERSION_FILE
+    return stamp.read_text(encoding="utf-8").strip() if stamp.is_file() else None

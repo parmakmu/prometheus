@@ -9,6 +9,7 @@ import { useAgent } from "./agent";
 import { useCanvas } from "./canvas";
 import { CodeBlock } from "./code-editor";
 import { PRIVATE_THOUGHT, StepRow, Thought } from "@/components/assistant-ui/elements/steps";
+import { kilo, money, took } from "./format";
 
 // A launch's subagents, as pi-subagents records them (GET /…/wave): a wave of a run, or the plan critic. The chat
 // shows one live line per launch, opening to one row per subagent; a subagent opens its log in the drawer.
@@ -24,14 +25,6 @@ type Wave = { id: string; state: string; startedAt: number | null; endedAt: numb
 const DONE = new Set(["complete", "completed", "done", "succeeded"]);
 const FAILED = new Set(["failed", "error", "cancelled", "canceled", "stopped", "blocked"]); // blocked: a launch as run.yaml records it
 const over = (state?: string) => !!state && (DONE.has(state) || FAILED.has(state));
-export const money = (n?: number | null) => (n ? `$${n < 0.01 ? n.toFixed(4) : n.toFixed(2)}` : "");
-const took = (from?: number | null, to?: number | null) => {
-  if (!from) return "";
-  const ms = Math.max(0, (to ?? Date.now()) - from);
-  if (ms < 10_000) return `${(ms / 1000).toFixed(1)}s`; // a program takes a fraction of a second: not "0s"
-  const s = Math.round(ms / 1000);
-  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
-};
 
 export function StateIcon({ state }: { state?: string }) {
   if (state && DONE.has(state)) return <CheckCircle2 className="size-3.5 shrink-0 text-emerald-600" />;
@@ -215,7 +208,6 @@ export function useOpenChild() {
   };
 }
 
-const kilo = (n?: number | null) => (n ? (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)) : "");
 
 // one subagent as Claude Code shows its own: the step and its agent, then tool uses · tokens · time · cost, and
 // under it, while it works, what it is doing now (its latest tool call)

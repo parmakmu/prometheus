@@ -16,6 +16,7 @@ import { cn } from "@/lib/utils";
 import { useAgent } from "@/app/agent";
 import { sendJson } from "@/app/api";
 import { AnsweredQuestion } from "@/app/cards";
+import { CommandBar } from "@/app/command-bar";
 import { PRIVATE_THOUGHT, StepRow, Thought, stepWords } from "@/components/assistant-ui/elements/steps";
 import {
   ActionBarMorePrimitive,
@@ -367,6 +368,7 @@ const ThreadSuggestionItem: FC = () => {
 const Composer: FC<{ autoFocus: boolean }> = ({ autoFocus }) => {
   return (
     <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
+      <CommandBar />
       <ComposerPrimitive.AttachmentDropzone asChild>
         <div
           data-slot="aui_composer-shell"

@@ -993,7 +993,7 @@ class Checker:
         err, params, status = self.err, self.plan.params, self.plan.status
         info = self.agent_info = {"root": str(root.resolve())}
         for rel, what in (
-            ("AGENTS.md", "agent context for Pi"),
+            ("README.md", "the folder's guide for people"),
             (".pi/APPEND_SYSTEM.md", "the agent's role"),
             (".pi/extensions/agent/index.ts", "the /agent-* commands and agent_* tools"),
             (".pi/skills/agent/SKILL.md", "the planning skill used at replan"),
@@ -1020,8 +1020,6 @@ class Checker:
                 err(f"agent: agent '{name}' has source project but no .pi/agents/*.md defines it")
             elif src == "builtin" and name in on_disk:
                 self.warn(f"agent: agent '{name}' is defined in .pi/agents/ but listed as builtin; list it as {{name: {name}, source: project}}")
-        if (root / ".pi" / "params.yaml").exists():
-            self.warn("agent: .pi/params.yaml is no longer read (values live in .env); /agent-refresh in Prometheus moves them")
         valid = {n: s for n, s in params.items() if agent_params.ENV_NAME_RE.match(agent_params.env_name(n, s))}
         values = agent_params.load(root, valid)
         unset = agent_params.missing(valid, values)

@@ -28,12 +28,13 @@
  */
 import { spawn, execFile, execFileSync, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { appendFileSync, createReadStream, createWriteStream, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, createReadStream, createWriteStream, existsSync, openSync, readSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import type { Writable } from "node:stream";
 import { createServer, request, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir, tmpdir, userInfo } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { thoughtOf } from "./thoughts.ts";
 
 const REPO = path.resolve(import.meta.dirname, "..");
 // Pi is the global install, the very `pi` the terminal runs: this repo keeps no copy of its own (Node never looks
@@ -346,7 +347,7 @@ const gitIn = (cwd: string, args: string[]) =>
 	new Promise<{ code: number; out: string; err: string }>((resolve) =>
 		execFile("git", args, { cwd, maxBuffer: 8 * 1024 * 1024 }, (e, out, err) => resolve({ code: e ? ((e as { code?: number }).code ?? 1) : 0, out, err })),
 	);
-const REVIEW_BRANCH = /^(run|revise|improve|change)\/[\w.-]+$/;
+const REVIEW_BRANCH = /^(run|revise|improve)\/[\w.-]+$/;
 
 async function baseOf(cwd: string) {
 	const branch = (await gitIn(cwd, ["branch", "--show-current"])).out.trim();
@@ -555,17 +556,8 @@ function waveInfo(cwd: string, id: string, res: ServerResponse) {
 
 // one subagent's work, read from its own Pi session so the page can show it like the main agent's: its task, then
 // each thought, tool call (with its result) and text, in order. A command runner (batcher) has no session:
-// then its log's summary. Thoughts as the worker shows them (text, a readable summary, or a note that it is encrypted).
+// then its log's summary. Thoughts as the worker shows them (thoughts.ts).
 const MAX_STEP = 4000;
-function thoughtOf(block: any): string {
-	if (block?.thinking?.trim()) return block.thinking;
-	try {
-		const d = JSON.parse(block?.thinkingSignature ?? "");
-		const text = (Array.isArray(d) ? d : [d]).map((x: any) => x?.summary ?? x?.text ?? "").filter(Boolean).join("\n\n");
-		if (text.trim()) return text;
-	} catch {}
-	return "(The model kept this reasoning private: it sent it encrypted, with no readable summary.)";
-}
 const clip = (t: string) => (t.length > MAX_STEP ? `${t.slice(0, MAX_STEP)}\n…` : t);
 const textIn = (content: any) => (typeof content === "string" ? content : Array.isArray(content) ? content.map((p: any) => (p?.type === "text" ? p.text : "")).join("") : "");
 
@@ -708,9 +700,26 @@ const sessionDirOf = (cwd: string) => path.join(cwd, ".pi", "sessions");
 const sessionsOf = async (_user: string, cwd: string) =>
 	existsSync(sessionDirOf(cwd)) ? (await SessionManager.list(cwd, sessionDirOf(cwd))).filter((s) => s.messageCount > 0) : [];
 
+// A conversation's title: its name, else the command it began with (the worker records which command a prompt came
+// from, and the command before what it showed), else its first message. Read from the start of its file only.
+function titleOf(s: { path: string; name?: string; firstMessage: string }) {
+	if (s.name) return s.name;
+	const head = Buffer.alloc(256 * 1024);
+	const fd = openSync(s.path, "r");
+	const text = head.subarray(0, readSync(fd, head, 0, head.length, 0)).toString("utf8");
+	closeSync(fd);
+	const entries = text.split("\n").slice(0, -1).map((l) => { try { return JSON.parse(l); } catch { return null; } });
+	const notes = entries.filter((e) => e?.type === "custom" && e.customType === "prometheus-ui-command").map((e) => e.data ?? {});
+	const first = entries.find((e) => (e?.type === "message" && e.message?.role === "user") || e?.type === "custom_message");
+	const prompt = first?.type === "message" ? textIn(first.message.content).trim() : "";
+	const hash = createHash("sha256").update(prompt).digest("hex").slice(0, 16);
+	const command = notes.find((n) => (prompt ? n.prompt === hash : n.before === first?.id))?.command;
+	return (command ?? s.firstMessage).replace(/\s+/g, " ").slice(0, 80) || "(empty)";
+}
+
 async function listSessions(user: string, agent: string, cwd: string, res: ServerResponse) {
 	const list = (await sessionsOf(user, cwd)).sort((a, b) => +b.modified - +a.modified);
-	send(res, 200, list.map((s) => ({ id: s.id, title: s.name || s.firstMessage.replace(/\s+/g, " ").slice(0, 80) || "(empty)", modified: s.modified, messages: s.messageCount, open: workers.has(`${user}/${agent}@${s.id}`) })));
+	send(res, 200, list.map((s) => ({ id: s.id, title: titleOf(s), modified: s.modified, messages: s.messageCount, open: workers.has(`${user}/${agent}@${s.id}`) })));
 }
 
 // a conversation deleted: its worker stopped (refused while its agent works), its session file removed
@@ -867,16 +876,7 @@ function route(req: IncomingMessage, res: ServerResponse) {
 		// files attached in this agent's chat: uploads/ in its folder, which its own sandbox reads at the same path
 		if (rest === "/upload") {
 			const base = path.join(cwd, "uploads");
-			if (req.method === "PUT") {
-				// an older agent's .gitignore has no uploads/ until it is refreshed: keep the files out of git through
-				// the repo's own exclude file, which is not versioned (editing .gitignore would leave main dirty)
-				const exclude = path.join(cwd, ".git", "info", "exclude");
-				if (existsSync(path.join(cwd, ".git")) && !(existsSync(exclude) && /^\/?uploads\/?$/m.test(readFileSync(exclude, "utf8")))) {
-					mkdirSync(path.dirname(exclude), { recursive: true });
-					appendFileSync(exclude, "\n/uploads/\n");
-				}
-				return upload(base, q.get("path") ?? "", req, res, q.get("unique") === "1");
-			}
+			if (req.method === "PUT") return upload(base, q.get("path") ?? "", req, res, q.get("unique") === "1");
 			if (req.method === "DELETE") {
 				const p = inside(base, q.get("path") ?? "");
 				if (!p || p === base) return send(res, 400, "bad path");

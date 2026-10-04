@@ -90,7 +90,7 @@ def summarise(root, slug, current):
     active = (summary.get("run") or {}).get("id")
     questions = [q for q in plan.get("questions") or [] if isinstance(q, dict)]
     runs = list_runs(Path(root) / slug)
-    run_dir = dict(runs).get(active)
+    run_dir = dict(runs).get(active) or (runs[-1][1] if runs else None)  # none active: the last run's stages
     run_state = read_run(run_dir) if run_dir else {}
     stage_status = run_state.get("stages") or {}
     progress = child_progress(run_state, [s.get("key") for s in stages])

@@ -20,7 +20,7 @@ export const sidebarRow = (active = false) =>
 // The agent's conversations: its Pi sessions (in its folder's .pi/sessions, the same ones `pi --resume`
 // lists there), newest first. New starts one; delete removes its history for good.
 export function Conversations() {
-  const { agent, label, session, setSession } = useAgent();
+  const { agent, session, setSession } = useAgent();
   const [list, setList] = useState<Conversation[]>([]);
   const load = useCallback(() => {
     api<Conversation[]>(`${agent}/sessions`).then(setList, () => setList([]));
@@ -46,11 +46,9 @@ export function Conversations() {
 
   return (
     <>
-      {/* a heading as the sidebar's title; whose they are (prometheus's, or that agent's) in a lighter word */}
+      {/* a heading as the sidebar's title; whose they are shows above, in the row that is selected (the Forge or an agent) */}
       <div className="flex items-center justify-between gap-2 px-6 pt-6 pb-1.5">
-        <span className="truncate text-base font-semibold">
-          Conversations <span className="text-muted-foreground text-sm font-normal">· {label}</span>
-        </span>
+        <span className="text-base font-semibold">Conversations</span>
         <button type="button" onClick={() => setSession(`new-${crypto.randomUUID().slice(0, 8)}`)} title="New conversation" className="text-muted-foreground hover:text-foreground">
           <PlusIcon className="size-3.5" />
         </button>

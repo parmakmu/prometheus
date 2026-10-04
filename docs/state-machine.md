@@ -13,7 +13,7 @@ Four facts, each read from one place:
 | plan status `P` | `draft`, `needs_answers`, `ready` | `plan.yaml` `status`; a `ready` plan edited after its critique was recorded counts as not ready (`critique.plan_digest`); on a branch, so does one that differs from `main`'s without a critique of it (`validate_plan.check_ready`) |
 | active run | none, or one run with status `active` (at most one) | `runs/*/run.yaml` (`runs.active_run`) |
 | wave running | some stage of the active run is `running` | `run.yaml` `stages` (set by `log_start`, cleared by `log_finish`) |
-| branch `B` | `main`, `run/<id>`, `revise/<date>-<n>`, `improve/<date>-<n>` (older: `change/…`) | git (`agent_git.branch`) |
+| branch `B` | `main`, `run/<id>`, `revise/<date>-<n>`, `improve/<date>-<n>` | git (`agent_git.branch`) |
 
 One more, used by the extension's guard and by `begin-change`: whether the agent has had a run yet (`runs/` has a `run.yaml`). Before the first run the plan is edited directly on `main`. `runs/` is not in git, so this fact is per machine: a fresh clone, or a deleted `runs/`, counts as "no run yet" and opens `main` to direct edits again.
 
@@ -28,9 +28,9 @@ One more, used by the extension's guard and by `begin-change`: whether the agent
 | `wave_running` | active run, a stage `running` | a launch is in pi-subagents; nothing else may launch |
 | `replan_draft` | active run, nothing running, `P` ≠ ready | `agent_replan` ran; the critic must record before compile accepts the plan |
 | `branch_review` | no active run, `B` = `run/…` | a run ended (done or stopped) and left a branch to review |
-| `change_draft` | no active run, `B` = `revise/…`, `improve/…` or `change/…`, `P` ≠ ready | a change in progress |
-| `change_ready` | no active run, `B` = `revise/…`, `improve/…` or `change/…`, `P` = ready | a change just opened (the plan untouched), or the critic passed; review next |
-| `main_draft` | has runs, no active run, `B` = main, `P` ≠ ready | only in an agent from before runs needed a ready plan (a run started from a draft, then stopped with nothing committed or its branch discarded); the exit is `/agent-revise` |
+| `change_draft` | no active run, `B` = `revise/…` or `improve/…`, `P` ≠ ready | a change in progress |
+| `change_ready` | no active run, `B` = `revise/…` or `improve/…`, `P` = ready | a change just opened (the plan untouched), or the critic passed; review next |
+| `main_draft` | has runs, no active run, `B` = main, `P` ≠ ready | main's plan was edited outside the tools (by hand); the exit is `/agent-revise` |
 
 ```mermaid
 stateDiagram-v2

@@ -1,6 +1,7 @@
 import { withAui } from "@assistant-ui/next";
 import type { NextConfig } from "next";
 
-const nextConfig: NextConfig = {/* config options here */};
+// no Next.js badge in the corner while developing (`next dev`)
+const nextConfig: NextConfig = { devIndicators: false };
 
 export default withAui(nextConfig);

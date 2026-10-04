@@ -81,13 +81,13 @@ export function References() {
     show({ key, title: name, node: <Preview file={at.file(name)} name={name} /> });
     select(key);
   };
+  if (files.length === 0) return null; // shown once there is a file (+ in the chat, or dropped on it)
   return (
     <section className="mb-5">
       <p className="text-muted-foreground text-xs font-medium">
         Uploaded files <span className="font-normal opacity-70">· read-only</span>
         {files.length > 0 && <span className="bg-muted ml-2 rounded-full px-2 py-0.5">{files.length}</span>}
       </p>
-      {files.length === 0 && <p className="text-muted-foreground mt-2 px-2 text-xs">Nothing yet: use + in the chat, or drop files on it.</p>}
       <ul className="mt-2">
         {files.map((f) => (
           <li key={f.name} className="group hover:bg-accent/60 flex items-center gap-2 rounded-lg px-2 py-1">

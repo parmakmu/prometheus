@@ -18,14 +18,6 @@ The `/agent-*` commands don't appear in Pi.
 
 **Fix.** Start `pi` in the prometheus folder or the agent's folder and accept the trust prompt. Each agent needs trusting on its own, including a copy made with `/agent-export`.
 
-### Agents still in `workflows/`
-
-Starting prometheus warns "Agents used to be called workflows: … still in workflows/", the sidebar and `/agent-list` don't show them, or `/workflow-run` is an unknown command.
-
-**Cause.** Agents were called workflows until 2026-10-04: they lived in `workflows/`, and their commands were `/workflow-*`. Prometheus now looks in `agents/`, and doesn't move your folders itself, since a `pi` session may be running inside one.
-
-**Fix.** In the prometheus folder, `mv workflows/* agents/`, then `/agent-refresh --all`. The refresh replaces each agent's old skill and extension, so its commands become `/agent-run`, `/agent-status`, `/agent-revise` and `/agent-improve`, and commits that in the agent's repo. It also brings back each agent's conversations: Pi lists them only for the folder they were started in, so after the move they show again once refreshed.
-
 ### Python package missing
 
 ```text

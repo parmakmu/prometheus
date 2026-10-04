@@ -3,10 +3,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { Check, Search } from "lucide-react";
 import { api, send } from "./api";
+import { kilo } from "./format";
 
 type ModelInfo = { key: string; provider: string; id: string; name: string; contextWindow?: number; reasoning: boolean };
 
-const k = (n?: number) => (!n ? "" : n >= 1e6 ? `${(n / 1e6).toFixed(n % 1e6 ? 1 : 0)}M` : `${Math.round(n / 1e3)}k`);
 
 // The models this conversation can use (those you have credentials for), searchable; a click switches
 export function ModelPicker({ base, onClose }: { base: string; onClose?: () => void }) {
@@ -47,7 +47,7 @@ export function ModelPicker({ base, onClose }: { base: string; onClose?: () => v
                 <span className="block truncate font-medium">{m.name}</span>
                 <span className="text-muted-foreground block truncate font-mono text-xs">{m.key}</span>
               </span>
-              <span className="text-muted-foreground shrink-0 text-xs">{[k(m.contextWindow), m.reasoning ? "thinks" : ""].filter(Boolean).join(" · ")}</span>
+              <span className="text-muted-foreground shrink-0 text-xs">{[kilo(m.contextWindow), m.reasoning ? "thinks" : ""].filter(Boolean).join(" · ")}</span>
               {m.key === data?.current && <Check className="text-primary size-4 shrink-0" />}
             </button>
           </li>

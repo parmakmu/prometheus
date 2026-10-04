@@ -41,10 +41,8 @@ The model-facing rules are in the skill: `SKILL.md` (planning), `references/run-
 
 ## Names (settled; one word per thing)
 
-- **agent**: what Prometheus builds, a folder `agents/<slug>/` that is itself a Pi agent. Not "bundle", and no
-  longer "workflow" (renamed 2026-10-04: the owner found "workflow" undersold that each is a full agent; commands
-  went from `/workflow-*` to `/agent-*`, tools from `workflow_*` to `agent_*`, the folder from `workflows/` to `agents/`, `$PI_WORKFLOW_PYTHON` to `$PI_AGENT_PYTHON`).
-  "Workflow" now means only pi-subagents' own: a *workflow script* (a compiled wave), its `workflow` call field,
+- **agent**: what Prometheus builds, a folder `agents/<slug>/` that is itself a full Pi agent. Not "bundle" or
+  "workflow" ("workflow" undersold it). "Workflow" means only pi-subagents' own: a *workflow script* (a compiled wave), its `workflow` call field,
   `workflowChildren`, `workflowRunId`, status.json's `workflow.*`. Prometheus is "the planner" where it must be
   told apart from the agents it builds.
 - **plan**: `plan.yaml`, reusable across runs; versioned in git with its gates, programs and
@@ -56,11 +54,11 @@ The model-facing rules are in the skill: `SKILL.md` (planning), `references/run-
 - **gate**: a script in `gates/` that verifies a stage's output. **stage program**: a stage's
   `script:` in `scripts/`. "check" means validating the plan (`agent_check`, `compile --check`).
 - **subagent**: a profile a stage runs as (pi-subagents' agents: `scout`, `reviewer`, `batcher`, …), either
-  pi-subagents' builtins or the agent's own in `.pi/agents/` (`source: project`; formerly "project agents").
+  pi-subagents' builtins or the agent's own in `.pi/agents/` (`source: project`).
   The plan's `agents:` and a stage's `agent:` keep their names: pi-subagents reads them.
 - **replan**: a plan change during a run (branch `run/<id>`); **change**: one made with
-  `/agent-revise` or `/agent-improve` between runs (branch `revise/<date>-<n>` or `improve/<date>-<n>`; older agents may hold `change/<date>-<n>`, still reviewed).
-- The skill is `.pi/skills/agent/` (formerly `request-to-plan`, then `.pi/skills/workflow/`; a refresh removes both).
+  `/agent-revise` or `/agent-improve` between runs (branch `revise/<date>-<n>` or `improve/<date>-<n>`).
+- The skill is `.pi/skills/agent/`.
 
 ## Architecture in one paragraph
 
@@ -136,8 +134,7 @@ Libraries: typer, pydantic (plan shape, in `validate_plan.py`; the cross-referen
   the branch made; the branch is deleted) / keep / discard. A new change refuses while another
   branch is checked out; a new run starts from `main` (it commits the branch's leftovers, switches and
   keeps the branch for review, only if main's plan is ready), so an edit made in the web app never leaks into a run. Why: a run's discoveries are a proposal,
-  not a silent change to every later run; and the agent owns its plan (Prometheus's old
-  outside revise command, with no locks, was removed).
+  not a silent change to every later run; and the agent owns its plan.
 - **Plan edits during a run go through `plan_edit.py`** (`agent_replan`,
   `agent_record_critique`). Locked: stages that ran, request, goal, done_when, params, inputs,
   outputs, agents; side effects stay side effects. Direct edits only before the first run or on
@@ -205,15 +202,15 @@ Libraries: typer, pydantic (plan shape, in `validate_plan.py`; the cross-referen
   sessions with only its `subagents_enable` loader; the model enabling it mid-turn cost run 4 two
   turns and a prompt-cache rewrite (~$0.003 of $0.0135). The command is the user's authorization.
 - **Params are typed, values in `.env`** (see `docs/params-and-secrets.md`). Why: params can be
-  tokens and table names; the old `.pi/params.yaml` turned every value into a path and would have
-  put secrets in chat, compiled waves, child tasks and run logs.
+  tokens and table names, and a value in a plan or chat would reach compiled waves, child tasks and run logs.
 - **Map stages** split/merge in the command-runner agent `batcher` (workflow scripts
   can't read files). Child keys `<key>-split`, `<key>-<n>`, `<key>-merge` / `-reduce`.
 - **Returned (path-less) results don't cross waves**; later waves read files only.
 - **The plan is `plan.yaml` at the agent root**, beside `gates/` and `scripts/`, not in `.pi/`
-  (Pi's config). `/agent-refresh` moves an older `.pi/plan.yaml` and commits the move.
+  (Pi's config).
 - **Roles in `.pi/APPEND_SYSTEM.md`, not `AGENTS.md`**: Pi concatenates `AGENTS.md` from parent
-  folders, which would leak Prometheus's role into agents.
+  folders, which would leak Prometheus's role into agents. An agent's guide for people is its `README.md`
+  (Pi loads `AGENTS.md` into every turn; it cost ~700 tokens and repeated the role).
 - **This file is `.claude/CLAUDE.md`, not `CLAUDE.md`**: Pi loads the first of `AGENTS.override.md`,
   `AGENTS.md`, `CLAUDE.md` from every folder up from its cwd, so a root `CLAUDE.md` put ~5k tokens
   of contributor notes into every Prometheus and in-repo agent turn (~20% of a planning
@@ -264,7 +261,7 @@ Libraries: typer, pydantic (plan shape, in `validate_plan.py`; the cross-referen
 - **Conversations live in their folder**: `"sessionDir": ".pi/sessions"` in Prometheus's and the template's
   `.pi/settings.json` (gitignored; a fresh export leaves them out). The web app runs one worker per
   conversation (`/…/s/<id>/…`), lists and deletes them; the terminal's `pi --resume` sees the same ones;
-  `session_digest.py` reads them there, else Pi's old `~/.pi/agent/sessions/--<path>--`. Pi lists a session folder's
+  `session_digest.py` reads them there. Pi lists a session folder's
   conversations only for the `cwd` each records, so a moved agent showed none: a refresh rewrites that header line
   (`scaffold_agent.rehome_sessions`). Why: the owner
   wanted per-folder sessions; they also move, refresh and get deleted with the agent, and an agent's
@@ -375,8 +372,7 @@ panels (`/goal…`, `/subagents…`). During development the router runs from a 
    (`review_needed`), and records a real critic (the `workflowChildren` lookup).
 3. Web app: an agent run from the page end to end (approval card, results download); the other
    extensions' panels (more pi-tui widgets to hijack?); `/export`, `/fork`, `/clone`, `/tree`; tests for
-   the router and worker (no automated coverage yet); remove the template leftovers `ui/web/README.md`
-   and `ui/web/.env.example` (the scaffold's Python echo agent).
+   the router and worker (no automated coverage yet).
 4. Web app, team: a model proxy (the key is readable in each user's `pi-agent`) with a network
    allow-list for sandboxes; a Linux user per person; memory/CPU limits need a systemd user session.
 

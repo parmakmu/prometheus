@@ -13,14 +13,14 @@ Creates <root>/<slug>/ from templates/agent/ (at the repo root, outside the skil
   .env                           per-machine param values (agent_params.py); not in git
   .pi/skills/agent/           a copy of this skill (rules, validator, compiler, run protocol)
 
-The template holds AGENTS.md, pyproject.toml (Python deps for `uv sync`),
+The template holds README.md, pyproject.toml (Python deps for `uv sync`),
 .pi/APPEND_SYSTEM.md (the agent's role), .pi/settings.json,
 .pi/extensions/agent/index.ts (commands and tools), .pi/agents/ (plan-critic,
 batcher) and the plan skeleton.
 
 --refresh rewrites the template files and the skill copy in an existing
 agent. It never touches plan.yaml, .env, runs/, uploads/, gates/, scripts/ or agents
-the plan added. Values an older agent kept in .pi/params.yaml move to .env.
+the plan added.
 
 The agent is its own git repo (agent_git.py); both modes commit the result.
 --if-stale (with --refresh) skips an agent whose skill copy already has this Prometheus's version
@@ -44,10 +44,8 @@ import agent_git
 import agent_params
 import prometheus_version
 import typer
-from ruamel.yaml import YAML
 from runs import active_run
-from utils import read_yaml, refuse, write_yaml
-from validate_plan import plan_digest
+from utils import refuse
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 SKILL_DIR = SCRIPT_DIR.parent
@@ -57,18 +55,9 @@ SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store")
 PLAN = Path("plan.yaml")
 STATE_FILES = {Path(agent_params.ENV_FILE): agent_params.ENV_HEADER}
-OLD_PARAMS = Path(".pi") / "params.yaml"  # where values lived before .env
-OLD_PLAN = Path(".pi") / "plan.yaml"
-PYPROJECT = Path("pyproject.toml")  # the agent adds its own packages: a refresh keeps them  # where the plan lived before it moved to the agent root
+PYPROJECT = Path("pyproject.toml")  # the agent adds its own packages: a refresh keeps them
 ROLE = Path(".pi") / "APPEND_SYSTEM.md"
 LESSONS_HEADING = "## Lessons for this agent"  # the end of the role file that /agent-improve writes: a refresh keeps it
-# Files and folders earlier versions wrote that are no longer part of an agent.
-LEGACY_FILES = [Path(".pi") / "prompts" / name
-                for name in ("start.md", "workflow-run.md", "workflow-status.md", "workflow-replan.md")]
-LEGACY_FILES += [Path(".pi") / "agents" / "workflow-batcher.md"]  # now batcher.md
-# the skill's old names, and the extension from before agents were called agents (its /workflow-* commands would
-# load beside the new ones)
-LEGACY_DIRS = [Path(".pi") / "skills" / "request-to-plan", Path(".pi") / "skills" / "workflow", Path(".pi") / "extensions" / "workflow"]
 
 
 def template_files() -> list[Path]:
@@ -130,61 +119,6 @@ def lock_packages(agent_dir: Path):
     return "uv.lock" if after != before else None
 
 
-def move_old_params(agent_dir: Path):
-    """Move values from .pi/params.yaml into .env (names already in .env win); the moved names, or None."""
-    old = agent_dir / OLD_PARAMS
-    if not old.exists():
-        return None
-    values = YAML(typ="safe").load(old.read_text(encoding="utf-8")) or {}
-    plan = YAML(typ="safe").load((agent_dir / PLAN).read_text(encoding="utf-8")) or {}
-    specs = plan.get("params") or {}
-    env = agent_dir / agent_params.ENV_FILE
-    if not env.exists():
-        env.write_text(agent_params.ENV_HEADER, encoding="utf-8")
-    present = agent_params.file_keys(str(agent_dir))
-    moved = []
-    for name, value in values.items() if isinstance(values, dict) else []:
-        key = agent_params.env_name(name, specs.get(name))
-        if value not in (None, "") and key not in present:
-            agent_params.set_key(str(env), key, str(value), quote_mode="auto")
-            moved.append(f"{name} -> {key}")
-    old.unlink()
-    return moved
-
-
-OLD_BATCHER, BATCHER = "workflow-batcher", "batcher"
-
-
-def rename_old_batcher(agent_dir: Path):
-    """A plan from before agents were called agents names the command runner workflow-batcher (in
-    `agents.available`, a bare name or `{name: …}`, and maybe a stage's `agent:`); the refresh writes it as batcher.md,
-    so the plan gets the new name. A mechanical rename: when the critic had seen the plan, its result still holds, so
-    critique.plan_digest follows (the plan stays ready). True when the plan changed."""
-    path = agent_dir / PLAN
-    plan = read_yaml(path, None)
-    if not isinstance(plan, dict):
-        return False
-    agents = plan.get("agents") if isinstance(plan.get("agents"), dict) else {}
-    available = agents.get("available") if isinstance(agents.get("available"), list) else []
-    listed = [i for i, a in enumerate(available) if a == OLD_BATCHER or (isinstance(a, dict) and a.get("name") == OLD_BATCHER)]
-    stages = [st for st in plan.get("stages") or [] if isinstance(st, dict) and st.get("agent") == OLD_BATCHER]
-    if not listed and not stages:
-        return False
-    critique = plan.get("critique") if isinstance(plan.get("critique"), dict) else None
-    seen = critique is not None and critique.get("plan_digest") == plan_digest(plan)
-    for i in listed:
-        if isinstance(available[i], dict):
-            available[i]["name"] = BATCHER
-        else:
-            available[i] = BATCHER
-    for stage in stages:
-        stage["agent"] = BATCHER
-    if seen:
-        critique["plan_digest"] = plan_digest(plan)
-    write_yaml(path, plan)
-    return True
-
-
 def rehome_sessions(agent_dir: Path):
     """Conversations started before the folder moved (workflows/ to agents/, say) record the old folder as their cwd,
     and Pi lists a session folder's conversations only for the cwd they record: the web app and `pi --resume` showed
@@ -217,17 +151,16 @@ def main(
     root: Annotated[str, typer.Option(help="folder that holds agents")] = "agents",
     request: Annotated[str, typer.Option(help="the user's request, verbatim")] = "",
     refresh: Annotated[bool, typer.Option("--refresh", help="update template files and the skill copy")] = False,
-    if_stale: Annotated[bool, typer.Option("--if-stale", help="with --refresh: do nothing when the agent already has this Prometheus version")] = False,
+    if_stale: Annotated[bool, typer.Option("--if-stale", help="with --refresh: do nothing when the agent already has this prometheus version")] = False,
 ):
     """Create or refresh an agent."""
 
     if not SLUG_RE.match(slug):
         refuse(f"slug must match {SLUG_RE.pattern}", 2)
     if not TEMPLATE_DIR.is_dir():  # an agent's copy of the skill has no templates: they are Prometheus's
-        refuse(f"no agent template at {TEMPLATE_DIR}: create and refresh agents from Prometheus", 2)
+        refuse(f"no agent template at {TEMPLATE_DIR}: create and refresh agents from prometheus", 2)
     agent_dir = Path(root) / slug
-    moved_plan = refresh and (agent_dir / OLD_PLAN).exists() and not (agent_dir / PLAN).exists()
-    exists = (agent_dir / PLAN).exists() or moved_plan
+    exists = (agent_dir / PLAN).exists()
     if exists and not refresh:
         refuse(f"{agent_dir} already has a plan; use --refresh to update it or pick another slug", 1)
     if refresh and not exists:
@@ -238,25 +171,10 @@ def main(
     was = prometheus_version.installed(agent_dir) if refresh else None
     if refresh and if_stale and was and was == version:
         print(json.dumps({"ok": True, "agent": str(agent_dir.resolve()), "mode": "refresh", "prometheus_version": version,
-                          "skipped": f"already at Prometheus {version}"}))
+                          "skipped": f"already at prometheus {version}"}))
         raise typer.Exit(0)
 
-    written, kept, removed = [], [], []
-    if moved_plan:
-        (agent_dir / OLD_PLAN).rename(agent_dir / PLAN)  # the refresh commit records the move
-        removed.append(f"{OLD_PLAN} (now {PLAN})")
-    for rel in LEGACY_FILES:
-        path = agent_dir / rel
-        if path.exists():
-            path.unlink()
-            removed.append(str(rel))
-    for rel in LEGACY_DIRS:
-        path = agent_dir / rel
-        if path.is_dir():
-            shutil.rmtree(path)
-            removed.append(str(rel) + "/")
-    if refresh and rename_old_batcher(agent_dir):
-        written.append(f"{PLAN} ({OLD_BATCHER} renamed {BATCHER})")
+    written, kept = [], []
     if refresh and (rehomed := rehome_sessions(agent_dir)):
         written.append(f".pi/sessions ({rehomed} conversation{'s' if rehomed > 1 else ''} moved to this folder)")
     for directory in ("runs", "gates", "scripts", "uploads"):
@@ -291,11 +209,6 @@ def main(
         (skill_dst / prometheus_version.VERSION_FILE).write_text(version + "\n", encoding="utf-8")
     written.append(str(Path(".pi") / "skills" / "agent") + "/")
 
-    moved = move_old_params(agent_dir)
-    if moved is not None:
-        removed.append(str(OLD_PARAMS))
-        written.append(f"{agent_params.ENV_FILE} (values from {OLD_PARAMS}: {', '.join(moved) or 'none set'})")
-
     for rel, content in STATE_FILES.items():
         path = agent_dir / rel
         if path.exists():
@@ -313,7 +226,7 @@ def main(
     try:
         label = f" {version}" if version else ""
         moved_from = f" (was {was})" if was and was != version else ""
-        commit, note = agent_git.commit(str(agent_abs), f"Refresh from Prometheus{label}{moved_from}" if refresh else f"Create agent {slug} with Prometheus{label}")
+        commit, note = agent_git.commit(str(agent_abs), f"Refresh from prometheus{label}{moved_from}" if refresh else f"Create agent {slug} with prometheus{label}")
     except RuntimeError as exc:
         commit, note = None, str(exc)
     print(json.dumps({
@@ -326,7 +239,6 @@ def main(
         "was": was,
         "written": written,
         "kept": kept,
-        "removed": removed,
         "plan": str(agent_abs / PLAN),
         "today": datetime.datetime.now().astimezone().date().isoformat(),  # local date
     }, indent=2))

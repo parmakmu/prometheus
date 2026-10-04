@@ -3,8 +3,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useAui, useAuiState, AuiProvider, AuiConfig, Suggestions } from "@assistant-ui/react";
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
-import { cn } from "@/lib/utils";
-import { ChevronRight, CircleArrowUp, Flame, FolderOpen, ListChecks, MoreHorizontal, PlusIcon, RefreshCw, SquareTerminal, Bot as AgentIcon } from "lucide-react";
+import { ChevronRight, Flame, MoreHorizontal, PlusIcon, RefreshCw, SquareTerminal, Bot as AgentIcon } from "lucide-react";
 import { AskCard, CheckCard, ModelsCard, PiPanelCard, QuestionCard, ScaffoldCard, SubagentCard } from "./cards";
 import { CanvasPanel, useCanvas } from "./canvas";
 import { StatusBar } from "./status-bar";
@@ -15,6 +14,7 @@ import { Workspace, type Run, type AgentSummary } from "./workspace";
 import { References } from "./references";
 import { TerminalPanel } from "./terminal";
 import { SlashMenu } from "./slash-menu";
+import { money, took } from "./format";
 
 
 type Agent = AgentSummary & {
@@ -43,13 +43,7 @@ const STATES: Record<string, { label: string; tone: string; needsYou?: boolean }
 const stateOf = (w: Agent) => STATES[w.state] ?? { label: w.state, tone: "bg-muted" };
 const needsYou = (w: Agent) => !!stateOf(w).needsYou || w.open_questions.length > 0;
 
-const money = (n: number) => (n ? `$${n < 0.01 ? n.toFixed(4) : n.toFixed(2)}` : "$0");
 const when = (iso?: string) => (iso ? new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
-const took = (r: Run) => {
-  if (!r.started_at || !r.finished_at) return "";
-  const s = Math.round((+new Date(r.finished_at) - +new Date(r.started_at)) / 1000);
-  return s < 60 ? `${s} s` : `${Math.round(s / 60)} min`;
-};
 
 function useAgents() {
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -94,7 +88,7 @@ function RunsTable({ runs }: { runs: (Run & { slug?: string })[] }) {
               {r.slug && <td className="px-3 py-2 font-mono text-xs">{r.slug}</td>}
               <td className="px-3 py-2 font-mono text-xs">{r.id}</td>
               <td className="px-3 py-2 text-xs">{when(r.started_at)}</td>
-              <td className="px-3 py-2 text-xs">{took(r)}</td>
+              <td className="px-3 py-2 text-xs">{took(r.started_at, r.finished_at)}</td>
               <td className="px-3 py-2">
                 <span className={`rounded-full px-2 py-0.5 text-xs ${r.status === "done" ? "bg-emerald-100 text-emerald-800" : r.status === "active" ? "bg-sky-100 text-sky-800" : "bg-muted"}`}>{r.status}</span>
               </td>
@@ -154,34 +148,21 @@ function Sidebar({ agents, error, load }: ReturnType<typeof useAgents>) {
   // a command for prometheus: in the conversation with it that is open, else its latest; one that changes files
   // waits in the composer to be sent
   const ask = (command: string, send = false) => (open("/p", agent === "/p" ? session : null, command, send), select(null));
-  const stale = agents.filter((w) => w.stale).map((w) => w.slug);
   const [openRow, setOpenRow] = useState<string | null>(null); // the agent whose actions show under it
   return (
     <aside className="bg-muted/30 flex w-64 shrink-0 flex-col border-r">
-      {/* prometheus is not one of the agents: it is where they are planned, so it comes first, as the sidebar's title,
-          and a row like the others (its chat opens on a click); its commands under it */}
-      <nav className="space-y-0.5 px-4 pt-3">
-        <button type="button" onClick={() => (setAgent("/p"), select(null))} title="Talk to prometheus, the planner" className={cn(row(agent === "/p"), "mb-2 py-2 text-base font-semibold")}>
-          <Flame className="text-primary size-5 shrink-0" /> prometheus
+      {/* the app's name, a heading like the sections' (no click); then prometheus's own rows: the Forge (its chat, where
+          agents are created: it is not one of them) and its commands */}
+      <div className="text-brand flex items-center gap-2 px-6 pt-4 pb-3 text-base font-semibold">
+        <Flame className="size-5" /> prometheus
+      </div>
+      <nav className="space-y-0.5 px-4">
+        <button type="button" onClick={() => (setAgent("/p"), select(null))} title="prometheus's own chat, where agents are created" className={row(agent === "/p")}>
+          <Flame className={icon} /> Forge
         </button>
         <button type="button" onClick={() => (open("/p", `new-${crypto.randomUUID().slice(0, 8)}`, "/agent-new "), select(null))} className={row()}>
           <PlusIcon className={icon} /> New agent
         </button>
-        <button type="button" onClick={() => ask("/agent-list", true)} className={row()}>
-          <ListChecks className={icon} /> My agents
-        </button>
-        {/* one out of date: named, and only it is refreshed; more: all of them */}
-        {stale.length > 0 && (
-          <button
-            type="button"
-            onClick={() => ask(`/agent-refresh ${stale.length === 1 ? stale[0] : "--all"}`)}
-            title="Bring their copy of the skill up to this prometheus's version"
-            className={row()}
-          >
-            <CircleArrowUp className={icon} />
-            <span className="truncate">{stale.length === 1 ? `Update ${stale[0]}` : `Update ${stale.length} agents`}</span>
-          </button>
-        )}
       </nav>
 
       {/* a heading as the title: what is not a row is not clickable */}
@@ -248,7 +229,7 @@ function Overview({ agents }: { agents: Agent[] }) {
         {[
           ["Agents", String(agents.length)],
           ["Recent runs", String(runs.length)],
-          ["Their cost", money(spent)],
+          ["Their cost", money(spent) || "$0"],
         ].map(([k, v]) => (
           <div key={k} className="bg-card rounded-xl border p-3">
             <p className="text-muted-foreground text-xs">{k}</p>
@@ -291,9 +272,9 @@ function ChatHeader({ agents }: { agents: Agent[] }) {
   const w = agents.find((x) => x.slug === slug);
   return (
     <div className="flex items-center gap-2 border-b px-4 py-2.5 text-sm">
-      {slug ? <AgentIcon className="text-muted-foreground size-4" /> : <Flame className="text-primary size-4" />}
-      <span className={`font-medium ${slug ? "font-mono" : ""}`}>{label}</span>
-      <span className="text-muted-foreground text-xs">{slug ? "agent" : "planner"}</span>
+      {slug ? <AgentIcon className="text-muted-foreground size-4" /> : <Flame className="text-brand size-4" />}
+      <span className="font-medium">{label}</span>
+      {!slug && <span className="text-muted-foreground text-xs">prometheus, where agents are created</span>}
       {w && <span className={`ml-auto rounded-full px-2 py-0.5 text-xs ${stateOf(w).tone}`}>{stateOf(w).label}</span>}
       <button
         type="button"
@@ -370,16 +351,9 @@ export default function Home() {
   const aui = useAui();
   const { slug } = useAgent();
   const config = AuiConfig({
+    // the commands are chips above the input (command-bar.tsx); an empty Forge chat adds a worked example
     suggestions: Suggestions(
-      slug
-        ? [
-            { title: "Run it", label: "start or continue a run", prompt: "/agent-run" },
-            { title: "Status", label: "plan, runs, what waits", prompt: "/agent-status" },
-          ]
-        : [
-            { title: "List agents", label: "and where each stands", prompt: "/agent-list" },
-            { title: "Plan an agent", label: "emails to a spreadsheet", prompt: "/agent-new I want to read the emails in a folder and save them in an Excel file" },
-          ],
+      slug ? [] : [{ title: "Create an agent", label: "emails to a spreadsheet", prompt: "/agent-new I want to read the emails in a folder and save them in an Excel file" }],
     ),
   });
   return (

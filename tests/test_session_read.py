@@ -16,12 +16,11 @@ def message(role, ts, content, **extra):
 
 
 def make_sessions(tmp_path):
-    """An agent and its session folder under a fake HOME (the scripts look in ~/.pi/agent/sessions/--<path>--/)."""
+    """An agent and its conversations, in its own .pi/sessions."""
     agent_dir = tmp_path / "wf"
     agent_dir.mkdir()
     (agent_dir / "plan.yaml").write_text("version: 1\n")
-    home = tmp_path / "home"
-    folder = home / ".pi" / "agent" / "sessions" / f"--{str(agent_dir.resolve()).strip('/').replace('/', '-')}--"
+    folder = agent_dir / ".pi" / "sessions"
     folder.mkdir(parents=True)
     rows = [line(type="session", timestamp="2026-01-01T10:00:00Z"),
             line(type="model_change", modelId="m"),
@@ -34,7 +33,7 @@ def make_sessions(tmp_path):
     (folder / "2026-01-01T10-00-00-000Z_abc.jsonl").write_text("\n".join(rows))
     (folder / "2026-01-02T10-00-00-000Z_def.jsonl").write_text("\n".join(
         [line(type="session", timestamp="2026-01-02T10:00:00Z"), message("user", "2026-01-02T10:00:01Z", "Improve this agent from how it actually went.")]))
-    return agent_dir, {**os.environ, "HOME": str(home), "PI_CODING_AGENT_DIR": str(home / ".pi" / "agent")}
+    return agent_dir, dict(os.environ)
 
 
 def test_list_is_one_line_per_session_newest_first_marking_plan_sessions(tmp_path, run_py):
@@ -56,7 +55,7 @@ def test_show_is_compact_lines_clipped_without_thinking(tmp_path, run_py):
 
 def test_a_successful_result_is_clipped_harder_than_a_failure(tmp_path, run_py):
     agent_dir, env = make_sessions(tmp_path)
-    folder = next((tmp_path / "home" / ".pi" / "agent" / "sessions").iterdir())
+    folder = agent_dir / ".pi" / "sessions"
     (folder / "2026-01-03T00-00-00-000Z_ok.jsonl").write_text("\n".join(
         [line(type="session", timestamp="2026-01-03T00:00:00Z"),
          message("toolResult", "2026-01-03T00:00:01Z", [{"type": "text", "text": "x" * 500}], toolName="t", isError=False)]))

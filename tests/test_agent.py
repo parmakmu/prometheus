@@ -100,16 +100,6 @@ def test_agent_declares_no_pi_packages(env):
     assert "packages" not in (env.b / ".pi" / "settings.json").read_text(encoding="utf-8")
 
 
-def test_refresh_removes_the_skills_old_copy(env):
-    (env.b / ".pi" / "skills" / "request-to-plan").mkdir(parents=True)
-    (env.b / ".pi" / "skills" / "request-to-plan" / "SKILL.md").touch()
-    (env.b / ".pi" / "params.yaml").write_text("mail_dir: /old/mail\n", encoding="utf-8")
-    r = env.run_in(env.prometheus, ["scaffold_agent.py", "invoice-check", "--root", "agents", "--refresh"])
-    assert r.data and any("request-to-plan" in x for x in r.data["removed"])
-    assert not (env.b / ".pi" / "skills" / "request-to-plan").exists()
-    assert (env.b / ".pi" / "skills" / "agent" / "SKILL.md").is_file()
-
-
 def test_refresh_keeps_the_lessons_section_of_the_role_file(env):
     role = env.b / ".pi" / "APPEND_SYSTEM.md"
     original = role.read_text(encoding="utf-8")
@@ -121,9 +111,7 @@ def test_refresh_keeps_the_lessons_section_of_the_role_file(env):
     assert refreshed.count("## Lessons for this agent") == 1
 
 
-def test_refresh_moves_params_yaml_into_env(env):
-    assert not (env.b / ".pi" / "params.yaml").exists()
-    assert "MAIL_DIR='/old/mail'" in (env.b / ".env").read_text(encoding="utf-8").splitlines()
+def test_env_and_uploads_stay_out_of_git(env):
     assert ".env" in (env.b / ".gitignore").read_text(encoding="utf-8").splitlines()
     assert env.git("ls-files", ".env").stdout.strip() == ""
     # the web app's chat uploads: a folder that exists and stays out of git

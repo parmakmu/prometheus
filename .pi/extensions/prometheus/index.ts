@@ -61,7 +61,7 @@ function pythonFor(start: string): string {
 
 /** Make pi-subagents' `subagent` tool active before a command's prompt goes out. The command is the
  * user's authorization to delegate; left to the model, subagents_enable changes the tool list mid-turn,
- * which costs two turns and drops the prompt cache (about a fifth of run 4's orchestrator cost).
+ * which costs two turns and drops the prompt cache.
  * pi-subagents records the selection, so it holds on resume. No-op when pi-subagents is missing. */
 function activateSubagent(pi: ExtensionAPI) {
 	if (!pi.getAllTools().some((tool) => tool.name === "subagent")) return;
@@ -117,8 +117,7 @@ function slugs(root: string, prefix = ""): string[] {
 	try {
 		return fs
 			.readdirSync(path.join(root, AGENTS))
-			// .pi/plan.yaml: where the plan lived before; /agent-refresh moves it
-			.filter((d) => d.startsWith(prefix) && ["plan.yaml", ".pi/plan.yaml"].some((f) => fs.existsSync(path.join(root, AGENTS, d, f))))
+			.filter((d) => d.startsWith(prefix) && fs.existsSync(path.join(root, AGENTS, d, "plan.yaml")))
 			.sort();
 	} catch {
 		return [];
@@ -155,11 +154,6 @@ export default function prometheus(pi: ExtensionAPI) {
 		const py = pythonFor(root);
 		const r = await pi.exec(py, ["-c", "import dotenv, pydantic, pydantic_settings, ruamel.yaml, typer"], { cwd: root, timeout: 10_000 });
 		if (r.code !== 0) ctx.ui.notify(`The skill scripts' Python packages are missing for ${py}. Run \`uv sync\` in ${root}, then restart pi.`, "warning");
-		// agents were called workflows, in workflows/: not moved for you (a pi session may be running inside one)
-		const old = path.join(root, "workflows");
-		const left = fs.existsSync(old) ? fs.readdirSync(old).filter((d) => fs.existsSync(path.join(old, d, "plan.yaml"))) : [];
-		if (left.length)
-			ctx.ui.notify(`Agents used to be called workflows: ${left.join(", ")} ${left.length === 1 ? "is" : "are"} still in workflows/. Move them with \`mv workflows/* ${AGENTS}/\` in ${root}, then /agent-refresh --all.`, "warning");
 	});
 
 	const completeSlug = (prefix: string) => {
@@ -174,7 +168,7 @@ export default function prometheus(pi: ExtensionAPI) {
 
 	const rootOrWarn = (ctx: ExtensionContext) => {
 		const root = findRoot(ctx.cwd);
-		if (!root) ctx.ui.notify("Start pi inside the Prometheus folder to use the agent commands.", "error");
+		if (!root) ctx.ui.notify("Start pi inside the prometheus folder to use the agent commands.", "error");
 		return root;
 	};
 
@@ -302,7 +296,7 @@ export default function prometheus(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("agent-refresh", {
-		description: "Update agents to Prometheus's skill version: /agent-refresh <slug | --all>",
+		description: "Update agents to prometheus's skill version: /agent-refresh <slug | --all>",
 		getArgumentCompletions: (prefix) => {
 			const found = completeSlug(prefix) ?? [];
 			const all = "--all".startsWith(prefix) ? [{ value: "--all", label: "--all" }] : [];
@@ -344,7 +338,7 @@ export default function prometheus(pi: ExtensionAPI) {
 			}),
 			async execute(_id, params, signal, _onUpdate, ctx) {
 				const root = findRoot(ctx.cwd);
-				if (!root) throw new Error("not inside the Prometheus folder");
+				if (!root) throw new Error("not inside the prometheus folder");
 				if (!newRequested)
 					throw new Error(
 						"agents are created only through /agent-new. Do not plan this request; answer it normally, and if it is multi-step work, tell the user they can run `/agent-new <request>`.",
@@ -370,7 +364,7 @@ export default function prometheus(pi: ExtensionAPI) {
 			parameters: Type.Object({ slug: Type.String({ description: "the agent's slug" }) }),
 			async execute(_id, params, signal, _onUpdate, ctx) {
 				const root = findRoot(ctx.cwd);
-				if (!root) throw new Error("not inside the Prometheus folder");
+				if (!root) throw new Error("not inside the prometheus folder");
 				const res = await check(pi, root, params.slug, signal);
 				return { content: [{ type: "text" as const, text: JSON.stringify(res, null, 2) }], details: res };
 			},
@@ -392,7 +386,7 @@ export default function prometheus(pi: ExtensionAPI) {
 			}),
 			async execute(_id, params, signal, _onUpdate, ctx) {
 				const root = findRoot(ctx.cwd);
-				if (!root) throw new Error("not inside the Prometheus folder");
+				if (!root) throw new Error("not inside the prometheus folder");
 				if (!/^[a-z0-9][a-z0-9-]*$/.test(params.slug)) throw new Error("bad slug");
 				if (!ctx.hasUI) throw new Error("adding a package needs the user's approval and no one can be asked here: do not add it");
 				if (!params.packages.length || !params.reason.trim()) throw new Error("name the packages and say why they are needed");

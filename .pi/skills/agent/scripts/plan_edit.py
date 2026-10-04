@@ -39,7 +39,8 @@ REPLAN_KEYS = {"stages", "remove", "findings", "questions", "answers", "note"}
 app = typer.Typer(add_completion=False)
 
 
-def read_json(arg):
+def json_arg(arg):
+    """A JSON value given as a file path or as the text itself (refused when it is neither)."""
     try:
         arg_path = Path(arg)
         return json.loads(arg_path.read_text(encoding="utf-8")) if arg_path.is_file() else json.loads(arg)
@@ -95,7 +96,7 @@ def main(agent_dir: Annotated[str, typer.Option("--agent", help="agent root")] =
 @app.command()
 def replan(change: Annotated[str, typer.Option(help="the change as a JSON object, or a file holding it")]):
     """Change pending stages after discovery."""
-    plan, c = read_yaml(PLAN, {}), read_json(change)
+    plan, c = read_yaml(PLAN, {}), json_arg(change)
     if not isinstance(c, dict):
         refuse("the change must be a JSON object")
     extra = sorted(set(c) - REPLAN_KEYS)
@@ -171,7 +172,7 @@ def replan(change: Annotated[str, typer.Option(help="the change as a JSON object
 @app.command()
 def critique(result: Annotated[str, typer.Option(help="the critic's result as JSON {run_id, verdict, passes?, findings}, or a file")]):
     """Record a plan-critic result and mark the plan ready if it validates."""
-    plan, c = read_yaml(PLAN, {}), read_json(result)
+    plan, c = read_yaml(PLAN, {}), json_arg(result)
     if not isinstance(c, dict) or not c.get("run_id") or not c.get("verdict"):
         refuse("the result needs run_id and verdict")
     if not isinstance(c.get("passes", 1), int) or not 1 <= c.get("passes", 1) <= CRITIC_PASSES:
@@ -230,7 +231,7 @@ def critique(result: Annotated[str, typer.Option(help="the critic's result as JS
 @app.command()
 def params(values: Annotated[str, typer.Option(help="{name: value} as JSON, or a file")]):
     """Set values for params that are not secrets in .env (agent_params.py)."""
-    plan, v = read_yaml(PLAN, {}), read_json(values)
+    plan, v = read_yaml(PLAN, {}), json_arg(values)
     if not isinstance(v, dict):
         refuse("values must be a JSON object {name: value}")
     problems = agent_params.set_values(Path.cwd(), plan.get("params") or {}, v)

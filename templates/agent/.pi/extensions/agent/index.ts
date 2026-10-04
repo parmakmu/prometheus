@@ -100,9 +100,9 @@ any branch you mean to cite.
    /agent-refresh keeps that section). Every line of it is sent with every turn, so write a rule only
    for a behaviour the evidence shows repeating, keep it to one or two sentences about this agent,
    merge or drop lines it makes redundant, and keep the section under 10 lines. Do not change the text
-   above the heading, or the skill and references: they are Prometheus's copies, which /agent-refresh
+   above the heading, or the skill and references: they are prometheus's copies, which /agent-refresh
    overwrites. A problem there that is not specific to this agent goes in a separate list, as text for
-   the user to take to Prometheus.
+   the user to take to prometheus.
    \`lessons\` are what earlier /agent-improve passes decided: do not re-propose a rejected one, and
    if an applied one's problem shows up again, say its fix did not work.
 3. Ask the user about each proposal with the question tool (apply / skip), in plain words (run-protocol,
@@ -162,7 +162,7 @@ function pythonFor(start: string): string {
 
 /** Make pi-subagents' `subagent` tool active before a command's prompt goes out. The command is the
  * user's authorization to delegate; left to the model, subagents_enable changes the tool list mid-turn,
- * which costs two turns and drops the prompt cache (about a fifth of run 4's orchestrator cost).
+ * which costs two turns and drops the prompt cache.
  * pi-subagents records the selection, so it holds on resume. No-op when pi-subagents is missing. */
 function activateSubagent(pi: ExtensionAPI) {
 	if (!pi.getAllTools().some((tool) => tool.name === "subagent")) return;
@@ -281,9 +281,9 @@ const PACKAGE_FILES_WRITE = /(pyproject\.toml|uv\.lock)/;
 const SHELL_WRITE = /\bsed\s+-i|>|\btee\b|\bmv\b|\bcp\b|\bperl\s+-\w*i|\btruncate\b|\bpython3?\b|\bnode\b/;
 const PACKAGE_COMMAND = /\buv\s+(add|remove)\b/;
 
-/** run/, revise/, improve/ (and older change/) branches (loose and packed refs): ones waiting for review. */
-const REVIEW_KINDS = ["run", "revise", "improve", "change"];
-const isChangeBranch = (b: string) => /^(revise|improve|change)\//.test(b);
+/** run/, revise/ and improve/ branches (loose and packed refs): ones waiting for review. */
+const REVIEW_KINDS = ["run", "revise", "improve"];
+const isChangeBranch = (b: string) => /^(revise|improve)\//.test(b);
 function reviewBranches(root: string): string[] {
 	const names = new Set<string>();
 	for (const kind of REVIEW_KINDS) {
@@ -540,39 +540,35 @@ export default function agentExtension(pi: ExtensionAPI) {
 			const b = info.data ?? {};
 			const s = chk.summary ?? {};
 			const pf = next.data?.preflight ?? {};
-			const lines = [
-				`state: ${chk.state?.state ?? "unknown"}${chk.state?.hint ? ` (${chk.state.hint})` : ""}`,
-				`goal: ${b.goal || "(none yet)"}`,
-				`status: ${b.status}   revision: ${b.revision}   runs: ${b.runs ?? 0}`,
-				b.active_run
-					? `active run: ${b.active_run}   stages done: ${b.stages_done}/${b.stages_total}   next wave: ${b.next_wave ?? "none"}`
-					: `no active run${b.last_run ? ` (last: ${b.last_run.id} ${b.last_run.status})` : ""}; /agent-run starts one`,
-				`waves to go${b.active_run ? "" : " in a new run"}: ${(s.waves ?? []).map((w: any) => `${w.id}:[${w.stages.join(",")}]${w.ends_with === "none" ? "" : ` then ${w.ends_with}`}`).join("  ") || "none"}`,
-				`last wave: ${b.last_run?.last_wave ? `${b.last_run.last_wave.wave} ${b.last_run.last_wave.status}` : "none"}`,
-				`branch: ${b.branch ?? "none"}${(b.unmerged ?? []).length ? `   unmerged: ${b.unmerged.join(", ")}` : ""}`,
-				`provisional (waiting for replan): ${(s.provisional ?? []).join(", ") || "none"}`,
-				`open questions: ${(b.open_questions ?? []).join(", ") || "none"}`,
-				`missing params: ${(s.agent?.missing_params ?? []).join(", ") || "none"}`,
-				`secrets to add to .env: ${(s.agent?.missing_secrets ?? []).join(", ") || "none"}`,
+			// only what the page and the workspace don't show already: what comes next, what waits for the person, problems
+			const ends: Record<string, string> = { approval: ", needs your approval", review: ", then your review", replan: ", then a replan" };
+			const waves = (s.waves ?? []).map((w: any) => `${w.id} (${w.stages.join(", ")}${ends[w.ends_with] ?? ""})`).join(", then ");
+			const comingUp = b.active_run
+				? `run ${b.active_run}: ${b.stages_done}/${b.stages_total} stages done${b.next_wave ? `, wave ${b.next_wave} next` : ""}`
+				: `/agent-run starts a run: ${waves || "nothing to run"}`;
+			const waiting = [
+				...(b.open_questions ?? []).map((q: string) => `answer: ${q}`),
+				...(b.active_run ? (pf.decisions_needed ?? []).map((d: any) => `decide: ${d.stage}`) : []),
+				...(b.active_run ? (pf.approvals_needed ?? []).map((a: any) => `approve: ${a.stage}`) : []),
+				...(b.active_run && pf.review_needed ? [`review wave ${pf.review_needed.wave}`] : []),
+				...(b.unmerged ?? []).map((br: string) => `review branch ${br}`),
+				...(s.agent?.missing_params ?? []).map((p: string) => `set ${p}`),
+				...(s.agent?.missing_secrets ?? []).map((v: string) => `add ${v} to .env`),
 			];
-			if (next.data?.ok) {
-				lines.push(`next wave ${next.data.wave} compiles and can launch`);
-			} else if (b.active_run) {
-				const decisions = (pf.decisions_needed ?? []).map((d: any) => d.stage);
-				const approvals = (pf.approvals_needed ?? []).map((a: any) => a.stage);
-				if (decisions.length) lines.push(`decisions to collect: ${decisions.join(", ")}`);
-				if (approvals.length) lines.push(`approvals needed: ${approvals.join(", ")}`);
-				if (pf.review_needed) lines.push(`waiting for your review of wave ${pf.review_needed.wave} before the next one`);
-				if (next.data?.error) lines.push(`next wave: ${next.data.error}`);
-			}
-			lines.push(`plan valid: ${chk.valid}   compiles: ${chk.compiles}`);
-			for (const e of chk.errors) lines.push(`  error: ${e}`);
-			for (const [w, es] of Object.entries(chk.compile_errors as Record<string, string[]>)) {
-				for (const e of es) lines.push(`  compile ${w}: ${e}`);
-			}
-			// a markdown list, each line's label in bold: one line each in the terminal and the web app alike
-			const item = (l: string) => `- ${l.trim().replace(/^([^:]+):/, "**$1:**")}`;
-			show(`Agent ${path.basename(root)}`, `${lines.map(item).join("\n")}\n\nA running wave is shown as last recorded; /agent-run checks it live.`);
+			const problems = [
+				...chk.errors,
+				...Object.entries(chk.compile_errors as Record<string, string[]>).flatMap(([w, es]) => es.map((e) => `${w}: ${e}`)),
+				...(b.active_run && !next.data?.ok && next.data?.error ? [next.data.error] : []),
+			];
+			show(
+				`Agent ${path.basename(root)}`,
+				[
+					`- **Next:** ${comingUp}`,
+					`- **Waiting for you:** ${waiting.join("; ") || "nothing"}`,
+					...problems.map((p: string) => `- **Problem:** ${p}`),
+					...(b.active_run ? ["", "A running wave is shown as last recorded; /agent-run checks it live."] : []),
+				].join("\n"),
+			);
 		},
 	});
 

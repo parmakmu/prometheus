@@ -18,6 +18,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { EventType } from "@ag-ui/core";
 import { EventEncoder } from "@ag-ui/encoder";
+import { thoughtOf } from "./thoughts.ts";
 // Pi itself: the global install the router found (it names it for pi-subagents too), loaded by path
 const PI_ROOT = process.env.PI_SUBAGENTS_PI_CODING_AGENT_PACKAGE_ROOT!;
 const { createAgentSession, SessionManager } = await import(pathToFileURL(path.join(PI_ROOT, "dist", "index.js")).href);
@@ -372,20 +373,6 @@ const commandsByPrompt = () =>
             .filter((e: any) => e.type === "custom" && e.customType === COMMAND_ENTRY && e.data?.prompt)
             .map((e: any) => [e.data.prompt, e.data.hidden ? null : e.data.command]),
     );
-
-// What a thinking block says: its text, else the readable summaries in its provider data (OpenRouter keeps them in
-// the block's signature as reasoning_details), else a note that the model sent its reasoning encrypted (OpenAI's
-// models through OpenRouter often do), so the Details say why there is nothing to read rather than show nothing.
-const HIDDEN_THOUGHT = "(The model kept this reasoning private: it sent it encrypted, with no readable summary.)";
-function thoughtOf(block: any): string {
-    if (block?.thinking?.trim()) return block.thinking;
-    try {
-        const details = JSON.parse(block?.thinkingSignature ?? "");
-        const text = (Array.isArray(details) ? details : [details]).map((d: any) => d?.summary ?? d?.text ?? "").filter(Boolean).join("\n\n");
-        if (text.trim()) return text;
-    } catch {}
-    return HIDDEN_THOUGHT;
-}
 
 // The conversation so far, from Pi's session (the record that survives reloads and restarts), as AG-UI
 // messages: the current branch of its tree, root to leaf. Ids are "pi-<entry id>": a run whose last user message has

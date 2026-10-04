@@ -8,6 +8,7 @@ import { api, NO_ACCESS, send } from "./api";
 import { useAgent } from "./agent";
 import { useCanvas } from "./canvas";
 import { ModelPicker } from "./models";
+import { kilo } from "./format";
 
 
 type Status = {
@@ -22,7 +23,6 @@ type Status = {
   cost: number;
 };
 
-const k = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n));
 
 function Chip({ icon, children, title }: { icon: React.ReactNode; children: React.ReactNode; title: string }) {
   return (
@@ -121,8 +121,8 @@ export function StatusBar() {
         <span className="bg-muted h-1.5 w-16 overflow-hidden rounded-full">
           <span className={`block h-full ${tone}`} style={{ width: `${Math.min(pct ?? 0, 100)}%` }} />
         </span>
-        {pct === null ? "–" : `${Math.round(pct)}%`}
-        {s.context && <span className="text-muted-foreground">of {k(s.context.contextWindow)}</span>}
+        <span className="text-muted-foreground">context</span> {pct === null ? "–" : `${Math.round(pct)}%`}
+        {s.context && <span className="text-muted-foreground">of {kilo(s.context.contextWindow)}</span>}
         <button
           type="button"
           onClick={() => aui.thread().append("/compact")}
@@ -133,12 +133,12 @@ export function StatusBar() {
           Compact
         </button>
       </Chip>
-      <Chip icon={<Database className="size-3.5" />} title={`cache: ${k(s.cache.read)} read, ${k(s.cache.write)} written this session; % of the last reply's prompt read from cache`}>
-        {s.cache.lastPercent === null ? "–" : `${s.cache.lastPercent}%`}
-        <span className="text-muted-foreground">({k(s.cache.read)} read)</span>
+      <Chip icon={<Database className="size-3.5" />} title={`cache: ${kilo(s.cache.read)} read, ${kilo(s.cache.write)} written this session; % of the last reply's prompt read from cache`}>
+        <span className="text-muted-foreground">cache</span> {s.cache.lastPercent === null ? "–" : `${s.cache.lastPercent}%`}
+        <span className="text-muted-foreground">({kilo(s.cache.read)} read)</span>
       </Chip>
       <Chip icon={<span className="text-[10px]">↑↓</span>} title="tokens in / out this session">
-        {k(s.tokens.input)} / {k(s.tokens.output)}
+        <span className="text-muted-foreground">tokens</span> {kilo(s.tokens.input)} in / {kilo(s.tokens.output)} out
       </Chip>
       <Chip icon={<Coins className="size-3.5" />} title="cost of this session">
         <span className="text-emerald-700">${s.cost.toFixed(4)}</span>

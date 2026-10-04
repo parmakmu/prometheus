@@ -7,7 +7,6 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -176,7 +175,7 @@ def test_a_merge_is_one_commit_on_main_and_deletes_the_branch(tmp_path, run_py):
 
     (wf / "plan.yaml").write_text(PLAN, encoding="utf-8")
     git("commit", "-qam", "ready plan")
-    git("switch", "-q", "-c", "change/2026-01-01-1")
+    git("switch", "-q", "-c", "revise/2026-01-01-1")
     (wf / "gates" / "on_branch.py").write_text("", encoding="utf-8")
     git("add", "-A")
     git("commit", "-qm", "branch work")
@@ -187,13 +186,13 @@ def test_a_merge_is_one_commit_on_main_and_deletes_the_branch(tmp_path, run_py):
     (wf / "scripts" / "on_main.py").write_text("", encoding="utf-8")
     git("add", "-A")
     git("commit", "-qm", "main moved")
-    git("switch", "-q", "change/2026-01-01-1")
+    git("switch", "-q", "revise/2026-01-01-1")
     r = run_py([wf / ".pi" / "skills" / "agent" / "scripts" / "agent_git.py", "merge", "--action", "merge"], cwd=wf)
     assert r.data and r.data["ok"], r
     assert git("branch", "--list").split() == ["*", "main"]
     assert git("rev-list", "--merges", "--count", "main").strip() == "0"
     subject, *body = git("log", "-1", "--format=%B").strip().splitlines()
-    assert subject == "r1: change/2026-01-01-1" and body[-2:] == ["- branch work", "- more branch work"]
+    assert subject == "r1: revise/2026-01-01-1" and body[-2:] == ["- branch work", "- more branch work"]
     assert git("log", "--format=%s", "main").splitlines()[1] == "main moved"  # the branch's commits are not on main
     assert (wf / "gates" / "on_branch.py").exists() and (wf / "scripts" / "on_main.py").exists()
 
@@ -209,7 +208,7 @@ def test_a_merge_that_conflicts_with_main_leaves_both_unchanged(tmp_path, run_py
 
     (wf / "plan.yaml").write_text(PLAN, encoding="utf-8")
     git("commit", "-qam", "ready plan")
-    git("switch", "-q", "-c", "change/2026-01-01-1")
+    git("switch", "-q", "-c", "revise/2026-01-01-1")
     (wf / "gates" / "g.py").write_text("branch\n", encoding="utf-8")
     git("add", "-A")
     git("commit", "-qm", "branch work")
@@ -218,10 +217,10 @@ def test_a_merge_that_conflicts_with_main_leaves_both_unchanged(tmp_path, run_py
     git("add", "-A")
     git("commit", "-qm", "main moved")
     main = git("rev-parse", "main")
-    git("switch", "-q", "change/2026-01-01-1")
+    git("switch", "-q", "revise/2026-01-01-1")
     r = run_py([wf / ".pi" / "skills" / "agent" / "scripts" / "agent_git.py", "merge", "--action", "merge"], cwd=wf)
     assert "conflicts" in errors(r), r
-    assert git("symbolic-ref", "--short", "HEAD").strip() == "change/2026-01-01-1"
+    assert git("symbolic-ref", "--short", "HEAD").strip() == "revise/2026-01-01-1"
     assert git("rev-parse", "main") == main and not git("status", "--porcelain").strip()
     assert (wf / "gates" / "g.py").read_text(encoding="utf-8") == "branch\n"
 
@@ -239,45 +238,17 @@ def test_refresh_keeps_the_agents_packages(tmp_path, run_py):
     assert '"openpyxl>=3.1"' in text and '"typer>=0.12"' in text  # kept, and the skill's package added back
 
 
-def test_refresh_replaces_the_layout_from_when_agents_were_workflows(tmp_path, run_py):
-    # an agent made before the rename: its skill, extension (with the /workflow-* commands) and batcher by old names
+def test_refresh_brings_back_a_moved_agents_conversations(tmp_path, run_py):
+    # Pi lists a session folder's conversations only for the cwd each records
     scaffold = SKILL / "scripts" / "scaffold_agent.py"
-    assert run_py([scaffold, "old", "--root", tmp_path, "--request", "x"]).data["ok"]
-    agent = tmp_path / "old"
-    pi = agent / ".pi"
-    (pi / "skills" / "agent").rename(pi / "skills" / "workflow")
-    (pi / "extensions" / "agent").rename(pi / "extensions" / "workflow")
-    (pi / "agents" / "batcher.md").rename(pi / "agents" / "workflow-batcher.md")
-    (pi / "skills" / "workflow" / "VERSION").write_text("0.0.1+old\n", encoding="utf-8")
-    sys.path.insert(0, str(SKILL / "scripts"))
-    import prometheus_version
-    from utils import read_yaml, write_yaml
-    from validate_plan import check_ready, plan_digest
-    # its plan names the old batcher, and the critic saw exactly this plan (it is ready)
-    plan = read_yaml(agent / "plan.yaml", {})
-    plan["agents"] = {"available": ["scout", {"name": "workflow-batcher", "source": "project", "runner": "external-cli"}]}
-    plan["status"] = "ready"
-    plan["critique"] = {"plan_digest": plan_digest(plan)}
-    write_yaml(agent / "plan.yaml", plan)
-    assert check_ready(read_yaml(agent / "plan.yaml", {})) is None
-    assert prometheus_version.installed(agent) == "0.0.1+old"  # read from the old folder: out of date, not unknown
-    # a conversation from when it lived in workflows/: Pi lists it only for the folder it records
-    sessions = pi / "sessions"
+    assert run_py([scaffold, "moved", "--root", tmp_path, "--request", "x"]).data["ok"]
+    agent = tmp_path / "moved"
+    sessions = agent / ".pi" / "sessions"
     sessions.mkdir(exist_ok=True)
     talk = sessions / "2026-10-02T22-27-52-997Z_x.jsonl"
     body = '{"type":"message","id":"a","message":{"role":"user","content":"hi"}}\n'
-    talk.write_text(json.dumps({"type": "session", "id": "x", "cwd": str(tmp_path / "workflows" / "old")}) + "\n" + body, encoding="utf-8")
-    r = run_py([scaffold, "old", "--root", tmp_path, "--refresh"])
-    assert r.data and r.data["ok"], r
-    for gone in ("skills/workflow", "extensions/workflow", "agents/workflow-batcher.md"):
-        assert not (pi / gone).exists(), gone
-        assert any(x.startswith(f".pi/{gone}") for x in r.data["removed"]), r.data["removed"]
-    for new in ("skills/agent/SKILL.md", "extensions/agent/index.ts", "agents/batcher.md"):
-        assert (pi / new).is_file(), new
-    assert prometheus_version.installed(agent) != "0.0.1+old"
-    plan = read_yaml(agent / "plan.yaml", {})
-    assert plan["agents"]["available"] == ["scout", {"name": "batcher", "source": "project", "runner": "external-cli"}]
-    assert check_ready(plan) is None  # a mechanical rename: the critic's result still holds
+    talk.write_text(json.dumps({"type": "session", "id": "x", "cwd": str(tmp_path / "elsewhere" / "moved")}) + "\n" + body, encoding="utf-8")
+    assert run_py([scaffold, "moved", "--root", tmp_path, "--refresh"]).data["ok"]
     first, rest = talk.read_text(encoding="utf-8").split("\n", 1)
     assert json.loads(first)["cwd"] == str(agent.resolve()) and rest == body
 
