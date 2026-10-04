@@ -675,14 +675,17 @@ const AssistantMessage: FC = () => {
 };
 
 const AssistantActionBar: FC = () => {
-  // a message still being written, or waiting for an answer (a question), isn't finished: no copy until it is. Only
-  // this message's own state: the thread runs briefly whenever a wave wakes the agent, which made a finished
-  // message's bar blink (hideWhenRunning)
+  // a message still being written, or waiting for an answer (a question), isn't finished: no copy until it is. The
+  // last message with content keeps its bar shown, but not while its agent works (the worker's busy flag): the
+  // thread's own running state, and the empty message a sync run adds, come and go with each sync while the agent
+  // writes, which made the bar blink. Earlier messages show theirs on hover.
   const unfinished = useAuiState((s) => s.message.status?.type === "running" || s.message.status?.type === "requires-action");
-  if (unfinished) return null;
+  const last = useAuiState((s) => s.thread.messages.findLast((m) => m.content.length > 0)?.id === s.message.id);
+  const { busy } = useAgent();
+  if (unfinished || (last && busy)) return null;
   return (
     <ActionBarPrimitive.Root
-      autohide="not-last"
+      autohide={last ? "never" : "always"}
       className="aui-assistant-action-bar-root text-muted-foreground animate-in fade-in col-start-3 row-start-2 -ms-1 flex gap-1 duration-200"
     >
       <ActionBarPrimitive.Copy asChild>

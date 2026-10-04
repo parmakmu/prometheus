@@ -132,4 +132,4 @@ Pi loads the first of `AGENTS.override.md`, `AGENTS.md` and `CLAUDE.md` from eve
 
 ### No releases for prometheus itself
 
-Instead of releases and tags, an agent's skill copy is labelled `<version>+<commit>[.dirty-<hash>]`. `/agent-refresh --all` updates only the agents whose label differs.
+Instead of releases and tags, an agent's skill copy is labelled `<version>+<commit>[.dirty] <hash>`, the hash being of the files a refresh copies. `/agent-refresh --all` updates only the agents whose hash differs, so refreshing from uncommitted changes and committing them unchanged leaves the agent current.

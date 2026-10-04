@@ -179,3 +179,22 @@ def test_a_side_effect_agent_must_reach_its_target(tmp_path):
     agent.write_text("---\nname: drafter\ntools: [read, mcp:gmail/create_draft]\n---\nbody\n", encoding="utf-8")
     errors, warnings, _summary = validate_plan.validate(plan, agent_root=tmp_path)
     assert not any("cannot reach" in e for e in errors) and not any("connector" in w for w in warnings), (errors, warnings)
+
+
+def test_long_strings_are_written_folded_and_read_back_the_same(tmp_path):
+    from utils import load_yaml, write_yaml
+    text = " ".join(["Found 8 direct .eml messages covering plain text and HTML-only ones"] * 4)
+    path = "/a/very/long/path/" + "x" * 120
+    write_yaml(tmp_path / "p.yaml", load_yaml(f'finding: {text}\n\npath: {path}\nquoted: "{text}"\n'))
+    written = (tmp_path / "p.yaml").read_text()
+    assert "finding: >-\n" in written and max(len(x) for x in written.splitlines() if x.startswith("  ")) < 100
+    assert f"{text[-20:]}\n\npath: {path}\n" in written  # the blank line after it kept, not doubled
+    assert f"path: {path}\n" in written and f'quoted: "{text}"' in written  # nowhere to break; quoted: kept
+    assert load_yaml(written)["finding"] == text
+
+
+def test_a_changed_revision_alone_needs_no_critic():
+    plan = {"status": "ready", "revision": 5, "goal": "g"}
+    plan["critique"] = {"plan_digest": validate_plan.plan_digest(plan)}
+    assert validate_plan.check_ready({**plan, "revision": 6}) is None
+    assert validate_plan.check_ready({**plan, "goal": "other"})  # content: the critic must see it

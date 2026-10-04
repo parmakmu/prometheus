@@ -20,6 +20,10 @@ type Agent = {
   open: (agent: string, session: string | null, text?: string, send?: boolean) => void;
   draft: { text: string; send: boolean } | null;
   clearDraft: () => void;
+  // the agent of this conversation is working, as its worker says (the status bar polls it): steadier than the
+  // thread's own running, which stops and starts with each sync while the agent writes
+  busy: boolean;
+  setBusy: (busy: boolean) => void;
 };
 const AgentContext = createContext<Agent | null>(null);
 export const useAgent = () => useContext(AgentContext)!;
@@ -45,10 +49,11 @@ export function AgentProvider({ children }: { children: ReactNode }) {
   };
   // state, not a ref: a command for the conversation already open (no remount) reaches it too
   const [draft, setDraft] = useState<{ text: string; send: boolean } | null>(null);
+  const [busy, setBusy] = useState(false);
   const slug = agent.startsWith("/a/") ? agent.slice(3) : null;
   const base = session ? `${agent}/s/${session}` : agent;
   return (
-    <AgentContext.Provider value={{ agent, slug, session, base, label: slug ?? "Forge", setAgent: (a) => go(a, null), setSession: (s) => go(agent, s), open: (a, s, text, send = false) => (setDraft(text ? { text, send } : null), go(a, s)), draft, clearDraft: () => setDraft(null) }}>
+    <AgentContext.Provider value={{ agent, slug, session, base, label: slug ?? "Forge", setAgent: (a) => go(a, null), setSession: (s) => go(agent, s), open: (a, s, text, send = false) => (setDraft(text ? { text, send } : null), go(a, s)), draft, clearDraft: () => setDraft(null), busy, setBusy }}>
       {children}
     </AgentContext.Provider>
   );

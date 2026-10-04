@@ -3,7 +3,7 @@
 import { useEffect, useRef } from "react";
 import { EditorView, basicSetup, minimalSetup } from "codemirror";
 import { EditorState, type Extension } from "@codemirror/state";
-import { keymap } from "@codemirror/view";
+import { Decoration, ViewPlugin, keymap, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { yaml } from "@codemirror/lang-yaml";
 import { python } from "@codemirror/lang-python";
 import { markdown } from "@codemirror/lang-markdown";
@@ -14,12 +14,40 @@ import { MergeView } from "@codemirror/merge";
 const language = (name: string): Extension[] =>
   /(^|\.)ya?ml$/.test(name) ? [yaml()] : /(^|\.)(py|python)$/.test(name) ? [python()] : /(^|\.)(md|markdown)$/.test(name) ? [markdown()] : /(^|\.)(m?js|ts|tsx|jsx|json|javascript|typescript)$/.test(name) ? [javascript()] : [];
 
+// a wrapped line continues under its own text, not at the left edge: each line is indented by its leading spaces
+// (padding), and its first row pulled back by as much (a negative text-indent)
+const hangingIndent = ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet;
+    constructor(view: EditorView) {
+      this.decorations = this.build(view);
+    }
+    update(u: ViewUpdate) {
+      if (u.docChanged || u.viewportChanged) this.decorations = this.build(u.view);
+    }
+    build(view: EditorView) {
+      const marks = [];
+      for (const { from, to } of view.visibleRanges) {
+        for (let pos = from; pos <= to; ) {
+          const line = view.state.doc.lineAt(pos);
+          const n = line.text.length - line.text.trimStart().length;
+          if (n) marks.push(Decoration.line({ attributes: { style: `padding-left: calc(${n}ch + 6px); text-indent: -${n}ch` } }).range(line.from));
+          pos = line.to + 1;
+        }
+      }
+      return Decoration.set(marks);
+    }
+  },
+  { decorations: (v) => v.decorations },
+);
+
 // what every view shares, and how a read-only one looks: a plain page, no line numbers or other gutters, a grey
 // background, no focus ring
 const look = (name: string, editable: boolean): Extension[] => [
   editable ? basicSetup : minimalSetup,
   ...language(name),
   EditorView.lineWrapping,
+  hangingIndent,
   EditorView.theme({ "&": { fontSize: "13px", maxHeight: "100%" }, ".cm-scroller": { fontFamily: "var(--font-mono, ui-monospace, monospace)" } }),
   ...(editable ? [] : [EditorView.theme({ "&": { backgroundColor: "color-mix(in oklab, var(--color-muted) 70%, transparent)" }, ".cm-content": { padding: "10px 6px" }, "&.cm-focused": { outline: "none" } })]),
   EditorState.readOnly.of(!editable),

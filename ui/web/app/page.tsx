@@ -154,6 +154,7 @@ function Sidebar({ agents, error, load }: ReturnType<typeof useAgents>) {
   // waits in the composer to be sent
   const ask = (command: string, send = false) => (open("/p", agent === "/p" ? session : null, command, send), select(null));
   const [openRow, setOpenRow] = useState<string | null>(null); // the agent whose actions show under it
+  const stale = agents.filter((w) => w.stale).length;
   return (
     <aside className="bg-muted/30 flex w-64 shrink-0 flex-col border-r">
       {/* the app's name, a heading like the sections' (no click); then prometheus's own rows: the Forge (its chat, where
@@ -168,6 +169,12 @@ function Sidebar({ agents, error, load }: ReturnType<typeof useAgents>) {
         <button type="button" onClick={() => (open("/p", `new-${crypto.randomUUID().slice(0, 8)}`, "/agent-new "), select(null))} className={row()}>
           <PlusIcon className={icon} /> New agent
         </button>
+        {/* prometheus updates its agents' copies of the skill, so the action is its own; shown only when one is behind */}
+        {stale > 0 && (
+          <button type="button" onClick={() => ask("/agent-refresh --all")} title="Give the agents marked with an amber dot this prometheus's skill (their plans, runs and programs are kept)" className={row()}>
+            <RefreshCw className={icon} /> Update agents <span className="text-muted-foreground ms-auto text-xs">{stale}</span>
+          </button>
+        )}
       </nav>
 
       {/* a heading as the title: what is not a row is not clickable */}
@@ -189,20 +196,17 @@ function Sidebar({ agents, error, load }: ReturnType<typeof useAgents>) {
               {/* only what calls for attention, as dots (in words on hover) */}
               {w.active_run && <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-sky-500" title="Running" />}
               {needsYou(w) && <span className="size-1.5 shrink-0 rounded-full bg-violet-500" title={stateOf(w).label} />}
-              {w.stale && <span className="size-1.5 shrink-0 rounded-full bg-amber-500" title="Its copy of the skill is older than this prometheus's: Update to the current skill" />}
+              {w.stale && <span className="size-1.5 shrink-0 rounded-full bg-amber-500" title="Its copy of the skill is out of date: Update agents, under prometheus" />}
               <button type="button" onClick={() => setOpenRow(openRow === w.slug ? null : w.slug)} title={openRow === w.slug ? "Hide its actions" : "Show its actions"} className="text-muted-foreground hover:text-foreground -me-1 shrink-0 rounded p-0.5">
                 <ChevronRight className={`size-3.5 transition-transform ${openRow === w.slug ? "rotate-90" : ""}`} />
               </button>
             </div>
-            {/* its actions, under it: its status in its own chat; prometheus's commands for it (they work on the folder
-                from outside) in prometheus's */}
+            {/* its actions, under it: its status in its own chat; export, prometheus's command for it (it works on the
+                folder from outside), in prometheus's */}
             {openRow === w.slug && (
               <div className="ms-4 mt-0.5 mb-1 space-y-0.5 border-s ps-1.5">
                 <button type="button" onClick={() => (open(`/a/${w.slug}`, null, "/agent-status", true), select(null))} className={row()}>
                   Status
-                </button>
-                <button type="button" onClick={() => ask(`/agent-refresh ${w.slug}`)} className={row()}>
-                  Update to the current skill
                 </button>
                 <button type="button" onClick={() => ask(`/agent-export ${w.slug} `)} className={row()}>
                   Export…

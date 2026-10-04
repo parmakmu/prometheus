@@ -1,11 +1,11 @@
 """Which Prometheus an agent's copy of the skill came from.
 
-The version is `<pyproject version>+<short commit>` of Prometheus (the last commit that changed the
-skill or the templates, so other commits leave agents current), and for uncommitted changes to
-the skill or the templates `.dirty-<hash>`, a hash of their files, so two dirty refreshes with different content get
-different versions and the same content gets the same one. A refresh writes it to
-`.pi/skills/agent/VERSION` in the agent, inside the copy it replaces; a copy that has the
-file reports it as it is (an agent's own scripts never compute a new one). Stdlib only.
+The version is `<pyproject version>+<short commit>[.dirty] <hash>`: the commit is the last that changed the
+skill or the templates (so other commits leave agents current), `.dirty` marks uncommitted changes to them, and
+the hash is of their files, what a refresh copies. Only the hash decides whether an agent is up to date
+(up_to_date): a refresh from uncommitted changes, later committed unchanged, stays current; the rest is for
+people. A refresh writes the version to `.pi/skills/agent/VERSION` in the agent, inside the copy it replaces; a
+copy that has the file reports it as it is (an agent's own scripts never compute a new one). Stdlib only.
 """
 import hashlib
 import subprocess
@@ -48,15 +48,25 @@ def current(skill: Path = SKILL):
         return None
     if project.get("name") != "prometheus" or not project.get("version"):
         return None
-    # what a refresh copies: the skill, and the templates beside it (outside .pi)
-    sources = [skill, *(d for d in [root / "templates"] if d.is_dir())]
+    sources = sources_of(skill)
     paths = [str(d.relative_to(root)) for d in sources]
     # the last commit that changed what a refresh copies: a docs or tests commit leaves agents current
     sha = git(root, "log", "-1", "--format=%h", "--", *paths)
-    if not sha:  # not a git repo, or the sources were never committed
-        return f"{project['version']}+{content_hash(*sources)[:8]}"
-    dirty = git(root, "status", "--porcelain", "--", *paths)
-    return f"{project['version']}+{sha}" + (f".dirty-{content_hash(*sources)[:8]}" if dirty else "")
+    dirty = sha and git(root, "status", "--porcelain", "--", *paths)
+    label = f"{project['version']}+{sha}{'.dirty' if dirty else ''}" if sha else project["version"]  # no git: no commit
+    return f"{label} {content_hash(*sources)[:8]}"
+
+
+def sources_of(skill: Path = SKILL):
+    """What a refresh copies: the skill, and the templates beside it (outside .pi)."""
+    return [skill, *(d for d in [skill.parents[2] / "templates"] if d.is_dir())]
+
+
+def up_to_date(installed_version, current_version):
+    """Whether an agent stamped `installed_version` has what a refresh from this prometheus would copy: the
+    same files, by hash (a version without a hash is not)."""
+    hash_of = lambda v: (v or "").split(" ")[1:]
+    return bool(hash_of(installed_version)) and hash_of(installed_version) == hash_of(current_version)
 
 
 def installed(agent_dir: Path):

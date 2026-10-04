@@ -50,8 +50,8 @@ from utils import load_yaml
 
 
 def plan_digest(plan):
-    """A hash of the plan's content, not its status or critique: what a critic's result is for."""
-    content = {k: v for k, v in plan.items() if k not in ("status", "critique")}
+    """A hash of the plan's content, not its bookkeeping (status, revision, critique): what a critic's result is for."""
+    content = {k: v for k, v in plan.items() if k not in ("status", "revision", "critique")}
     return hashlib.sha256(json.dumps(content, sort_keys=True, default=str, ensure_ascii=False).encode()).hexdigest()[:16]
 
 

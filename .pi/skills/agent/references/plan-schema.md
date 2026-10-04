@@ -4,12 +4,16 @@
 *warnings* do not fail it. The plan is reusable and holds no run state: each
 execution is a run, `runs/<id>/`.
 
+Write text longer than a line (a finding, a note, a check) as a folded block,
+`>-` with lines of about 75 characters, so the plan reads as paragraphs; the
+scripts write the same way.
+
 ## Top level
 
 | field | required | meaning |
 |---|---|---|
 | `version` | yes | `1` |
-| `revision` | no (1) | bumped on every replan or change of goal |
+| `revision` | no (1) | raised by the scripts (a replan, a recorded critique); not part of what the critic reviews |
 | `status` | yes | `draft` \| `needs_answers` \| `ready` |
 | `request` | yes | the user's words, verbatim |
 | `goal` | yes | one sentence: the outcome, not the steps |

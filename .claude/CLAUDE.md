@@ -125,7 +125,7 @@ Libraries: typer, pydantic (plan shape, in `validate_plan.py`; the cross-referen
   on `main` with a ready plan moves tag `r<rev>`.
 - **Main changes only by a reviewed merge.** A run's first commit creates `run/<id>` lazily;
   `/agent-revise` creates `revise/<date>-<n>`, `/agent-improve` `improve/<date>-<n>`, leaving the plan as it is:
-  editing `plan.yaml` unreadies it (`plan_digest`; on a branch, any difference from `main`'s plan, see
+  editing `plan.yaml` unreadies it (`plan_digest`, which leaves out status, revision and critique; on a branch, any difference from `main`'s plan, see
   `agent_git.why_not_ready`) until the critic is recorded, which raises the revision once; a change
   to gates, programs, agents or lessons alone merges without the critic. Why: drafting the plan up front
   made an improve that found nothing leave an r+1 draft branch to review. At the end the user sees the diff and chooses
@@ -139,8 +139,9 @@ Libraries: typer, pydantic (plan shape, in `validate_plan.py`; the cross-referen
   `agent_record_critique`). Locked: stages that ran, request, goal, done_when, params, inputs,
   outputs, agents; side effects stay side effects. Direct edits only before the first run or on
   a change branch with no run active. Why: the first replan's direct edits misfired.
-- **Round-trip YAML in house style** (`validate_plan.rt_yaml`: quotes kept, width 4096, lists
-  `  - `): a load + dump changes only edited lines. Repeated keys are an error, since a loader
+- **Round-trip YAML in house style** (`utils.rt_yaml`: quotes kept, width 4096, lists
+  `  - `): a load + dump changes only edited lines, except that `write_yaml` writes a long plain one-line
+  string as a folded `>-` block (`fold_long`; the owner wants findings and notes as paragraphs). Repeated keys are an error, since a loader
   keeping the last one lets an edit that drops a `- id:` line merge two list items.
 - **A producer is told who reads its output**: a stage whose outputs other stages consume gets a
   "Used next by" section (each consumer, what it reads, its `verify.check`); its reviewer gets the
@@ -225,11 +226,14 @@ Libraries: typer, pydantic (plan shape, in `validate_plan.py`; the cross-referen
   `AGENTS.md`, `CLAUDE.md` from every folder up from its cwd, so a root `CLAUDE.md` put ~5k tokens
   of contributor notes into every Prometheus and in-repo agent turn (~20% of a planning
   session's tokens). Claude Code reads `.claude/CLAUDE.md`; Pi doesn't. Keep the root free of those names.
-- **Prometheus version** (`prometheus_version.py`): `<pyproject version>+<commit>[.dirty-<hash of the skill's files>]`, the commit
-  being the last that touched the skill or `templates/` (a docs commit must not make every agent stale),
-  written to the agent's `.pi/skills/agent/VERSION` on create/refresh and named in the commit message; no tags
-  (the owner skipped them). The hash is there because dirty refreshes would otherwise all share one label. `--all`
-  refreshes only stale agents (`--if-stale`); `/agent-list` shows the version.
+- **Prometheus version** (`prometheus_version.py`): `<pyproject version>+<commit>[.dirty] <hash>`, the commit
+  being the last that touched the skill or `templates/` (a docs commit must not make every agent stale), the hash
+  of those files (what a refresh copies); written to the agent's `.pi/skills/agent/VERSION` on create/refresh and
+  named in the commit message; no tags (the owner skipped them). Only the hash decides staleness (`up_to_date`):
+  comparing labels flagged an agent refreshed from uncommitted changes once they were committed unchanged.
+  The file stays (agents are not compared file by file): templates are rendered and merged with the agent's own
+  files, and an exported agent has no prometheus to compare with. `--all` refreshes only stale agents
+  (`--if-stale`); `/agent-list` shows the version.
 - **Agent files**: pi-subagents discovers agents only in `~/.pi/agent/agents/` and a project's
   `.pi/agents/`. The two `plan-critic.md` copies (Prometheus, agent template) must stay
   identical (tests check).
@@ -341,10 +345,10 @@ pi-subagents 0.73.1, with the `workflow` field from 0.74.0 (source in `~/.pi/age
 
 ## Status
 
-`uv run pytest`: 255 tests, including the validator's broken-variant cases, param tests, the
+`uv run pytest`: 258 tests, including the validator's broken-variant cases, param tests, the
 state machine's refusals and its walk (`tests/test_run_finish.py`, `tests/test_state_machine.py`), compiled
 waves run in a mock of `runs.run/runs.all` (real batch tool and gates, fake children), and both
-extensions type-checked and driven with Pi's real types. The 153 outside `tests/test_agent.py`
+extensions type-checked and driven with Pi's real types. The 156 outside `tests/test_agent.py`
 pass without Node or uv; that file's 102 (the scenario and the extensions) need `npm install` and uv.
 
 Verified in live runs of emails-to-excel (see `docs/design.md` and "The second run" in `docs/how-it-works.md`): planning with the

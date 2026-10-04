@@ -13,7 +13,7 @@ wave: approval | review | replan, else null), stages_done/stages_total (of the a
 (every plan stage: key, title, status: done | running | null, null when no run is active; children {done, failed, total, items: each child's key, agent, state, run_id}
 while its wave runs, from pi-subagents' record of the launch),
 provisional, open_questions, custom_subagents, prometheus_version (the skill copy's; stale when
-Prometheus here has another), branch (checked out) and unmerged
+Prometheus here would copy something else, prometheus_version.up_to_date), branch (checked out) and unmerged
 (run/, revise/ and improve/ branches not merged into main). Waves and stage status come from
 validate_plan (waves are derived; status lives in runs/<id>/run.yaml).
 Nothing is changed.
@@ -124,7 +124,7 @@ def summarise(root, slug, current):
         "recent_runs": recent_runs(Path(root) / slug, runs),
         "custom_subagents": [a for a in custom if a not in ("plan-critic", "batcher")],
         "prometheus_version": installed,
-        "stale": bool(current and installed != current),
+        "stale": bool(current) and not prometheus_version.up_to_date(installed, current),
         "branch": agent_git.branch(Path(root) / slug),
         "unmerged": agent_git.unmerged_branches(Path(root) / slug),
     }
@@ -142,7 +142,7 @@ def main(
         print(json.dumps(summarise(b.parent, b.name, prometheus_version.current()), indent=2, default=str))
         return
     root_path = Path(root)
-    current = prometheus_version.current()  # git calls and, when dirty, a hash of the skill: once
+    current = prometheus_version.current()  # git calls and a hash of the skill and templates: once
     agent_dirs = [
         summarise(root, entry.name, current)
         for entry in (sorted(root_path.iterdir()) if root_path.is_dir() else [])

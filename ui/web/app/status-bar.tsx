@@ -36,7 +36,7 @@ function Chip({ icon, children, title }: { icon: React.ReactNode; children: Reac
 // Below the chat, like pi-cc-extensions' footer: the session's model, context, cache, tokens and cost
 export function StatusBar() {
   const aui = useAui();
-  const { base: agent, draft, clearDraft } = useAgent(); // this conversation's endpoints, and a command left for it
+  const { base: agent, draft, clearDraft, setBusy } = useAgent(); // this conversation's endpoints, and a command left for it
   const { show, remove } = useCanvas();
   const running = useAuiState((st) => st.thread.isRunning);
   const lastId = useAuiState((st) => st.thread.messages.at(-1)?.id ?? null);
@@ -51,6 +51,7 @@ export function StatusBar() {
   };
   const [loaded, setLoaded] = useState(false); // the first sync is done: the conversation is on the page
   const [s, setS] = useState<Status | null>(null);
+  useEffect(() => setBusy(!!s?.busy), [s?.busy]); // eslint-disable-line react-hooks/exhaustive-deps
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     const load = () =>

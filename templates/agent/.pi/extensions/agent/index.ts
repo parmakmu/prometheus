@@ -67,7 +67,7 @@ const REVISE_PROMPT = (change: string, branch: string, mode: string) => {
 	const where =
 		mode === "planning"
 			? "No run has started yet: plan (or continue planning) on main, editing plan.yaml directly."
-			: `You are on the change branch "${branch}", created from main with the revision bumped. Edit
+			: `You are on the change branch "${branch}", created from main with its plan unchanged. Edit
 plan.yaml, gates/, scripts/ and .pi/agents/ directly (packages: agent_add_package); anything in the plan may change. End with the
 user's review of the branch and agent_merge (merge, keep or discard).`;
 	return `Change this agent's plan following the "Changing the plan" section

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-import { ChevronDown, ChevronRight, CheckCircle2, Circle, Loader2, Pencil } from "lucide-react";
+import { ChevronDown, ChevronRight, CheckCircle2, Circle, Loader2, Lock, Pencil } from "lucide-react";
 import { useAui } from "@assistant-ui/react";
 import { api, send } from "./api";
 import { useAgent } from "./agent";
@@ -32,7 +32,7 @@ export type AgentSummary = {
   branch: string | null;
 };
 
-type Entry = { name: string; dir: boolean };
+type Entry = { name: string; dir: boolean; editable?: boolean }; // editable: the router says (prometheus's own files are not)
 
 function Section({ title, hint, count, children, open = true }: { title: string; hint?: string; count?: string; children: ReactNode; open?: boolean }) {
   const [shown, setShown] = useState(open);
@@ -59,14 +59,15 @@ function Tree({ slug, dir, depth = 0, editable }: { slug: string; dir: string; d
     <>
       {entries?.length === 0 && <p className="text-muted-foreground py-1 text-xs" style={{ paddingLeft: 8 + depth * 14 }}>Empty</p>}
       {entries?.map((e) => (
-        <Node key={e.name} slug={slug} path={`${dir}/${e.name}`.replace(/^\//, "")} dir={e.dir} depth={depth} editable={editable} />
+        <Node key={e.name} slug={slug} path={`${dir}/${e.name}`.replace(/^\//, "")} dir={e.dir} depth={depth} editable={editable && (e.dir || e.editable)} locked={editable && !e.dir && !e.editable ? KEPT : undefined} />
       ))}
     </>
   );
 }
 
-// `meta`: quiet facts at the row's end (a run's duration and cost), `metaTitle` on hover
-function Node({ slug, path, dir, depth = 0, label, meta, metaTitle, editable }: { slug: string; path: string; dir: boolean; depth?: number; label?: string; meta?: string; metaTitle?: string; editable?: boolean }) {
+// `meta`: quiet facts at the row's end (a run's duration and cost), `metaTitle` on hover; `locked`: why a file among
+// the editable ones is not, shown as a lock
+function Node({ slug, path, dir, depth = 0, label, meta, metaTitle, editable, locked }: { slug: string; path: string; dir: boolean; depth?: number; label?: string; meta?: string; metaTitle?: string; editable?: boolean; locked?: string }) {
   const { show, select } = useCanvas();
   const [open, setOpen] = useState(false);
   const key = `file:${slug}:${path}`;
@@ -79,7 +80,9 @@ function Node({ slug, path, dir, depth = 0, label, meta, metaTitle, editable }: 
         <button type="button" onClick={() => setOpen((o) => !o)} className={row} style={pad}>
           {open ? <ChevronDown className="text-muted-foreground size-3.5 shrink-0" /> : <ChevronRight className="text-muted-foreground size-3.5 shrink-0" />}
           <FolderIcon name={name.split(" ")[0]} open={open} />
-          <span className="truncate">{name}</span>
+          <span className="min-w-0 flex-1 truncate">{name}</span>
+          {/* a folder of files you can edit says so before it is opened */}
+          {editable && <Pencil className="size-3 shrink-0 text-emerald-700" aria-label="You can edit the files in this folder" />}
           {meta && <span title={metaTitle} className="text-muted-foreground ml-auto shrink-0 text-xs">{meta}</span>}
         </button>
       ) : (
@@ -87,6 +90,11 @@ function Node({ slug, path, dir, depth = 0, label, meta, metaTitle, editable }: 
           <FileIcon name={name} />
           <span className="min-w-0 flex-1 truncate">{name}</span>
           {editable && <Pencil className="size-3 shrink-0 text-emerald-700" aria-label="You can edit this file" />}
+          {locked && (
+            <span title={locked}>
+              <Lock className="text-muted-foreground size-3 shrink-0" />
+            </span>
+          )}
         </button>
       )}
       {dir && open && <Tree slug={slug} dir={path} depth={depth + 1} editable={editable} />}
@@ -146,14 +154,17 @@ function Steps({ w }: { w: AgentSummary }) {
 const lastInputs = new Map<string, Set<string>>();
 const lastOutputs = new Map<string, { run: string; path: string }[]>();
 
-// what shapes a run, as a small file explorer: only what the person reviews and changes
-const INPUT: { path: string; dir: boolean; label?: string }[] = [
+// what shapes a run, as a small file explorer: what the person reviews and changes; read-only, with why: the role
+// (and in subagents plan-critic and batcher), which a refresh rewrites, and the record /agent-improve keeps
+const KEPT = "Read-only: prometheus keeps this file (a refresh rewrites it)";
+const INPUT: { path: string; dir: boolean; label?: string; readOnly?: string }[] = [
   { path: "plan.yaml", dir: false },
-  { path: ".pi/APPEND_SYSTEM.md", dir: false },
+  { path: ".pi/APPEND_SYSTEM.md", dir: false, readOnly: KEPT },
   { path: "scripts", dir: true },
   { path: "gates", dir: true },
   { path: ".pi/agents", dir: true, label: "subagents" },
-];
+  { path: "improvements.yaml", dir: false, readOnly: "Read-only: /agent-improve's record of what it proposed and what you decided" },
+].sort((a, b) => Number(b.dir) - Number(a.dir) || (a.label ?? a.path.split("/").pop()!).localeCompare(b.label ?? b.path.split("/").pop()!)); // folders first, then by name, as in a folder
 
 function Input({ slug }: { slug: string }) {
   const [have, setHave] = useState<Set<string> | null>(() => lastInputs.get(slug) ?? null);
@@ -168,7 +179,7 @@ function Input({ slug }: { slug: string }) {
   return (
     <Section title="Input" hint="you can edit these">
       {INPUT.filter((i) => have?.has(i.path)).map((i) => (
-        <Node key={i.path} slug={slug} {...i} editable />
+        <Node key={i.path} slug={slug} {...i} editable={!i.readOnly} locked={i.readOnly} />
       ))}
     </Section>
   );

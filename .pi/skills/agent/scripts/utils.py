@@ -9,6 +9,7 @@ from pathlib import Path
 import typer
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
+from ruamel.yaml.scalarstring import FoldedScalarString
 
 # --- results ---------------------------------------------------------------------
 
@@ -43,7 +44,7 @@ def refuse(message, code=1, **extra):
 
 def rt_yaml():
     """Round-trip YAML in the plans' house style (quotes kept, no line wrapping, lists as
-    `  - key:`), so a load + dump changes only what was edited. It rejects repeated keys: a plain
+    `  - key:`; write_yaml folds long strings), so a load + dump changes only what was edited. It rejects repeated keys: a plain
     loader keeps the last one silently, so an edit that drops a `- id:` line would merge two list
     items."""
     y = YAML()
@@ -67,10 +68,39 @@ def read_yaml(path, default):
     return default if data is None else data
 
 
+FOLD = 72  # a long plain string is written as a folded block (`>-`), its lines about this long (indented, about 80)
+
+
+def fold_long(data):
+    """`data` with each long one-line plain string as a folded block scalar, broken at single spaces (the same
+    text when read back), so a plan's findings and notes read as paragraphs, not one 400-character line. Quoted
+    strings, and ones already in a block, are left as they are; so is the layout around them (blank lines)."""
+    if isinstance(data, (dict, list)):
+        for k, v in data.items() if isinstance(data, dict) else enumerate(data):
+            if (folded := fold_long(v)) is not v:
+                data[k] = folded  # in place: a rebuilt list or mapping loses its comments and blank lines
+                # a blank line after the value is kept as a comment that starts with the line's end; a block
+                # scalar ends its own line, so that newline would add a second blank line
+                after = (data.ca.items.get(k) or [None] * 4)[0 if isinstance(data, list) else 2] if hasattr(data, "ca") else None
+                if after is not None and after.value.startswith("\n"):
+                    after.value = after.value[1:]
+        return data
+    if type(data) is str and len(data) > FOLD + 12 and "\n" not in data and data == data.strip():
+        folded, start = FoldedScalarString(data), 0
+        folded.fold_pos = []
+        for i, ch in enumerate(data):
+            if ch == " " and i - start >= FOLD and data[i - 1] != " " and data[i + 1] != " ":
+                folded.fold_pos.append(i)
+                start = i + 1
+        return folded if folded.fold_pos else data  # nowhere to break (a long path): as it was
+    return data
+
+
 def write_yaml(path, data, header=""):
-    """Write YAML atomically (a temp file, then a rename), with `header` unless the text starts with a comment."""
+    """Write YAML atomically (a temp file, then a rename), with `header` unless the text starts with a comment;
+    long plain strings folded (fold_long)."""
     buf = io.StringIO()
-    rt_yaml().dump(data, buf)
+    rt_yaml().dump(fold_long(data), buf)
     text = buf.getvalue()
     path = Path(path)
     tmp = path.with_name(path.name + ".tmp")

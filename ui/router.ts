@@ -293,7 +293,8 @@ function listAgentFolder(cwd: string, dir: string, res: ServerResponse) {
 		.filter((e) => inAgent(cwd, path.relative(cwd, path.join(d, e.name))))
 		.map((e) => {
 			const s = statSync(path.join(d, e.name));
-			return { name: e.name, dir: s.isDirectory(), size: s.size, modified: s.mtime.toISOString() };
+			const rel = path.relative(cwd, path.join(d, e.name)).split(path.sep).join("/");
+			return { name: e.name, dir: s.isDirectory(), size: s.size, modified: s.mtime.toISOString(), editable: s.isFile() && editable(rel) };
 		})
 		.sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name));
 	send(res, 200, { root: cwd, dir: path.relative(cwd, d), path: d, entries });
@@ -309,15 +310,17 @@ function readAgentFile(cwd: string, rel: string, res: ServerResponse) {
 	send(res, 200, { size, text: bytes.includes(0) ? null : bytes.toString("utf8") });
 }
 
-// what the person may change in the page: the plan, the agent role, programs, gates and subagents
-const EDITABLE = /^(plan\.yaml|\.pi\/APPEND_SYSTEM\.md|(scripts|gates|\.pi\/agents)\/.+)$/;
+// what the person may change in the page: the plan, programs, gates and the agent's own subagents. Not the files
+// prometheus keeps in it (a refresh rewrites them from templates/agent: the role, plan-critic, batcher)
+const TEMPLATE = path.join(REPO, "templates", "agent");
+const editable = (rel: string) => /^(plan\.yaml|(scripts|gates|\.pi\/agents)\/.+)$/.test(rel) && !(rel.startsWith(".pi/") && existsSync(path.join(TEMPLATE, rel)));
 const MAX_EDIT = 1024 * 1024;
 
 // Saves a file of the agent. Once a run exists the edit goes to a change branch (begin-change opens or continues
 // revise/<date>-<n>), so main changes only by a reviewed merge; before the first run it is planning, on main.
 function saveAgentFile(user: string, cwd: string, rel: string, req: IncomingMessage, res: ServerResponse) {
 	const f = inAgent(cwd, rel);
-	if (!f || !EDITABLE.test(path.relative(cwd, f).split(path.sep).join("/")) || !existsSync(f) || !statSync(f).isFile()) return send(res, 400, "this file can't be edited here");
+	if (!f || !editable(path.relative(cwd, f).split(path.sep).join("/")) || !existsSync(f) || !statSync(f).isFile()) return send(res, 400, "this file can't be edited here");
 	const chunks: Buffer[] = [];
 	let size = 0;
 	req.on("data", (c: Buffer) => {
@@ -379,7 +382,7 @@ async function diffOf(cwd: string, asked: string, res: ServerResponse) {
 async function discardEdits(cwd: string, asked: string, res: ServerResponse) {
 	const f = inAgent(cwd, asked);
 	const rel = f ? path.relative(cwd, f).split(path.sep).join("/") : "";
-	if (!f || !EDITABLE.test(rel)) return send(res, 400, "this file can't be changed here");
+	if (!f || !editable(rel)) return send(res, 400, "this file can't be changed here");
 	// a wave's writer children are checked against the repo's staged index: leave it alone while a run is active
 	if (runActive(cwd)) return send(res, 409, "a run is active: discard edits once it has finished");
 	const { base } = await baseOf(cwd);

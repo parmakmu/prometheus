@@ -26,13 +26,13 @@ def fake_prometheus(tmp_path):
     return skill, git
 
 
-def test_a_clean_tree_is_version_plus_commit_and_each_dirty_content_has_its_own_label(tmp_path):
+def test_a_clean_tree_is_version_plus_commit_and_each_content_has_its_own_hash(tmp_path):
     skill, git = fake_prometheus(tmp_path)
     sha = git("rev-parse", "--short", "HEAD")
-    assert pv.current(skill) == f"1.2.3+{sha}"
+    assert pv.current(skill).startswith(f"1.2.3+{sha} ")
     (skill / "scripts" / "a.py").write_text("two\n")
     first = pv.current(skill)
-    assert first.startswith(f"1.2.3+{sha}.dirty-")
+    assert first.startswith(f"1.2.3+{sha}.dirty ")
     (skill / "scripts" / "a.py").write_text("three\n")
     assert pv.current(skill) != first  # other content, other label
     (skill / "scripts" / "a.py").write_text("two\n")
@@ -49,7 +49,7 @@ def test_a_commit_outside_the_skill_and_templates_keeps_the_version(tmp_path):
     assert pv.current(skill) == before
     (skill / "scripts" / "a.py").write_text("two\n")
     git("commit", "-qam", "skill")
-    assert pv.current(skill) == f"1.2.3+{git('rev-parse', '--short', 'HEAD')}"
+    assert pv.current(skill).startswith(f"1.2.3+{git('rev-parse', '--short', 'HEAD')} ")
 
 
 def test_a_stamped_copy_reports_its_stamp_and_a_foreign_project_has_none(tmp_path):
@@ -79,3 +79,16 @@ def test_refresh_stamps_the_version_names_it_in_the_commit_and_skips_a_current_a
     assert subject == f"Refresh from prometheus {version} (was 0.0.1+old)"
     # an explicit refresh (no --if-stale) always runs
     assert "skipped" not in run_py([SCAFFOLD, "ver", "--root", tmp_path, "--refresh"]).data
+
+
+def test_a_dirty_refresh_since_committed_unchanged_is_up_to_date(tmp_path):
+    skill, git = fake_prometheus(tmp_path)
+    (skill / "scripts" / "a.py").write_text("two\n")
+    dirty = pv.current(skill)  # what an agent refreshed from the uncommitted change is stamped
+    git("commit", "-qam", "two")
+    clean = pv.current(skill)
+    assert dirty != clean and pv.up_to_date(dirty, clean)
+    (skill / "scripts" / "a.py").write_text("three\n")
+    git("commit", "-qam", "three")
+    assert not pv.up_to_date(dirty, pv.current(skill))  # its content changed since
+    assert not pv.up_to_date("1.2.3+abc", pv.current(skill))  # no hash

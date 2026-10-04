@@ -23,9 +23,8 @@ agent. It never touches plan.yaml, .env, runs/, uploads/, gates/, scripts/ or ag
 the plan added.
 
 The agent is its own git repo (agent_git.py); both modes commit the result.
---if-stale (with --refresh) skips an agent whose skill copy already has this Prometheus's version
-(prometheus_version.py: pyproject version + commit, and a content hash when the skill has uncommitted
-changes); the version is written to .pi/skills/agent/VERSION and goes in the commit message.
+--if-stale (with --refresh) skips an agent that is up to date (prometheus_version.up_to_date: the same
+hash of the skill and templates); the version is written to .pi/skills/agent/VERSION and goes in the commit message.
 A refresh refuses while the agent has an active run (it rewrites the skill copy, including the
 batch tool a running map stage uses, and its commit would land on the run branch) or while a run
 or change branch is checked out for review.
@@ -169,7 +168,7 @@ def main(
         refuse(f"{agent_dir} {why}", 1)
     version = prometheus_version.current()
     was = prometheus_version.installed(agent_dir) if refresh else None
-    if refresh and if_stale and was and was == version:
+    if refresh and if_stale and was and prometheus_version.up_to_date(was, version):
         print(json.dumps({"ok": True, "agent": str(agent_dir.resolve()), "mode": "refresh", "prometheus_version": version,
                           "skipped": f"already at prometheus {version}"}))
         raise typer.Exit(0)
