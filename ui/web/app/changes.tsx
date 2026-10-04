@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { GitBranch, Trash2 } from "lucide-react";
 import { api, send } from "./api";
 import { useCanvas } from "./canvas";
+import { DiffEditor } from "./code-editor";
 
 export type Changes = { branch: string; base: string; files: { path: string; status: string }[] };
 
@@ -27,20 +28,20 @@ export const BranchChip = ({ branch }: { branch: string }) => (
   </span>
 );
 
-// a unified diff, added and removed lines coloured
+// a file next to main's copy (on main: the last commit's), side by side
 export function DiffView({ slug, path }: { slug: string; path: string }) {
-  const [diff, setDiff] = useState<string | null>(null);
-  useEffect(() => void api<{ diff: string }>(`/w/${slug}/diff?path=${encodeURIComponent(path)}`).then((d) => setDiff(d.diff), () => setDiff("")), [slug, path]);
-  if (diff === null) return null;
-  if (!diff.trim()) return <p className="text-muted-foreground text-sm">No difference from main.</p>;
+  const [sides, setSides] = useState<{ before: string | null; after: string | null } | null>(null);
+  useEffect(() => void api<{ before: string | null; after: string | null }>(`/w/${slug}/diff?path=${encodeURIComponent(path)}`).then(setSides, () => setSides({ before: null, after: null })), [slug, path]);
+  if (sides === null) return null;
+  if (sides.before === sides.after) return <p className="text-muted-foreground text-sm">No difference from main.</p>;
   return (
-    <pre className="bg-card overflow-auto rounded-xl border py-2 text-xs">
-      {diff.split("\n").map((l, i) => (
-        <div key={i} className={`px-3 whitespace-pre-wrap ${l.startsWith("+") && !l.startsWith("+++") ? "bg-emerald-100/70 text-emerald-900" : l.startsWith("-") && !l.startsWith("---") ? "bg-red-100/70 text-red-900" : l.startsWith("@@") ? "text-sky-700" : l.startsWith("diff") || l.startsWith("index") || l.startsWith("---") || l.startsWith("+++") ? "text-muted-foreground" : ""}`}>
-          {l || " "}
-        </div>
-      ))}
-    </pre>
+    <div>
+      <div className="text-muted-foreground mb-1 grid grid-cols-2 text-xs">
+        <span>{sides.before === null ? "Not on main" : "main"}</span>
+        <span className="ps-2">{sides.after === null ? "Deleted" : "Now"}</span>
+      </div>
+      <DiffEditor name={path} before={sides.before ?? ""} after={sides.after ?? ""} />
+    </div>
   );
 }
 

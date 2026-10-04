@@ -3,13 +3,14 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useAui, useAuiState, AuiProvider, AuiConfig, Suggestions } from "@assistant-ui/react";
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
-import { Flame, FolderOpen, MoreHorizontal, PlusIcon, RefreshCw, SquareTerminal } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { ChevronRight, CircleArrowUp, Flame, FolderOpen, ListChecks, MoreHorizontal, PlusIcon, RefreshCw, SquareTerminal, Workflow as WorkflowIcon } from "lucide-react";
 import { AskCard, CheckCard, ModelsCard, PiPanelCard, QuestionCard, ScaffoldCard, SubagentCard } from "./cards";
 import { CanvasPanel, useCanvas } from "./canvas";
 import { StatusBar } from "./status-bar";
 import { api } from "./api";
 import { useAgent } from "./agent";
-import { Conversations } from "./conversations";
+import { Conversations, sidebarRow } from "./conversations";
 import { Workspace, type Run, type WorkflowSummary } from "./workspace";
 import { References } from "./references";
 import { TerminalPanel } from "./terminal";
@@ -106,49 +107,123 @@ function RunsTable({ runs }: { runs: (Run & { slug?: string })[] }) {
   );
 }
 
+// A "…" button opening a short list of actions. The list is fixed under the button, so a scrolling list around it
+// (the sidebar's workflows) doesn't clip it; a click anywhere else closes it. `className` places the button; `plain`
+// drops its border (in a row).
+function MoreMenu({ actions, className = "relative", plain = false }: { actions: [string, () => void][]; className?: string; plain?: boolean }) {
+  const [at, setAt] = useState<{ top: number; right: number } | null>(null);
+  useEffect(() => {
+    if (!at) return;
+    const close = () => setAt(null);
+    window.addEventListener("click", close);
+    window.addEventListener("resize", close);
+    return () => (window.removeEventListener("click", close), window.removeEventListener("resize", close));
+  }, [at]);
+  return (
+    <div className={className} style={at ? { display: "block" } : undefined /* open: shown even when it shows on hover */}>
+      <button
+        type="button"
+        title="More"
+        onClick={(e) => {
+          e.stopPropagation();
+          const r = e.currentTarget.getBoundingClientRect();
+          setAt(at ? null : { top: r.bottom + 4, right: window.innerWidth - r.right });
+        }}
+        className={plain ? "hover:bg-background rounded-md px-1.5 py-0.5 text-xs" : "hover:bg-accent rounded-md border px-2 py-1 text-xs"}
+      >
+        <MoreHorizontal className="size-3.5" />
+      </button>
+      {at && (
+        <div style={{ top: at.top, right: at.right }} className="bg-popover fixed z-50 w-56 overflow-hidden rounded-lg border py-1 shadow-lg">
+          {actions.map(([title, act]) => (
+            <button key={title} type="button" onClick={(e) => (e.stopPropagation(), setAt(null), act())} className="hover:bg-accent block w-full px-3 py-1.5 text-left text-sm">
+              {title}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Sidebar({ workflows, error, load }: ReturnType<typeof useWorkflows>) {
-  const aui = useAui();
-  const { show, select } = useCanvas();
-  const { agent, setAgent } = useAgent();
-  const entry = (active: boolean) => `w-full rounded-lg px-3 py-2 text-left ${active ? "bg-accent" : "hover:bg-accent/60"}`;
+  const { select } = useCanvas();
+  const { agent, session, setAgent, open } = useAgent();
+  const row = sidebarRow;
+  const icon = "size-4 shrink-0 opacity-80";
+  // a command for prometheus: in the conversation with it that is open, else its latest; one that changes files
+  // waits in the composer to be sent
+  const ask = (command: string, send = false) => (open("/p", agent === "/p" ? session : null, command, send), select(null));
+  const stale = workflows.filter((w) => w.stale).map((w) => w.slug);
+  const [openRow, setOpenRow] = useState<string | null>(null); // the workflow whose actions show under it
   return (
     <aside className="bg-muted/30 flex w-64 shrink-0 flex-col border-r">
-      <div className="flex items-center gap-2 px-4 py-4 font-semibold">
-        <Flame className="text-primary size-5" /> prometheus
-      </div>
-
-      <div className="flex items-center justify-between px-4 pb-1 text-xs">
-        <span className="text-muted-foreground">Workflows</span>
-        <span className="flex gap-2">
-          <button type="button" onClick={load} title="Refresh" className="text-muted-foreground hover:text-foreground">
-            <RefreshCw className="size-3.5" />
-          </button>
-          <button type="button" onClick={() => aui.thread().composer().setText("/workflow-new ")} title="New workflow" className="text-muted-foreground hover:text-foreground">
-            <PlusIcon className="size-3.5" />
-          </button>
-        </span>
-      </div>
-      <div className="max-h-[50%] overflow-y-auto px-2">
-        <button type="button" onClick={() => (setAgent("/p"), select(null))} className={entry(agent === "/p")}>
-          <span className="flex items-center gap-2 text-sm font-medium">
-            <Flame className="text-primary size-3.5" /> prometheus
-          </span>
-          <span className="text-muted-foreground text-xs">plans new workflows</span>
+      {/* prometheus is not one of the workflows: it is where they are planned, so it comes first, as the sidebar's title,
+          and a row like the others (its chat opens on a click); its commands under it */}
+      <nav className="space-y-0.5 px-4 pt-3">
+        <button type="button" onClick={() => (setAgent("/p"), select(null))} title="Talk to prometheus, the planner" className={cn(row(agent === "/p"), "mb-2 py-2 text-base font-semibold")}>
+          <Flame className="text-primary size-5 shrink-0" /> prometheus
         </button>
-        {error && <p className="px-2 text-xs text-red-600">{error}</p>}
-        {workflows.map((w) => (
+        <button type="button" onClick={() => (open("/p", `new-${crypto.randomUUID().slice(0, 8)}`, "/workflow-new "), select(null))} className={row()}>
+          <PlusIcon className={icon} /> New workflow
+        </button>
+        <button type="button" onClick={() => ask("/workflow-list", true)} className={row()}>
+          <ListChecks className={icon} /> My workflows
+        </button>
+        {/* one out of date: named, and only it is refreshed; more: all of them */}
+        {stale.length > 0 && (
           <button
-            key={w.slug}
             type="button"
-            onClick={() => (setAgent(`/w/${w.slug}`), select(null))}
-            className={entry(agent === `/w/${w.slug}`)}
+            onClick={() => ask(`/workflow-refresh ${stale.length === 1 ? stale[0] : "--all"}`)}
+            title="Bring their copy of the skill up to this prometheus's version"
+            className={row()}
           >
-            <span className="flex items-center gap-2 text-sm">
-              <span className="truncate font-mono">{w.slug}</span>
-              {needsYou(w) && <span className="ml-auto size-2 shrink-0 rounded-full bg-violet-500" title="Waiting for you" />}
-            </span>
-            <span className="text-muted-foreground text-xs">{stateOf(w).label}</span>
+            <CircleArrowUp className={icon} />
+            <span className="truncate">{stale.length === 1 ? `Update ${stale[0]}` : `Update ${stale.length} workflows`}</span>
           </button>
+        )}
+      </nav>
+
+      {/* a heading as the title: what is not a row is not clickable */}
+      <div className="flex items-center justify-between px-6 pt-6 pb-1.5">
+        <span className="text-base font-semibold">Workflows</span>
+        <button type="button" onClick={load} title="Refresh" className="text-muted-foreground hover:text-foreground">
+          <RefreshCw className="size-3.5" />
+        </button>
+      </div>
+      <div className="max-h-[45%] space-y-0.5 overflow-y-auto px-4">
+        {error && <p className="px-2 text-xs text-red-600">{error}</p>}
+        {!error && !workflows.length && <p className="text-muted-foreground px-2 py-1 text-xs">None yet: New workflow plans one.</p>}
+        {workflows.map((w) => (
+          <div key={w.slug}>
+            <div className={row(agent === `/w/${w.slug}`)}>
+              <button type="button" onClick={() => (setAgent(`/w/${w.slug}`), select(null))} title={`${w.slug}: ${stateOf(w).label}`} className="min-w-0 flex-1 truncate text-left">
+                {w.slug}
+              </button>
+              {/* only what calls for attention, as dots (in words on hover) */}
+              {w.active_run && <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-sky-500" title="Running" />}
+              {needsYou(w) && <span className="size-1.5 shrink-0 rounded-full bg-violet-500" title={stateOf(w).label} />}
+              {w.stale && <span className="size-1.5 shrink-0 rounded-full bg-amber-500" title="Its copy of the skill is older than this prometheus's: Update to the current skill" />}
+              <button type="button" onClick={() => setOpenRow(openRow === w.slug ? null : w.slug)} title={openRow === w.slug ? "Hide its actions" : "Show its actions"} className="text-muted-foreground hover:text-foreground -me-1 shrink-0 rounded p-0.5">
+                <ChevronRight className={`size-3.5 transition-transform ${openRow === w.slug ? "rotate-90" : ""}`} />
+              </button>
+            </div>
+            {/* its actions, under it: its status in its own chat; prometheus's commands for it (they work on the folder
+                from outside) in prometheus's */}
+            {openRow === w.slug && (
+              <div className="ms-4 mt-0.5 mb-1 space-y-0.5 border-s ps-1.5">
+                <button type="button" onClick={() => (open(`/w/${w.slug}`, null, "/workflow-status", true), select(null))} className={row()}>
+                  Status
+                </button>
+                <button type="button" onClick={() => ask(`/workflow-refresh ${w.slug}`)} className={row()}>
+                  Update to the current skill
+                </button>
+                <button type="button" onClick={() => ask(`/workflow-export ${w.slug} `)} className={row()}>
+                  Export…
+                </button>
+              </div>
+            )}
+          </div>
         ))}
       </div>
 
@@ -204,22 +279,20 @@ function ChatHeader({ workflows }: { workflows: Workflow[] }) {
   const { agent, slug, label } = useAgent();
   const { show } = useCanvas();
   const aui = useAui();
-  const [menu, setMenu] = useState(false);
-  const run = (command: string) => (setMenu(false), aui.thread().append(command));
+  const run = (command: string) => void aui.thread().append(command);
   const actions: [string, () => void][] = [
     ["Conversation info", () => run("/session")],
     ["Rename…", () => {
       const name = prompt("Name this conversation");
       if (name?.trim()) run(`/name ${name.trim()}`);
-      else setMenu(false);
     }],
     ["Reload extensions and skills", () => run("/reload")],
   ];
   const w = workflows.find((x) => x.slug === slug);
   return (
     <div className="flex items-center gap-2 border-b px-4 py-2.5 text-sm">
-      <Flame className="text-primary size-4" />
-      <span className="font-medium">{label}</span>
+      {slug ? <WorkflowIcon className="text-muted-foreground size-4" /> : <Flame className="text-primary size-4" />}
+      <span className={`font-medium ${slug ? "font-mono" : ""}`}>{label}</span>
       <span className="text-muted-foreground text-xs">{slug ? "workflow agent" : "planner"}</span>
       {w && <span className={`ml-auto rounded-full px-2 py-0.5 text-xs ${stateOf(w).tone}`}>{stateOf(w).label}</span>}
       <button
@@ -230,20 +303,7 @@ function ChatHeader({ workflows }: { workflows: Workflow[] }) {
       >
         <SquareTerminal className="size-3.5" /> Terminal
       </button>
-      <div className="relative">
-        <button type="button" onClick={() => setMenu((m) => !m)} title="More" className="hover:bg-accent rounded-md border px-2 py-1 text-xs">
-          <MoreHorizontal className="size-3.5" />
-        </button>
-        {menu && (
-          <div className="bg-popover absolute right-0 z-20 mt-1 w-56 overflow-hidden rounded-lg border py-1 shadow-lg">
-            {actions.map(([title, act]) => (
-              <button key={title} type="button" onClick={act} className="hover:bg-accent block w-full px-3 py-1.5 text-left text-sm">
-                {title}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
+      <MoreMenu actions={actions} />
     </div>
   );
 }
@@ -314,7 +374,7 @@ export default function Home() {
       slug
         ? [
             { title: "Run it", label: "start or continue a run", prompt: "/workflow-run" },
-            { title: "Where it stands", label: "plan, runs, what waits", prompt: "/workflow-status" },
+            { title: "Status", label: "plan, runs, what waits", prompt: "/workflow-status" },
           ]
         : [
             { title: "List workflows", label: "and where each stands", prompt: "/workflow-list" },

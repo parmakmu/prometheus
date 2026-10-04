@@ -107,11 +107,10 @@ function firstWord(args: string): [string, string] {
 	return i === -1 ? [t, ""] : [t.slice(0, i), t.slice(i).trim()];
 }
 
+// a markdown table (the first row its header): Pi's terminal and the web app both draw it as a table
 function table(rows: string[][]): string {
-	const widths = rows[0].map((_, i) => Math.max(...rows.map((r) => (r[i] ?? "").length)));
-	const text = rows.map((r) => r.map((c, i) => (c ?? "").padEnd(widths[i])).join("  ").trimEnd()).join("\n");
-	// shown as markdown: a fence keeps the line breaks and the column padding
-	return "```\n" + text + "\n```";
+	const line = (r: string[]) => `| ${r.map((c) => (c ?? "").replace(/\|/g, "\\|")).join(" | ")} |`;
+	return [line(rows[0]), line(rows[0].map(() => "---")), ...rows.slice(1).map(line)].join("\n");
 }
 
 function slugs(root: string, prefix = ""): string[] {
@@ -223,19 +222,19 @@ export default function prometheus(pi: ExtensionAPI) {
 			if (slug) {
 				const res = await check(pi, root, slug);
 				const s = res.summary ?? {};
+				// a markdown list: one line each, in the terminal and the web app alike
 				show(
 					`Workflow ${slug}`,
 					[
-						`status: ${res.status}   revision: ${s.revision ?? "?"}   active run: ${s.run?.id ?? "none"}   next wave: ${s.run ? (s.next_wave ?? "none") : "-"}`,
-						`waves to go${s.run ? "" : " in a new run"}: ${(s.waves ?? []).map((w: any) => `${w.id}:[${w.stages.join(",")}]${w.ends_with === "none" ? "" : ` then ${w.ends_with}`}`).join("  ") || "none"}`,
-						`provisional: ${(s.provisional ?? []).join(", ") || "none"}`,
-						`open questions: ${s.open_questions ?? 0}   approvals: ${(s.approvals ?? []).join(", ") || "none"}`,
-						`missing params: ${(s.workflow?.missing_params ?? []).join(", ") || "none"}   secrets: ${(s.workflow?.missing_secrets ?? []).join(", ") || "none"}`,
-						`plan valid: ${res.valid}   compiles: ${res.compiles}`,
-						...res.errors.map((e: string) => `  error: ${e}`),
-						...Object.entries(res.compile_errors as Record<string, string[]>).flatMap(([w, es]) =>
-							es.map((e) => `  compile ${w}: ${e}`),
-						),
+						`- **Status:** ${res.status}, revision ${s.revision ?? "?"}`,
+						`- **Active run:** ${s.run?.id ?? "none"}${s.run ? `, next wave ${s.next_wave ?? "none"}` : ""}`,
+						`- **Waves to go${s.run ? "" : " in a new run"}:** ${(s.waves ?? []).map((w: any) => `${w.id} (${w.stages.join(", ")}${w.ends_with === "none" ? "" : `, then ${w.ends_with}`})`).join("; ") || "none"}`,
+						`- **Provisional stages:** ${(s.provisional ?? []).join(", ") || "none"}`,
+						`- **Open questions:** ${s.open_questions ?? 0}; **approvals:** ${(s.approvals ?? []).join(", ") || "none"}`,
+						`- **Missing params:** ${(s.workflow?.missing_params ?? []).join(", ") || "none"}; **secrets:** ${(s.workflow?.missing_secrets ?? []).join(", ") || "none"}`,
+						`- **Plan valid:** ${res.valid ? "yes" : "no"}; **compiles:** ${res.compiles ? "yes" : "no"}`,
+						...res.errors.map((e: string) => `- Error: ${e}`),
+						...Object.entries(res.compile_errors as Record<string, string[]>).flatMap(([w, es]) => es.map((e) => `- Compile ${w}: ${e}`)),
 					].join("\n"),
 				);
 				return;
@@ -246,18 +245,20 @@ export default function prometheus(pi: ExtensionAPI) {
 				show("Workflows", "No workflows yet. Create one with /workflow-new <request>.");
 				return;
 			}
-			const rows = [["slug", "status", "rev", "runs", "active run", "next", "open q", "last run", "prometheus"]];
+			// five short columns: the state says what is under way and what waits; the rest only when it matters
+			const rows = [["Workflow", "State", "Runs", "Last run", "Skill"]];
 			for (const b of list) {
+				const open = (b.open_questions ?? []).length;
 				rows.push([
 					b.slug,
-					String(b.status ?? "?"),
-					String(b.revision ?? ""),
+					[
+						`${b.status ?? "?"} (r${b.revision ?? "?"})`,
+						b.active_run ? `running ${b.active_run}, ${b.stages_done ?? 0}/${b.stages_total ?? 0} stages` : "",
+						open ? `${open} open question${open === 1 ? "" : "s"}` : "",
+					].filter(Boolean).join("; "),
 					String(b.runs ?? 0),
-					b.active_run ? `${b.active_run} (${b.stages_done ?? 0}/${b.stages_total ?? 0} stages)` : "-",
-					String(b.next_wave ?? "-"),
-					String((b.open_questions ?? []).length),
 					b.last_run ? `${b.last_run.id} ${b.last_run.status}` : "-",
-					b.prometheus_version ? `${b.prometheus_version}${b.stale ? " (stale)" : ""}` : "unknown",
+					!b.prometheus_version ? "unknown" : b.stale ? "update: /workflow-refresh" : "current",
 				]);
 			}
 			show("Workflows", table(rows));

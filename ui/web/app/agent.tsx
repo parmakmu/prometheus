@@ -14,6 +14,12 @@ type Agent = {
   label: string;
   setAgent: (agent: string) => void;
   setSession: (session: string | null) => void;
+  // another agent and conversation at once, with `text` waiting in its composer (New workflow: prometheus, a fresh
+  // conversation, "/workflow-new "), or sent when `send` (a command that only reads, as /workflow-list); the status
+  // bar puts it there, once the conversation has loaded (status-bar.tsx)
+  open: (agent: string, session: string | null, text?: string, send?: boolean) => void;
+  draft: { text: string; send: boolean } | null;
+  clearDraft: () => void;
 };
 const AgentContext = createContext<Agent | null>(null);
 export const useAgent = () => useContext(AgentContext)!;
@@ -37,10 +43,12 @@ export function AgentProvider({ children }: { children: ReactNode }) {
     window.history.replaceState(null, "", hash ? `#${hash}` : window.location.pathname + window.location.search);
     set([a, s]);
   };
+  // state, not a ref: a command for the conversation already open (no remount) reaches it too
+  const [draft, setDraft] = useState<{ text: string; send: boolean } | null>(null);
   const slug = agent.startsWith("/w/") ? agent.slice(3) : null;
   const base = session ? `${agent}/s/${session}` : agent;
   return (
-    <AgentContext.Provider value={{ agent, slug, session, base, label: slug ?? "prometheus", setAgent: (a) => go(a, null), setSession: (s) => go(agent, s) }}>
+    <AgentContext.Provider value={{ agent, slug, session, base, label: slug ?? "prometheus", setAgent: (a) => go(a, null), setSession: (s) => go(agent, s), open: (a, s, text, send = false) => (setDraft(text ? { text, send } : null), go(a, s)), draft, clearDraft: () => setDraft(null) }}>
       {children}
     </AgentContext.Provider>
   );

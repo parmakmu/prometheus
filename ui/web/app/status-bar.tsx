@@ -36,7 +36,7 @@ function Chip({ icon, children, title }: { icon: React.ReactNode; children: Reac
 // Below the chat, like pi-cc-extensions' footer: the session's model, context, cache, tokens and cost
 export function StatusBar() {
   const aui = useAui();
-  const { base: agent } = useAgent(); // this conversation's endpoints
+  const { base: agent, draft, clearDraft } = useAgent(); // this conversation's endpoints, and a command left for it
   const { show, remove } = useCanvas();
   const running = useAuiState((st) => st.thread.isRunning);
   const lastId = useAuiState((st) => st.thread.messages.at(-1)?.id ?? null);
@@ -44,12 +44,12 @@ export function StatusBar() {
   // a question waiting for an answer: no run may start (the answer resumes it)
   const asking = useAgUiInterrupts().length > 0;
   // refused (say, a question just opened): ignored, the next poll tries again
-  const sync = () =>
-    void (async () => {
-      try {
-        await (aui.thread().startRun({ parentId: lastId }) as unknown);
-      } catch {}
-    })();
+  const sync = async () => {
+    try {
+      await (aui.thread().startRun({ parentId: lastId }) as unknown);
+    } catch {}
+  };
+  const [loaded, setLoaded] = useState(false); // the first sync is done: the conversation is on the page
   const [s, setS] = useState<Status | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -66,15 +66,28 @@ export function StatusBar() {
   useEffect(() => {
     if (synced.current || !s || asking) return;
     synced.current = true;
-    sync();
+    void sync().then(() => setLoaded(true));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [s]);
   // …and whenever the agent is busy, or shows a panel, without a run of ours
   const wants = !!(s?.busy || s?.panels);
   useEffect(() => {
-    if (synced.current && wants && !running && !asking) sync();
+    if (synced.current && wants && !running && !asking) void sync();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wants, running, asking]);
+  // A command another part of the page left for this conversation (useAgent's open): text for the composer at once; a
+  // command to send once the conversation has loaded and no run is going, since a run started during the first sync
+  // lost its stream to it (the command ran, the page never showed it). React runs effects twice in development: a
+  // draft is used once.
+  const used = useRef<object | null>(null);
+  useEffect(() => {
+    if (!draft || used.current === draft || (draft.send && (!loaded || running || asking))) return;
+    used.current = draft;
+    clearDraft();
+    if (draft.send) void aui.thread().append(draft.text);
+    else aui.thread().composer().setText(draft.text);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft, loaded, running, asking]);
 
   if (!s) return <div className="text-muted-foreground border-t px-4 py-2 text-xs">{error ?? "agent server not running: start it with npm run ui:server"}</div>;
   const pct = s.context?.percent ?? null;

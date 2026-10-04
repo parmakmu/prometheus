@@ -570,8 +570,9 @@ export default function workflowAgent(pi: ExtensionAPI) {
 			for (const [w, es] of Object.entries(chk.compile_errors as Record<string, string[]>)) {
 				for (const e of es) lines.push(`  compile ${w}: ${e}`);
 			}
-			lines.push("A running wave is shown as last recorded; /workflow-run checks it live.");
-			show(`Workflow ${path.basename(root)}`, lines.join("\n"));
+			// a markdown list, each line's label in bold: one line each in the terminal and the web app alike
+			const item = (l: string) => `- ${l.trim().replace(/^([^:]+):/, "**$1:**")}`;
+			show(`Workflow ${path.basename(root)}`, `${lines.map(item).join("\n")}\n\nA running wave is shown as last recorded; /workflow-run checks it live.`);
 		},
 	});
 

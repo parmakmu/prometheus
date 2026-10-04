@@ -1,12 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { isValidElement, type ReactNode, useEffect, useState } from "react";
 import { CheckCircle2, ChevronRight, Circle, Loader2, XCircle } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api } from "./api";
 import { useAgent } from "./agent";
 import { useCanvas } from "./canvas";
+import { CodeBlock } from "./code-editor";
+import { PRIVATE_THOUGHT, StepRow, Thought } from "@/components/assistant-ui/elements/steps";
 
 // A launch's subagents, as pi-subagents records them (GET /…/wave): a wave of a run, or the plan critic. The chat
 // shows one live line per launch, opening to one row per subagent; a subagent opens its log in the drawer.
@@ -20,7 +22,7 @@ const isProgram = (c: Child) => !!c.program || c.agent === "workflow-batcher";
 type Wave = { id: string; state: string; startedAt: number | null; endedAt: number | null; cost: number | null; children: Child[] };
 
 const DONE = new Set(["complete", "completed", "done", "succeeded"]);
-const FAILED = new Set(["failed", "error", "cancelled", "canceled", "stopped"]);
+const FAILED = new Set(["failed", "error", "cancelled", "canceled", "stopped", "blocked"]); // blocked: a launch as run.yaml records it
 const over = (state?: string) => !!state && (DONE.has(state) || FAILED.has(state));
 export const money = (n?: number | null) => (n ? `$${n < 0.01 ? n.toFixed(4) : n.toFixed(2)}` : "");
 const took = (from?: number | null, to?: number | null) => {
@@ -34,12 +36,13 @@ const took = (from?: number | null, to?: number | null) => {
 export function StateIcon({ state }: { state?: string }) {
   if (state && DONE.has(state)) return <CheckCircle2 className="size-3.5 shrink-0 text-emerald-600" />;
   if (state && FAILED.has(state)) return <XCircle className="size-3.5 shrink-0 text-red-600" />;
-  if (state === "queued" || state === "pending") return <Circle className="text-muted-foreground size-3.5 shrink-0" />;
+  if (state === "queued" || state === "pending" || state === "unknown") return <Circle className="text-muted-foreground size-3.5 shrink-0" />;
   return <Loader2 className="size-3.5 shrink-0 animate-spin text-sky-600" />;
 }
 
-// A subagent's work in the drawer, read like the main agent's Details: its task (folded), then its thoughts, tool
-// calls (a line each, opening to the call and its result) and text, in order; refreshed while it runs.
+// A subagent's work in the drawer, read like the main agent's Details (the same thought and step lines): its task
+// (folded), then its thoughts, tool calls (a line each in words, opening to the call and its result) and notes, in
+// order, then its answer; refreshed while it runs.
 type Step = {
   kind: "task" | "thought" | "text" | "tool" | "program"; text?: string; name?: string; args?: string; result?: string | null; failed?: boolean;
   command?: string | null; gate?: string | null; exit?: number | null; stdout?: string; stderr?: string; gateExit?: number | null; gateOutput?: string;
@@ -66,38 +69,96 @@ function ProgramStep({ s }: { s: Step }) {
   );
 }
 
-function Markdown({ text }: { text: string }) {
-  return (
-    <div className="space-y-2 text-sm leading-relaxed [&_code]:bg-muted [&_code]:rounded [&_code]:px-1 [&_h1]:font-semibold [&_h2]:font-semibold [&_h3]:font-semibold [&_li]:ms-4 [&_ol]:list-decimal [&_pre]:bg-muted [&_pre]:overflow-auto [&_pre]:rounded-lg [&_pre]:p-2 [&_table]:text-xs [&_td]:border [&_td]:px-1.5 [&_th]:border [&_th]:px-1.5 [&_ul]:list-disc">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
-    </div>
-  );
-}
+// The acceptance report pi-subagents asks a child for (a fenced `acceptance-report` JSON block ending its answer), as
+// a card: each criterion met or not with its evidence, then what it changed and ran and what it noticed.
+type Report = {
+  criteriaSatisfied?: { id?: string; status?: string; evidence?: string }[]; diffSummary?: string; changedFiles?: string[]; testsAddedOrUpdated?: string[];
+  commandsRun?: { command?: string; result?: string; summary?: string }[]; validationOutput?: string[]; reviewFindings?: string[]; residualRisks?: string[]; manualNotes?: string;
+};
+const inWorkflow = (p: string) => p.replace(/^.*\/workflows\/[^/]+\//, ""); // a path as the workflow's folder sees it
 
-function ToolStep({ s }: { s: Step }) {
-  const [open, setOpen] = useState(false);
-  let summary = "";
-  try {
-    const a = JSON.parse(s.args ?? "{}");
-    summary = String(a.command ?? a.path ?? a.pattern ?? a.file ?? Object.values(a)[0] ?? "");
-  } catch {}
+function AcceptanceReport({ r }: { r: Report }) {
+  const list = (label: string, items?: string[]) =>
+    items?.length ? (
+      <div>
+        <p className="text-muted-foreground text-xs font-medium">{label}</p>
+        <ul className="ms-4 list-disc">{items.map((x, i) => <li key={i}>{x}</li>)}</ul>
+      </div>
+    ) : null;
   return (
-    <div className="text-sm">
-      <button type="button" onClick={() => setOpen((o) => !o)} className="text-muted-foreground hover:text-foreground flex w-full items-center gap-1.5 text-left">
-        {s.failed ? <XCircle className="size-3.5 shrink-0 text-red-600" /> : <CheckCircle2 className="size-3.5 shrink-0" />}
-        <span className="text-foreground font-medium">{s.name}</span>
-        <span className="truncate font-mono text-xs">{summary.split("\n")[0]}</span>
-        <ChevronRight className={`ml-auto size-3.5 shrink-0 transition-transform ${open ? "rotate-90" : ""}`} />
-      </button>
-      {open && (
-        <div className="mt-1 space-y-1.5 ps-5">
-          <pre className="bg-muted overflow-auto rounded-lg p-2 text-xs whitespace-pre-wrap">{s.args}</pre>
-          {s.result !== null && s.result !== undefined && <pre className="bg-muted/60 max-h-80 overflow-auto rounded-lg p-2 text-xs whitespace-pre-wrap">{s.result || "(no output)"}</pre>}
+    <div className="bg-muted/30 space-y-3 rounded-xl border p-3 text-sm">
+      <p className="font-medium">Acceptance report</p>
+      {r.criteriaSatisfied?.map((c, i) => (
+        <p key={i} className="flex gap-2">
+          {c.status === "satisfied" ? <CheckCircle2 className="mt-0.5 size-3.5 shrink-0 text-emerald-600" /> : <XCircle className="mt-0.5 size-3.5 shrink-0 text-red-600" />}
+          <span>
+            {c.evidence}
+            {c.status !== "satisfied" && <span className="text-muted-foreground"> ({c.status})</span>}
+          </span>
+        </p>
+      ))}
+      {r.diffSummary && <p>{r.diffSummary}</p>}
+      {r.changedFiles?.length ? (
+        <div>
+          <p className="text-muted-foreground text-xs font-medium">Files changed</p>
+          {r.changedFiles.map((f) => <p key={f} title={f} className="font-mono text-xs">{inWorkflow(f)}</p>)}
+        </div>
+      ) : null}
+      {list("Tests added or updated", r.testsAddedOrUpdated)}
+      {r.commandsRun?.length ? (
+        <div>
+          <p className="text-muted-foreground text-xs font-medium">Commands run</p>
+          {r.commandsRun.map((c, i) => (
+            <p key={i}>
+              <span className="font-mono text-xs">{c.command}</span>
+              {c.result && <span className={c.result === "passed" ? "text-emerald-700" : "text-red-600"}> · {c.result}</span>}
+              {c.summary && <span className="text-muted-foreground block">{c.summary}</span>}
+            </p>
+          ))}
+        </div>
+      ) : null}
+      {list("Checks", r.validationOutput)}
+      {list("Review findings", r.reviewFindings)}
+      {list("Residual risks", r.residualRisks)}
+      {r.manualNotes && (
+        <div>
+          <p className="text-muted-foreground text-xs font-medium">Notes</p>
+          <p>{r.manualNotes}</p>
         </div>
       )}
     </div>
   );
 }
+
+// a fenced block in markdown: the <pre> around one <code class="language-…">, drawn read-only in CodeMirror (an
+// acceptance report as its card)
+function MarkdownCode({ children }: { children?: ReactNode }) {
+  const code = isValidElement<{ className?: string; children?: ReactNode }>(children) ? children.props : { children };
+  const language = code.className?.match(/language-(\S+)/)?.[1];
+  const text = String(code.children ?? "");
+  if (language === "acceptance-report") {
+    try {
+      return <AcceptanceReport r={JSON.parse(text)} />;
+    } catch {} // not JSON (yet, or at all): as code
+  }
+  return <CodeBlock language={language === "acceptance-report" ? "json" : language} code={text} />;
+}
+
+function Markdown({ text }: { text: string }) {
+  return (
+    <div className="space-y-2 text-sm leading-relaxed [&_code]:bg-muted [&_code]:rounded [&_code]:px-1 [&_h1]:font-semibold [&_h2]:font-semibold [&_h3]:font-semibold [&_li]:ms-4 [&_ol]:list-decimal [&_table]:text-xs [&_td]:border [&_td]:px-1.5 [&_th]:border [&_th]:px-1.5 [&_ul]:list-disc">
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ pre: MarkdownCode }}>{text}</ReactMarkdown>
+    </div>
+  );
+}
+
+const argsOf = (text?: string): Record<string, unknown> => {
+  try {
+    return JSON.parse(text ?? "{}");
+  } catch {
+    return {};
+  }
+};
 
 function ChildLog({ agentPath, runId, live }: { agentPath: string; runId: string; live: boolean }) {
   const [steps, setSteps] = useState<Step[] | null>(null);
@@ -111,24 +172,31 @@ function ChildLog({ agentPath, runId, live }: { agentPath: string; runId: string
   }, [agentPath, runId, live]);
   if (steps === null) return null;
   if (!steps.length) return <p className="text-muted-foreground text-sm">Nothing recorded yet.</p>;
+  // its answer: the text it ended with, below its steps (as the main agent's reply sits below its Details)
+  const last = steps.length - 1;
+  const answer = steps[last].kind === "text" ? last : -1;
   return (
-    <div className="space-y-3">
+    <div className="space-y-1.5">
       {steps.map((s, i) =>
         s.kind === "task" ? (
-          <div key={i}>
+          <div key={i} className="mb-3">
             <button type="button" onClick={() => setTask((t) => !t)} className="text-muted-foreground hover:text-foreground flex items-center gap-1.5 text-sm">
               Its task <ChevronRight className={`size-3.5 transition-transform ${task ? "rotate-90" : ""}`} />
             </button>
             {task && <pre className="bg-muted mt-1 max-h-96 overflow-auto rounded-lg p-2 text-xs whitespace-pre-wrap">{s.text}</pre>}
           </div>
         ) : s.kind === "thought" ? (
-          <p key={i} className="text-muted-foreground border-s-2 ps-3 text-sm whitespace-pre-wrap italic">{s.text}</p>
+          (s.text ?? "").startsWith(PRIVATE_THOUGHT) ? null : <Thought key={i} text={s.text ?? ""} />
         ) : s.kind === "tool" ? (
-          <ToolStep key={i} s={s} />
+          <StepRow key={i} toolName={s.name ?? ""} args={argsOf(s.args)} result={s.result ?? undefined} running={false} failed={!!s.failed} />
         ) : s.kind === "program" ? (
           <ProgramStep key={i} s={s} />
+        ) : i === answer ? (
+          <div key={i} className="mt-4 border-t pt-4">
+            <Markdown text={s.text ?? ""} />
+          </div>
         ) : (
-          <Markdown key={i} text={s.text ?? ""} />
+          <p key={i} className="text-muted-foreground text-sm whitespace-pre-wrap">{s.text}</p>
         ),
       )}
     </div>

@@ -18,6 +18,7 @@ import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { cn } from "@/lib/utils";
 import { useAgent } from "@/app/agent";
 import { download } from "@/app/api";
+import { CodeBlock } from "@/app/code-editor";
 
 type MarkdownTextProps = Partial<TextMessagePartProps> & {
   components?: Parameters<typeof memoizeMarkdownComponents>[0];
@@ -216,7 +217,7 @@ const defaultComponents = memoizeMarkdownComponents({
     <div className="aui-md-table-wrapper my-3 overflow-x-auto">
       <table
         className={cn(
-          "aui-md-table w-full border-separate border-spacing-0",
+          "aui-md-table w-full border-separate border-spacing-0 text-sm leading-snug",
           className,
         )}
         {...props}
@@ -288,4 +289,6 @@ const defaultComponents = memoizeMarkdownComponents({
     );
   },
   CodeHeader,
+  // a fenced block, under its header (language, copy): read-only CodeMirror, as files and a subagent's answer show
+  SyntaxHighlighter: ({ language, code }) => <CodeBlock language={language} code={code} className="rounded-b-xl border border-t-0" />,
 });

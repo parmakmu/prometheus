@@ -53,7 +53,7 @@ Lists the workflows and where each one stands.
 
 **Runs in:** prometheus · changes nothing
 
-Without a slug: each workflow's status, revision, last run, and the prometheus version its skill copy came from, marked *stale* when this prometheus has another. With a slug: that workflow's plan validity, waves, open questions, approvals, missing params and secrets, and whether its waves compile.
+Without a slug: a table of each workflow's state (status and revision, the active run and its stages done, open questions), runs, last run, and whether its copy of the skill is current or needs a `/workflow-refresh`. With a slug, as a list: that workflow's plan validity, waves, open questions, approvals, missing params and secrets, and whether its waves compile.
 
 **See also:** [`/workflow-status`](#workflow-status) · [`/workflow-refresh`](#workflow-refresh)
 

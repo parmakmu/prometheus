@@ -364,13 +364,14 @@ async function changes(cwd: string, res: ServerResponse) {
 	send(res, 200, { branch, base, files: [...files].filter(([p]) => inWorkflow(cwd, p)).map(([p, status]) => ({ path: p, status })) });
 }
 
-async function diffOf(cwd: string, rel: string, res: ServerResponse) {
-	const f = inWorkflow(cwd, rel);
+// a file's two sides for the side-by-side diff: as main (or HEAD) has it and as it is now; null where it doesn't exist
+async function diffOf(cwd: string, asked: string, res: ServerResponse) {
+	const f = inWorkflow(cwd, asked);
 	if (!f) return send(res, 400, "bad path");
+	const rel = path.relative(cwd, f).split(path.sep).join("/");
 	const { base } = await baseOf(cwd);
-	const tracked = (await gitIn(cwd, ["ls-files", "--error-unmatch", "--", rel])).code === 0;
-	const r = tracked ? await gitIn(cwd, ["diff", base, "--", rel]) : await gitIn(cwd, ["diff", "--no-index", "--", "/dev/null", rel]); // exit 1 is "differs"
-	send(res, 200, { diff: r.out });
+	const before = await gitIn(cwd, ["show", `${base}:${rel}`]);
+	send(res, 200, { before: before.code ? null : before.out, after: existsSync(f) && statSync(f).isFile() ? readFileSync(f, "utf8") : null });
 }
 
 // put a file back as main (or HEAD) has it; a file new on the branch is deleted
@@ -475,10 +476,67 @@ const resultOf = (id: string) => {
 	}
 };
 
+// pi-subagents' record of a launch lives in the temp folder, which macOS empties on a restart. What outlasts it: the
+// launch in runs/<id>/run.yaml, and per child its artifacts in the folder's sessions (subagent-artifacts/<child run
+// id>_<agent>_meta.json: agent, model, exit code, cost; _transcript.jsonl: its messages; _output.md: a command
+// child's result).
+function artifactOf(cwd: string, id: string) {
+	if (!/^[\w-]{8,64}$/.test(id)) return null;
+	const dir = path.join(sessionDirOf(cwd), "subagent-artifacts");
+	const meta = existsSync(dir) ? readdirSync(dir).find((f) => f.startsWith(`${id}_`) && f.endsWith("_meta.json")) : undefined;
+	if (!meta) return null;
+	const base = path.join(dir, meta.slice(0, -"_meta.json".length));
+	const json = (f: string) => { try { return JSON.parse(readFileSync(f, "utf8")); } catch { return null; } };
+	const m = json(path.join(dir, meta)) ?? {};
+	return { agent: m.agent as string | undefined, model: m.model ?? null, exitCode: m.exitCode as number | undefined, cost: m.usage?.cost ?? null, transcript: `${base}_transcript.jsonl`, result: () => json(`${base}_output.md`) };
+}
+
+// Each launch is a "  - wave:" item of run.yaml's launches, its fields indented four spaces, its children a map of
+// key: child run id. A child with no artifacts shows as done when the launch was, else unknown.
+function launchOf(cwd: string, id: string) {
+	if (!/^[\w-]{8,64}$/.test(id)) return null;
+	const runs = path.join(cwd, "runs");
+	if (!existsSync(runs)) return null;
+	for (const run of readdirSync(runs)) {
+		const f = path.join(runs, run, "run.yaml");
+		if (!existsSync(f)) continue;
+		const launch = readFileSync(f, "utf8").split(/^  - /m).find((b: string) => new RegExp(`^    subagent_run_id: ['"]?${id}['"]?$`, "m").test(b));
+		if (!launch) continue;
+		const field = (name: string) => launch.match(new RegExp(`^    ${name}: ['"]?([^'"\\n]*)['"]?$`, "m"))?.[1] ?? null;
+		const time = (name: string) => { const t = Date.parse(field(name) ?? ""); return Number.isNaN(t) ? null : t; };
+		const state = field("status") ?? "unknown";
+		const children = [...(launch.match(/^    children:\n((?: {6}.*\n?)*)/m)?.[1] ?? "").matchAll(/^ {6}([\w-]+): ['"]?([\w-]*)/gm)].map(([, key, runId]) => {
+			const a = artifactOf(cwd, runId);
+			const program = a?.agent === "workflow-batcher" ? a.result() : null;
+			return {
+				key, agent: a?.agent, runId: a ? runId : null, model: a?.model ?? null, cost: a?.cost ?? null,
+				state: a?.exitCode != null ? (a.exitCode === 0 ? "done" : "failed") : state === "done" ? "done" : "unknown",
+				...(a?.agent === "workflow-batcher" ? { program: { ...commandOf(cwd, path.join(runs, run, "work"), key), exit: program?.program?.exit ?? null, gateExit: program?.gate?.exit ?? null } } : {}),
+			};
+		});
+		return { id, state, startedAt: time("started_at"), endedAt: time("finished_at"), cost: Number(field("cost_usd")) || null, children };
+	}
+	return null;
+}
+
+// the step key and run folder of a child, from the launch in run.yaml that lists its run id
+function childOf(cwd: string, id: string) {
+	const runs = path.join(cwd, "runs");
+	for (const run of existsSync(runs) ? readdirSync(runs) : []) {
+		const f = path.join(runs, run, "run.yaml");
+		const key = existsSync(f) ? readFileSync(f, "utf8").match(new RegExp(`^ {6}([\\w-]+): ['"]?${id}['"]?$`, "m"))?.[1] : undefined;
+		if (key) return { key, work: path.join(runs, run, "work") };
+	}
+	return null;
+}
+
 // a launch and its children so far: state, times (ms), cost, and per child its step key, agent, model, last tool
 function waveInfo(cwd: string, id: string, res: ServerResponse) {
 	const st = subagentStatus(cwd, id);
-	if (!st) return send(res, 404, "no such run here");
+	if (!st) {
+		const launch = launchOf(cwd, id);
+		return launch ? send(res, 200, launch) : send(res, 404, "no such run here");
+	}
 	const children = ((st.workflowChildren?.children ?? []) as any[]).map((c) => {
 		const cs = c.runId ? subagentStatus(cwd, c.runId) : null;
 		const step = cs?.steps?.[0];
@@ -511,38 +569,55 @@ function thoughtOf(block: any): string {
 const clip = (t: string) => (t.length > MAX_STEP ? `${t.slice(0, MAX_STEP)}\n…` : t);
 const textIn = (content: any) => (typeof content === "string" ? content : Array.isArray(content) ? content.map((p: any) => (p?.type === "text" ? p.text : "")).join("") : "");
 
+// a subagent's messages (lines of its Pi session, or of its transcript artifact: both carry `message`) as steps
+function stepsOf(file: string) {
+	const steps: any[] = [];
+	const results = new Map<string, any>();
+	const lines = readFileSync(file, "utf8").split("\n").filter(Boolean).map((l: string) => { try { return JSON.parse(l); } catch { return null; } });
+	for (const e of lines) if (e?.message?.role === "toolResult") results.set(e.message.toolCallId, e.message);
+	for (const e of lines) {
+		const m = e?.message;
+		if (!m || e.sourceEventType === "initial_prompt") continue; // a transcript's first line: the task, redacted (it follows whole)
+		if (m.role === "user") steps.push({ kind: "task", text: clip(textIn(m.content)) });
+		else if (m.role === "assistant")
+			for (const p of Array.isArray(m.content) ? m.content : []) {
+				if (p.type === "thinking") steps.push({ kind: "thought", text: clip(thoughtOf(p)) });
+				else if (p.type === "text" && p.text?.trim()) steps.push({ kind: "text", text: clip(p.text) });
+				else if (p.type === "toolCall") {
+					const r = results.get(p.id);
+					steps.push({ kind: "tool", name: p.name, args: clip(JSON.stringify(p.arguments ?? {})), result: r ? clip(textIn(r.content)) : null, failed: !!r?.isError });
+				}
+			}
+	}
+	return steps;
+}
+
+// a command child: what it ran and how that went
+const programStep = (cmd: ReturnType<typeof commandOf>, done: any) => ({
+	kind: "program", command: cmd?.command ?? null, gate: cmd?.gate ?? null, exit: done.program?.exit ?? null, stdout: clip(String(done.program?.stdout ?? "")),
+	stderr: clip(String(done.program?.stderr ?? "")), gateExit: done.gate?.exit ?? null, gateOutput: clip(String(done.gate?.stdout ?? done.gate?.stderr ?? "")),
+});
+
 function childLog(cwd: string, id: string, res: ServerResponse) {
 	const st = subagentStatus(cwd, id);
-	if (!st) return send(res, 404, "no such run here");
+	if (!st) {
+		// pi-subagents' record is gone: the child's artifacts
+		const a = artifactOf(cwd, id);
+		if (!a) return send(res, 404, "no such run here");
+		const done = a.agent === "workflow-batcher" ? a.result() : null;
+		if (done && (done.program || done.gate)) {
+			const child = childOf(cwd, id);
+			return send(res, 200, { steps: [programStep(child && commandOf(cwd, child.work, child.key), done)] });
+		}
+		return send(res, 200, { steps: existsSync(a.transcript) ? stepsOf(a.transcript) : [] });
+	}
 	const sessionFile = st.steps?.[0]?.sessionFile;
 	const inside = (f: string) => { const r = realpathSync(cwd); const p = realpathSync(f); return p.startsWith(r + path.sep); };
-	if (sessionFile && existsSync(sessionFile) && inside(sessionFile)) {
-		const steps: any[] = [];
-		const results = new Map<string, any>();
-		const lines = readFileSync(sessionFile, "utf8").split("\n").filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } });
-		for (const e of lines) if (e?.message?.role === "toolResult") results.set(e.message.toolCallId, e.message);
-		for (const e of lines) {
-			const m = e?.message;
-			if (!m) continue;
-			if (m.role === "user") steps.push({ kind: "task", text: clip(textIn(m.content)) });
-			else if (m.role === "assistant")
-				for (const p of Array.isArray(m.content) ? m.content : []) {
-					if (p.type === "thinking") steps.push({ kind: "thought", text: clip(thoughtOf(p)) });
-					else if (p.type === "text" && p.text?.trim()) steps.push({ kind: "text", text: clip(p.text) });
-					else if (p.type === "toolCall") {
-						const r = results.get(p.id);
-						steps.push({ kind: "tool", name: p.name, args: clip(JSON.stringify(p.arguments ?? {})), result: r ? clip(textIn(r.content)) : null, failed: !!r?.isError });
-					}
-				}
-		}
-		return send(res, 200, { steps });
-	}
-	// a command child: what it ran and how that went
+	if (sessionFile && existsSync(sessionFile) && inside(sessionFile)) return send(res, 200, { steps: stepsOf(sessionFile) });
 	const done = resultOf(id);
 	if (done && (done.program || done.gate)) {
 		const key = (st.parentWorkflowRunId && subagentStatus(cwd, st.parentWorkflowRunId)?.workflowChildren?.children?.find((c: any) => c.runId === id)?.childId) ?? "";
-		const cmd = commandOf(cwd, st.cwd, key);
-		return send(res, 200, { steps: [{ kind: "program", command: cmd?.command ?? null, gate: cmd?.gate ?? null, exit: done.program?.exit ?? null, stdout: clip(String(done.program?.stdout ?? "")), stderr: clip(String(done.program?.stderr ?? "")), gateExit: done.gate?.exit ?? null, gateOutput: clip(String(done.gate?.stdout ?? done.gate?.stderr ?? "")) }] });
+		return send(res, 200, { steps: [programStep(commandOf(cwd, st.cwd, key), done)] });
 	}
 	const dir = path.join(subagentRuns(), id);
 	const file = readdirSync(dir).find((f) => f.startsWith("subagent-log-") && f.endsWith(".md")) ?? (existsSync(path.join(dir, "output-0.log")) ? "output-0.log" : null);
@@ -847,5 +922,4 @@ createServer((req, res) => {
 	console.log(`prometheus router on http://${HOST}:${PORT}  (users: ${USERS_ROOT ?? "this repository, one user"})`);
 	console.log(SANDBOX === "off" ? "WARNING: SANDBOX=off, workers run with your full access" : `sandbox: bubblewrap${LIMITS ? ", with memory/CPU limits" : " (no systemd user session: no memory/CPU limits)"}`);
 	if (!USER_HEADER) console.log(`open ${ORIGINS[0]}/?token=${TOKEN}`);
-	}
 });

@@ -65,8 +65,7 @@ function ask(reason: string, message: string, options: string[] | undefined, rea
     });
 }
 
-function textMessage(text: string) {
-    const messageId = randomUUID();
+function textMessage(text: string, messageId: string = randomUUID()) {
     emit({ type: EventType.TEXT_MESSAGE_START, messageId, role: "assistant" });
     emit({ type: EventType.TEXT_MESSAGE_CONTENT, messageId, delta: text });
     emit({ type: EventType.TEXT_MESSAGE_END, messageId });
@@ -341,19 +340,37 @@ const settled = async () => {
 // versions of one message (the page's "/workflow-run" and the session's prompt, which it showed as branches 1/2, 2/2).
 const COMMAND_ENTRY = "prometheus-ui-command";
 const hashOf = (text: string) => createHash("sha256").update(text.trim()).digest("hex").slice(0, 16);
-let commandPending = ""; // the command just sent, until its prompt arrives as a user message
+// The command being run, from when it is sent until it shows something or sends its prompt: noted then, so each
+// output carries its own command even when another command starts before this one's run has settled.
+let commandRun: { command: string; shown: boolean } | null = null;
+// a command's prompt arrived as a user message: the history shows the command in its place (or nothing, when the
+// command was already shown above its output)
 function noteCommandPrompt(message: any) {
     const prompt = textOf(message?.content).trim();
-    if (!commandPending || !prompt || prompt === commandPending) return;
-    session.sessionManager.appendCustomEntry(COMMAND_ENTRY, { command: commandPending, prompt: hashOf(prompt) });
-    commandPending = "";
+    if (!commandRun || !prompt || prompt === commandRun.command) return;
+    session.sessionManager.appendCustomEntry(COMMAND_ENTRY, { command: commandRun.command, prompt: hashOf(prompt), ...(commandRun.shown ? { hidden: true } : {}) });
+    commandRun = null;
 }
+// A command that shows something (/workflow-list) leaves no user message in Pi's session: noted with the first thing
+// it shows (`before`), so the history shows it there as you typed it, instead of it vanishing at the run's end
+function noteShownCommand(entry: any) {
+    if (!commandRun || commandRun.shown || entry?.type !== "custom_message") return;
+    session.sessionManager.appendCustomEntry(COMMAND_ENTRY, { command: commandRun.command, before: entry.id });
+    commandRun.shown = true;
+}
+const shownCommands = () =>
+    new Map<string, { id: string; command: string }>(
+        session.sessionManager
+            .getEntries()
+            .filter((e: any) => e.type === "custom" && e.customType === COMMAND_ENTRY && e.data?.before)
+            .map((e: any) => [e.data.before, { id: e.id, command: e.data.command }]),
+    );
 const commandsByPrompt = () =>
-    new Map<string, string>(
+    new Map<string, string | null>(
         session.sessionManager
             .getEntries()
             .filter((e: any) => e.type === "custom" && e.customType === COMMAND_ENTRY && e.data?.prompt)
-            .map((e: any) => [e.data.prompt, e.data.command]),
+            .map((e: any) => [e.data.prompt, e.data.hidden ? null : e.data.command]),
     );
 
 // What a thinking block says: its text, else the readable summaries in its provider data (OpenRouter keeps them in
@@ -382,9 +399,16 @@ const branchMessages = () =>
 function snapshot() {
     const out: Record<string, unknown>[] = [];
     const commands = commandsByPrompt();
+    const shown = shownCommands();
     for (const { id: entry, m } of branchMessages()) {
         const id = `pi-${entry}`;
-        if (m.role === "user") out.push({ id, role: "user", content: commands.get(hashOf(textOf(m.content))) ?? textOf(m.content) });
+        // a pi- id: the page sending it back is a sync, never the command again
+        const command = shown.get(entry);
+        if (command) out.push({ id: `pi-${command.id}`, role: "user", content: command.command });
+        if (m.role === "user") {
+            const hash = hashOf(textOf(m.content));
+            if (commands.get(hash) !== null) out.push({ id, role: "user", content: commands.get(hash) ?? textOf(m.content) }); // null: shown above
+        }
         else if (m.role === "assistant") {
             const parts: any[] = Array.isArray(m.content) ? m.content : [];
             const thinking = [...new Set(parts.filter((p) => p.type === "thinking").map(thoughtOf))].join("\n\n");
@@ -475,7 +499,11 @@ session.subscribe((event: any) => {
         }
     } else if (event.type === "message_end" && event.message?.role === "custom" && event.message.display !== false) {
         const text = textOf(event.message.content); // an extension's sendMessage, e.g. /workflow-list output
-        if (text) textMessage(text);
+        // Pi records it before announcing it (when idle): named as the snapshot names it (pi-<entry id>), the snapshot
+        // that ends the run replaces it instead of the page keeping both
+        const entry = (session.sessionManager.getBranch() as any[]).at(-1);
+        if (text) textMessage(text, entry?.type === "custom_message" ? `pi-${entry.id}` : undefined);
+        noteShownCommand(entry);
     } else if (event.type === "tool_execution_start") {
         if (event.toolName === "ask_user_question") questions = event.args?.questions ?? [];
         emit({ type: EventType.TOOL_CALL_START, toolCallId: event.toolCallId, toolCallName: event.toolName });
@@ -540,12 +568,12 @@ async function run(input: any, res: ServerResponse) {
     lastCommand = text.startsWith("/") ? text.split(/\s/)[0] : "";
     try {
         if (text.startsWith("/") && (await builtin(text))) return finish({ type: "success" });
-        commandPending = text.startsWith("/") ? text : ""; // an extension's command: its prompt is noted when it arrives
+        const mine = (commandRun = text.startsWith("/") ? { command: text, shown: false } : null); // an extension's command: noted when it shows something or prompts
         if (process.env.DEBUG) console.error("prompt:", text, "streaming:", session.isStreaming);
         if (session.isStreaming) await session.followUp(text);
         else await session.prompt(text);
         await settled();
-        commandPending = ""; // a command that sent no prompt (it only showed something) leaves nothing to note
+        if (commandRun === mine) commandRun = null; // it showed and prompted nothing: nothing later is its
         emit({ type: EventType.MESSAGES_SNAPSHOT, messages: snapshot() }); // the page's messages get Pi's ids (edits name them)
         await panelsClosed();
         finish({ type: "success" });
