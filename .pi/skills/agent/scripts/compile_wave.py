@@ -12,6 +12,9 @@ Gate commands name their scripts as ../gates/<script>; the compiler points
 that at the agent's gates/ folder.
 
 It refuses a wave already launched but not recorded (see unrecorded_launch).
+A model stage an earlier run finished on the same inputs is not launched again:
+its outputs are copied from that run (reuse_earlier; fingerprints in
+runs/<id>/.compiled/<wave>.inputs.json).
 Before compiling, it commits pending changes to the agent's plan
 (agent_git.py) and returns the commit, so the launch is reproducible; that is
 the only change it makes to the agent. Git is required.
@@ -57,9 +60,9 @@ import agent_git
 import agent_params
 import typer
 from ruamel.yaml.error import YAMLError
-from runs import RUNS, active_run
+from runs import RUNS, active_run, list_runs, read_run
 from utils import emit, load_yaml, read_json, refuse, report_state, subagent_records
-from validate_plan import check_ready, project_subagents, validate
+from validate_plan import agent_tools, check_ready, project_subagents, validate
 
 HERE = Path(__file__).resolve().parent
 PARAM_RE = re.compile(r"\$\{([^}]*)\}")
@@ -90,6 +93,18 @@ def unrecorded_launch(run_dir, state, wave_id):
 def canonical(value):
     """A stable text form of JSON-like data, to compare items across launches."""
     return json.dumps(value, sort_keys=True, default=str)
+
+
+def digest_tree(path, h):
+    """Feed a file's or folder's contents (relative names and bytes) into hash `h`; False if missing."""
+    path = Path(path)
+    files = [path] if path.is_file() else sorted(p for p in path.rglob("*") if p.is_file()) if path.is_dir() else None
+    if files is None:
+        return False
+    for f in files:
+        h.update(f"\0{f.relative_to(path) if f != path else f.name}\0".encode())
+        h.update(f.read_bytes())
+    return True
 
 
 def expand_schema(s):
@@ -134,6 +149,8 @@ class Compiler:
         self.errors = []
         self.notes = []
         self.spliced = set()  # keys whose result a later child's task splices in (reuse_finished)
+        self.fingerprints = {}  # stage -> fingerprint, written to .compiled/<wave>.inputs.json (reuse_earlier)
+        self.reused_from = {}  # stage -> the earlier run its outputs are copied from
 
     # --- paths ---------------------------------------------------------------
     def resolve_text(self, text):
@@ -439,6 +456,72 @@ class Compiler:
                            "task": task if outs else [{"text": task + "\n"}, {"result": key}], "outputSchema": schema}}
 
     # --- wave ------------------------------------------------------------------------
+    def fingerprint(self, key, item, review, in_wave):
+        """What a model stage's output depends on, hashed: its child and review items (this run's
+        folder masked), the contents of what it consumes, its subagent's file, program and gates.
+        None when that can't be known: it consumes an app or url, a returned result, or the output of
+        a stage in this wave that has no fingerprint (a program, a map)."""
+        h = hashlib.sha256(canonical([item, review]).replace(str(self.run_dir), "<run>").encode())
+        for cid in self.stages[key].get("consumes") or []:
+            if cid in self.inputs:
+                inp = self.inputs[cid]
+                if inp.get("kind") == "text":
+                    continue  # the text is in the task
+                if inp.get("kind") not in ("file", "folder") or not inp.get("location"):
+                    return None
+                path = Path(self.resolve_text(inp["location"])).expanduser()
+            else:
+                pkey, o = self.producer[cid]
+                decision = self.stages[pkey].get("kind") == "decision" or self.stages[pkey].get("pattern") == "approval"
+                if pkey in in_wave:
+                    # its output doesn't exist yet: it is what that stage makes from its own fingerprint,
+                    # in the run it comes from (this one, or the one it is reused from)
+                    if pkey not in self.fingerprints:
+                        return None
+                    h.update(f"\0{pkey} {self.fingerprints[pkey]}@{self.reused_from.get(pkey, self.run_id)}".encode())
+                    continue
+                path = self.decision_path(pkey) if decision else self.out_path(o)
+                if not path:
+                    return None
+            if not digest_tree(path, h):
+                return None
+        st = self.stages[key]
+        files = [self.agent_dir / ".pi" / "agents" / f"{st.get('agent')}.md", Path(self.script_path(st) or "")]
+        files += [self.agent_dir / "gates" / g for g in re.findall(r"\.\./gates/(\S+)", canonical(st.get("verify")))]
+        for f in files:
+            if f.is_file():
+                digest_tree(f, h)
+        return h.hexdigest()
+
+    def reuse_earlier(self, key, item, review, in_wave):
+        """Mark a model stage with no side effect `reuse` when an earlier run finished it with the same
+        fingerprint: the same judgment on the same inputs is not made again. compile_wave's main copies
+        its outputs from that run's work/. Not for a subagent with connector tools, which may act on or
+        read what no file shows. Returns that run's id, or None."""
+        st = self.stages[key]
+        outs = [self.out_path(o) for o in st.get("out") or [] if isinstance(o, dict)]
+        tools = agent_tools(project_subagents(self.agent_dir).get(st.get("agent")) or {})
+        if (st.get("kind") not in ("judgment", "deterministic") or st.get("approval") == "required" or st.get("resumes")
+                or not outs or not all(o and Path(o).is_relative_to(self.work) for o in outs)
+                or any(t.startswith("mcp:") for t in tools)):  # a connector: outside state no file shows
+            return None
+        fp = self.fingerprint(key, item, review, in_wave)
+        if not fp:
+            return None
+        self.fingerprints[key] = fp
+        for rid, d in reversed(list_runs(self.agent_dir)):
+            if rid == self.run_id or (read_run(d).get("stages") or {}).get(key) != "done":
+                continue
+            for inputs in (d / ".compiled").glob("*.inputs.json"):
+                done = ((read_json(inputs.with_name(inputs.name.replace(".inputs.json", "-result.json"))) or {})
+                        .get("children") or {}).get(key) or {}
+                if ((read_json(inputs) or {}).get(key) == fp and done.get("status") == "completed"
+                        and all((d / "work" / Path(o).relative_to(self.work)).exists() for o in outs)):
+                    item["reuse"] = {**{k: done.get(k) for k in ("runId", "outputReference", "structuredOutput")}, "run": rid}
+                    self.reused_from[key] = rid
+                    return rid
+        return None
+
     def reuse_finished(self, wid, steps):
         """Mark the layer children that completed in the wave's last (failed or blocked) launch with
         `reuse`, so a relaunch runs only the rest; returns their keys. A child is reused only when its
@@ -459,6 +542,8 @@ class Compiler:
                 rerun.add(step["map"]["key"])  # a map stage always runs again whole
             for it in step.get("layer") or []:
                 key, done = it["key"], children.get(it["key"]) or {}
+                if "reuse" in it:
+                    continue  # reused from an earlier run
                 if (previous.get(key) == canonical(it) and done.get("status") == "completed"
                         and not set((self.stages.get(key) or {}).get("needs") or []) & rerun
                         and (key not in self.spliced or done.get("structuredOutput") is not None)):
@@ -468,7 +553,8 @@ class Compiler:
                     rerun.add(key)
         return reused
 
-    def compile(self, wave):
+    def compile(self, wave, reuse=False):
+        """`reuse`: let unchanged model stages take an earlier run's outputs (reuse_earlier); only for a launch."""
         members = [s for s in wave.get("stages") or [] if s in self.stages]
         decisions = [s for s in members if self.stages[s].get("kind") == "decision" or self.stages[s].get("pattern") == "approval"]
         runnable = [s for s in members if s not in decisions]
@@ -515,6 +601,7 @@ class Compiler:
         for layer in layers:
             singles = [s for s in layer if self.stages[s].get("pattern") not in ("map", "map_reduce")]
             maps = [s for s in layer if s not in singles]
+            reviews = {s: self.review_step(s, self.stages[s]) for s in layer if (self.stages[s].get("verify") or {}).get("review")}
             if singles:
                 items = []
                 for s in singles:
@@ -525,15 +612,17 @@ class Compiler:
                         items.append(self.command_item(s, st, in_wave_done, first_path))
                     else:
                         items.append(self.item(s, st, in_wave_done, self.task(s, st, in_wave_done), output=first_path))
+                        if reuse and (rid := self.reuse_earlier(s, items[-1], reviews.get(s), in_wave_done)):
+                            reviews.pop(s, None)  # it passed its review in that run
+                            self.notes.append(f"{s}: reused from run {rid} (same inputs and stage): its outputs are copied, not run again")
                     children.append(s)
                 steps.append({"layer": items})
             for s in maps:
                 steps.append(self.map_step(s, self.stages[s], in_wave_done))
                 children += [f"{s}-split", f"{s}-<n>", f"{s}-merge" if self.stages[s].get("pattern") == "map" else f"{s}-reduce"]
-            for s in layer:
-                if (self.stages[s].get("verify") or {}).get("review"):
-                    steps.append(self.review_step(s, self.stages[s]))
-                    children.append(f"{s}-review")
+            for s, review in reviews.items():
+                steps.append(review)
+                children.append(f"{s}-review")
             in_wave_done |= set(layer)
 
         if self.uses_uv and shutil.which("uv") is None:
@@ -566,6 +655,18 @@ class Compiler:
         return {"ok": True, "run": self.run_id, "wave": wid, "stages": members, "ends_with": wave.get("ends_with"),
                 "revision": revision, "call": call, "children": children,
                 "approved": sorted(self.approvals), "notes": self.notes, "spec": spec}
+
+    def copy_reused(self):
+        """Copy each reused stage's outputs from the earlier run's work/ into this run's."""
+        for key, rid in self.reused_from.items():
+            src = self.run_dir.parent / rid / "work"
+            for o in self.stages[key].get("out") or []:
+                rel = Path(self.out_path(o)).relative_to(self.work)
+                (self.work / rel).parent.mkdir(parents=True, exist_ok=True)
+                if (src / rel).is_dir():
+                    shutil.copytree(src / rel, self.work / rel, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(src / rel, self.work / rel)
 
 
 def main(
@@ -631,7 +732,7 @@ def main(
         refuse("git is required: pi-subagents checks each writer child's staged index with git, and the agent's plan is versioned in its own repo. Ask the user to install git.")
 
     compiler = Compiler(agent_dir, plan, params, run.dir, run.state, {a.strip() for a in approve.split(",") if a.strip()})
-    result = compiler.compile(wave)
+    result = compiler.compile(wave, reuse=True)
     if result.get("ok"):
         # committed only for a launch: a refused compile (params, approvals) leaves the branch alone
         try:
@@ -646,6 +747,8 @@ def main(
         script_path = compiled / f"{wave['id']}.js"
         script_path.write_text(result["call"].pop("workflowScript"), encoding="utf-8")
         (compiled / f"{wave['id']}.wave.json").write_text(canonical(result.pop("spec")), encoding="utf-8")  # for reuse_finished
+        (compiled / f"{wave['id']}.inputs.json").write_text(canonical(compiler.fingerprints), encoding="utf-8")  # for reuse_earlier
+        compiler.copy_reused()
         result["call"]["workflow"] = str(script_path.resolve())
     text = json.dumps(result, indent=2, ensure_ascii=False)
     for out_path in filter(None, (run.dir / ".compiled" / f"{wave['id']}.json", Path(out) if out else None)):

@@ -125,3 +125,18 @@ def test_digest_reads_the_agents_own_sessions_folder(tmp_path, run_py):
     (agent_dir / "plan.yaml").write_text("request: x\n")
     data = run_py([SCRIPT, "--agent", agent_dir]).data
     assert data["sessions_dir"] == str(agent_dir / ".pi" / "sessions"), data
+
+
+def test_agent_costs_count_each_turn_toward_the_runs_it_names(tmp_path):
+    import sys
+    sys.path.insert(0, str(SKILL / "scripts"))
+    from session_digest import agent_costs
+
+    user = lambda text: line(type="message", message={"role": "user", "content": text})
+    rows = [user("/agent-run"), call(1, "ask_user_question"), call(2, "agent_new_run"), result(2, "agent_new_run", '{"run": "r1"}'),
+            line(type="custom_message", customType="subagent-notify"),  # a wave's end wakes the agent: same turn
+            call(3, "agent_log_finish"), result(3, "agent_log_finish", '{"run": "r1"}'),
+            user("thanks"), call(4, "read"),  # a turn naming no run counts toward none
+            user("/agent-run"), call(5, "agent_compile"), result(5, "agent_compile", '{"run": "r2"}')]
+    (tmp_path / "a.jsonl").write_text("\n".join(rows))
+    assert agent_costs(tmp_path) == {"r1": 0.03, "r2": 0.01}

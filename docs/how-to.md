@@ -105,7 +105,7 @@ The merge tags the plan's revision `r<N>` on `main`. A change that touches only 
 
 ### How to drop a discovery stage once the input is stable
 
-Use this when discovery keeps running although the input's format no longer changes. Once the other stages run as programs, a discovery stage can be most of a run's model cost; keep it if each run reads a different kind of input.
+Use this when discovery keeps running on new input although its format no longer changes (on unchanged input it doesn't run: its last report is reused). Once the other stages run as programs, a discovery stage can be most of a run's model cost; keep it if each run reads a different kind of input.
 
 1. Check the last few runs: the stages after discovery passed their gates, and nothing was left over for a person or a model to handle.
 2. Follow [How to change an agent's plan](#how-to-change-a-agents-plan) with `/agent-revise drop the discover stage`. If other stages read the discovery report, as `read-emails` reads `discovery.md` in emails-to-excel, say in the same request what they should do without it.

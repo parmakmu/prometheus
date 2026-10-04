@@ -297,10 +297,14 @@ This is the moment the whole design is built around. Here are emails-to-excel's 
 | 4 | the programs reused, but run by a model | $0.0105 | about 2.5 min |
 | later | the programs run as plain commands | $0.004 | 77 s |
 
-You'll notice run 3 actually cost more than run 2. That's the investment. Writing a program that can be reused (214 and 129 lines here, taking arguments rather than fixed paths) is more work than doing the job once. But you only pay for it once. After that, each program takes a tenth of a second where a model used to take fifteen or twenty, and the only stage still using a model is `discover`.
+| next | `discover` too: same emails, so its report is reused from the last run | $0 | |
+
+The model cost is the subagents'. The agent's own model, which asks the questions, compiles and records each wave and reports, adds about $0.02 a run on top; the web app shows both.
+
+You'll notice run 3 actually cost more than run 2. That's the investment. Writing a program that can be reused (214 and 129 lines here, taking arguments rather than fixed paths) is more work than doing the job once. But you only pay for it once. After that, each program takes a tenth of a second where a model used to take fifteen or twenty, and the only stage still using a model is `discover`. Even that runs only when the emails change: a model stage with no side effect, whose inputs and instructions match a run that finished it, takes that run's outputs instead of running again (the compiler's notes say which).
 
 > [!TIP]
-> Once your emails always arrive in the same format, you may not need `discover` either: see [How to drop a discovery stage](how-to.md#how-to-drop-a-discovery-stage-once-the-input-is-stable).
+> Once your emails always arrive in the same format, new emails needn't run `discover` either: see [How to drop a discovery stage](how-to.md#how-to-drop-a-discovery-stage-once-the-input-is-stable).
 
 Two other things affect what a run costs, if you're designing your own plans. The agent does its bookkeeping once per wave, so a plan with fewer waves is cheaper than one with fewer stages. And a `map` stage, which splits a large input into batches, launches one child per batch, so its cost grows with the size of the input.
 

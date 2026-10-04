@@ -675,12 +675,13 @@ const AssistantMessage: FC = () => {
 };
 
 const AssistantActionBar: FC = () => {
-  // a message waiting for an answer (a question) isn't finished: no copy/regenerate until it is
-  const waiting = useAuiState((s) => s.message.status?.type === "requires-action");
-  if (waiting) return null;
+  // a message still being written, or waiting for an answer (a question), isn't finished: no copy until it is. Only
+  // this message's own state: the thread runs briefly whenever a wave wakes the agent, which made a finished
+  // message's bar blink (hideWhenRunning)
+  const unfinished = useAuiState((s) => s.message.status?.type === "running" || s.message.status?.type === "requires-action");
+  if (unfinished) return null;
   return (
     <ActionBarPrimitive.Root
-      hideWhenRunning
       autohide="not-last"
       className="aui-assistant-action-bar-root text-muted-foreground animate-in fade-in col-start-3 row-start-2 -ms-1 flex gap-1 duration-200"
     >

@@ -721,6 +721,18 @@ createServer((req, res) => {
         return;
     }
     if (req.method === "POST" && req.url === "/edit") return edit(req, res);
+    if (req.method === "POST" && req.url === "/name") {
+        // renamed from the Conversations list: Pi's session name, as /name sets it
+        let body = "";
+        req.on("data", (c) => (body += c));
+        req.on("end", () => {
+            const name = String(JSON.parse(body || "{}").name ?? "").trim();
+            if (name) session.setSessionName(name);
+            res.writeHead(name ? 200 : 400);
+            res.end();
+        });
+        return;
+    }
     const pm = req.url.match(/^\/panel\/([\w-]+)\/(stream|input|resize|action)$/);
     if (pm) return panelRoute(pm[1], pm[2], req, res);
     if (req.method !== "POST" || req.url !== "/agent") {

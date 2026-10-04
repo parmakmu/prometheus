@@ -6,7 +6,8 @@ Usage: list_agents.py [--root agents] [--agent DIR]
 Prints a JSON list, one object per agent: slug, status, revision, goal,
 state (agent_state's name for where it stands), runs (count),
 last_run {id, status, started_at, finished_at, last_wave}, recent_runs (the last 5, newest
-first: id, status, started_at, finished_at, note, cost_usd summed over its launches),
+first: id, status, started_at, finished_at, note, cost_usd: its subagents' cost summed over its launches,
+agent_cost_usd: the agent's own model's, from its sessions, session_digest.agent_costs),
 active_run, next_wave (its id) and next_stages (its stage keys), waiting (what the active run is paused on after its last
 wave: approval | review | replan, else null), stages_done/stages_total (of the active run) and stages
 (every plan stage: key, title, status: done | running | null, null when no run is active; children {done, failed, total, items: each child's key, agent, state, run_id}
@@ -26,19 +27,22 @@ import agent_state
 import prometheus_version
 import typer
 from runs import last_run, list_runs, read_run
+from session_digest import agent_costs, default_sessions_dir
 from utils import read_json, refuse, subagents_runs_root
 from utils import read_yaml as load
 from validate_plan import validate
 
 
-def recent_runs(runs, n=5):
-    """The last n runs, newest first, with their cost summed over launches."""
+def recent_runs(agent_dir, runs, n=5):
+    """The last n runs, newest first, with their subagents' cost (summed over launches) and the agent's own."""
+    states = [(rid, read_run(d)) for rid, d in reversed(runs[-n:])]
+    own = agent_costs(default_sessions_dir(agent_dir), since=states[-1][1].get("started_at")) if states else {}
     out = []
-    for rid, d in reversed(runs[-n:]):
-        s = read_run(d)
+    for rid, s in states:
         cost = sum(x.get("cost_usd") or 0 for x in s.get("launches") or [] if isinstance(x, dict))
         out.append({"id": rid, "status": s.get("status"), "started_at": s.get("started_at"),
-                    "finished_at": s.get("finished_at"), "note": s.get("note"), "cost_usd": round(cost, 6)})
+                    "finished_at": s.get("finished_at"), "note": s.get("note"), "cost_usd": round(cost, 6),
+                    "agent_cost_usd": own.get(rid, 0)})
     return out
 
 
@@ -90,7 +94,7 @@ def summarise(root, slug, current):
     active = (summary.get("run") or {}).get("id")
     questions = [q for q in plan.get("questions") or [] if isinstance(q, dict)]
     runs = list_runs(Path(root) / slug)
-    run_dir = dict(runs).get(active) or (runs[-1][1] if runs else None)  # none active: the last run's stages
+    run_dir = dict(runs).get(active)
     run_state = read_run(run_dir) if run_dir else {}
     stage_status = run_state.get("stages") or {}
     progress = child_progress(run_state, [s.get("key") for s in stages])
@@ -117,7 +121,7 @@ def summarise(root, slug, current):
         "provisional": [s.get("key") for s in stages if s.get("provisional") is True],
         "open_questions": [q.get("id") for q in questions if q.get("answer") in (None, "")],
         "last_run": last,
-        "recent_runs": recent_runs(runs),
+        "recent_runs": recent_runs(Path(root) / slug, runs),
         "custom_subagents": [a for a in custom if a not in ("plan-critic", "batcher")],
         "prometheus_version": installed,
         "stale": bool(current and installed != current),

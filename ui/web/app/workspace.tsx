@@ -13,7 +13,10 @@ import { ChildName } from "./subagents";
 import { money, took } from "./format";
 
 export type Stage = { key: string; title?: string; status: "done" | "running" | null; children?: { done: number; failed: number; total: number; items?: { key: string; agent?: string; state?: string; run_id?: string | null }[] } };
-export type Run = { id: string; status: string; started_at?: string; finished_at?: string; note?: string | null; cost_usd: number };
+// cost_usd: its subagents' (pi-subagents' records); agent_cost_usd: the agent's own model's (its sessions)
+export type Run = { id: string; status: string; started_at?: string; finished_at?: string; note?: string | null; cost_usd: number; agent_cost_usd?: number };
+export const runCost = (r: Run) => r.cost_usd + (r.agent_cost_usd ?? 0);
+export const costSplit = (r: Run) => `agent ${money(r.agent_cost_usd ?? 0)} · subagents ${money(r.cost_usd)}`;
 export type AgentSummary = {
   slug: string;
   state: string;
@@ -62,8 +65,8 @@ function Tree({ slug, dir, depth = 0, editable }: { slug: string; dir: string; d
   );
 }
 
-// `meta`: quiet facts at the row's end (a run's duration and cost)
-function Node({ slug, path, dir, depth = 0, label, meta, editable }: { slug: string; path: string; dir: boolean; depth?: number; label?: string; meta?: string; editable?: boolean }) {
+// `meta`: quiet facts at the row's end (a run's duration and cost), `metaTitle` on hover
+function Node({ slug, path, dir, depth = 0, label, meta, metaTitle, editable }: { slug: string; path: string; dir: boolean; depth?: number; label?: string; meta?: string; metaTitle?: string; editable?: boolean }) {
   const { show, select } = useCanvas();
   const [open, setOpen] = useState(false);
   const key = `file:${slug}:${path}`;
@@ -77,7 +80,7 @@ function Node({ slug, path, dir, depth = 0, label, meta, editable }: { slug: str
           {open ? <ChevronDown className="text-muted-foreground size-3.5 shrink-0" /> : <ChevronRight className="text-muted-foreground size-3.5 shrink-0" />}
           <FolderIcon name={name.split(" ")[0]} open={open} />
           <span className="truncate">{name}</span>
-          {meta && <span className="text-muted-foreground ml-auto shrink-0 text-xs">{meta}</span>}
+          {meta && <span title={metaTitle} className="text-muted-foreground ml-auto shrink-0 text-xs">{meta}</span>}
         </button>
       ) : (
         <button type="button" onClick={() => (show({ key, title: name, node: <FileView slug={slug} path={path} editable={editable} /> }), select(key))} className={row} style={{ paddingLeft: 8 + depth * 14 + 18 }}>
@@ -108,7 +111,6 @@ function Steps({ w }: { w: AgentSummary }) {
   return (
     <Section title="Steps" count={w.active_run ? `${w.stages_done}/${w.stages_total}` : undefined}>
       {w.active_run && <p className="text-muted-foreground px-2 pb-1 text-xs">Run <span className="font-mono">{w.active_run}</span></p>}
-      {/* none active: the ticks are the last run's (list_agents.py) */}
       {!w.active_run && w.recent_runs[0] && (
         <p className="text-muted-foreground px-2 pb-1 text-xs">
           Last run <span className="font-mono">{w.recent_runs[0].id}</span> · {w.recent_runs[0].status}
@@ -120,7 +122,7 @@ function Steps({ w }: { w: AgentSummary }) {
         {w.stages.length === 0 && <li className="text-muted-foreground px-2 text-sm">No stages yet</li>}
         {w.stages.map((s) => (
           <li key={s.key} className="px-2 py-1">
-            <span className={`flex items-start gap-2 text-sm ${s.status === "running" ? "font-medium" : !s.status && w.active_run ? "text-muted-foreground" : ""}`}>
+            <span className={`flex items-start gap-2 text-sm ${s.status === "running" ? "font-medium" : !s.status ? "text-muted-foreground" : ""}`}>
               <span className="mt-0.5 shrink-0">{icon(s)}</span>
               <span className="min-w-0 flex-1">{s.title || s.key}</span>
               {next.has(s.key) && <span className="text-muted-foreground shrink-0 text-xs font-normal">next</span>}
@@ -139,6 +141,11 @@ function Steps({ w }: { w: AgentSummary }) {
   );
 }
 
+// what each agent's Input and Output last showed: the page remounts on every switch (AgentRuntime is keyed by the
+// conversation), so they start from it instead of empty, then refresh
+const lastInputs = new Map<string, Set<string>>();
+const lastOutputs = new Map<string, { run: string; path: string }[]>();
+
 // what shapes a run, as a small file explorer: only what the person reviews and changes
 const INPUT: { path: string; dir: boolean; label?: string }[] = [
   { path: "plan.yaml", dir: false },
@@ -149,10 +156,14 @@ const INPUT: { path: string; dir: boolean; label?: string }[] = [
 ];
 
 function Input({ slug }: { slug: string }) {
-  const [have, setHave] = useState<Set<string> | null>(null);
+  const [have, setHave] = useState<Set<string> | null>(() => lastInputs.get(slug) ?? null);
   useEffect(() => {
     const names = (dir: string) => api<{ entries: Entry[] }>(`/a/${slug}/tree?dir=${dir}`).then((l) => l.entries.map((e) => `${dir}/${e.name}`.replace(/^\//, "")), () => [] as string[]);
-    Promise.all([names(""), names(".pi")]).then((all) => setHave(new Set(all.flat())));
+    Promise.all([names(""), names(".pi")]).then((all) => {
+      const found = new Set(all.flat());
+      lastInputs.set(slug, found);
+      setHave(found);
+    });
   }, [slug]);
   return (
     <Section title="Input" hint="you can edit these">
@@ -166,15 +177,18 @@ function Input({ slug }: { slug: string }) {
 // each run a folder (its record, results, working files), read-only, with how long it took and what it cost; its
 // status only when it is not done. The latest run's results show right under it: what is usually wanted.
 function Output({ w }: { w: AgentSummary }) {
-  const [files, setFiles] = useState<{ run: string; path: string }[]>([]);
+  const [files, setFiles] = useState<{ run: string; path: string }[]>(() => lastOutputs.get(w.slug) ?? []);
   const latest = w.recent_runs[0];
-  useEffect(() => void api<{ run: string; path: string }[]>(`/a/${w.slug}/outputs`).then(setFiles, () => setFiles([])), [w.slug, latest?.id, latest?.status]);
+  useEffect(
+    () => void api<{ run: string; path: string }[]>(`/a/${w.slug}/outputs`).then((f) => (lastOutputs.set(w.slug, f), setFiles(f)), () => setFiles([])),
+    [w.slug, latest?.id, latest?.status],
+  );
   return (
     <Section title="Output" hint="read-only" count={String(w.recent_runs.length)}>
       {w.recent_runs.length === 0 && <p className="text-muted-foreground px-2 text-sm">No runs yet</p>}
       {w.recent_runs.map((r) => (
         <div key={r.id}>
-          <Node slug={w.slug} path={`runs/${r.id}`} dir label={r.status === "done" ? r.id : `${r.id} · ${r.status}`} meta={[took(r.started_at, r.finished_at), money(r.cost_usd)].filter(Boolean).join(" · ")} />
+          <Node slug={w.slug} path={`runs/${r.id}`} dir label={r.status === "done" ? r.id : `${r.id} · ${r.status}`} meta={[took(r.started_at, r.finished_at), money(runCost(r))].filter(Boolean).join(" · ")} metaTitle={costSplit(r)} />
           {r === latest && files.filter((f) => f.run === r.id).map((f) => (
             <Node key={f.path} slug={w.slug} path={f.path} dir={false} depth={1} label={f.path.split("/").slice(3).join("/")} />
           ))}

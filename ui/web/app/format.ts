@@ -1,7 +1,7 @@
 // Numbers as the page shows them
 
-// a cost in dollars: $0.0042, $1.20 (nothing for none)
-export const money = (n?: number | null) => (n ? `$${n < 0.01 ? n.toFixed(4) : n.toFixed(2)}` : "");
+// a cost in dollars: $0 (no model ran), $0.0042, $1.20; nothing when unknown
+export const money = (n?: number | null) => (n == null ? "" : n === 0 ? "$0" : `$${n < 0.01 ? n.toFixed(4) : n.toFixed(2)}`);
 
 // a count of tokens or a context window: 812, 1.2k, 200k, 1M
 export const kilo = (n?: number | null) => {

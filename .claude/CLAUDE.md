@@ -197,6 +197,16 @@ Libraries: typer, pydantic (plan shape, in `validate_plan.py`; the cross-referen
   in the failed launch and are unchanged (`reuse` items, `compile_wave.reuse_finished`; not after a
   rerun dependency, not when a later child splices in a text-only result); a critique must name a
   completed plan-critic child and is tied to the plan by `plan_digest`.
+- **The same judgment on the same inputs is made once** (`compile_wave.reuse_earlier`): a judgment or
+  deterministic model stage (not a side effect, approval, map, program command or `resumes`, nor a subagent with `mcp:` tools; every
+  output a path in `work/`; consumes only files, folders or text) whose fingerprint (its child and review items with
+  the run folder masked, the consumed files' contents, its subagent file, program and gates; an in-wave
+  producer as `<fingerprint>@<run its output came from>`) matches one an earlier run finished gets `reuse`
+  with that run's result, its outputs copied into `work/`, and no review. Fingerprints are in
+  `.compiled/<wave>.inputs.json`; only a launch reuses (not `--check`); the same `reuse` item a relaunch gives
+  unchanged children (`reuse_finished`). Why: with its programs as
+  commands, emails-to-excel still paid a scout and a reviewer every run to rewrite `discovery.md` from the
+  same eight emails.
 - **Commands activate `subagent`**: `/agent-new`, `/agent-run` and `/agent-revise` call
   `activateSubagent` (`pi.setActiveTools`) before sending their prompt. Why: pi-subagents starts
   sessions with only its `subagents_enable` loader; the model enabling it mid-turn cost run 4 two
@@ -331,11 +341,11 @@ pi-subagents 0.73.1, with the `workflow` field from 0.74.0 (source in `~/.pi/age
 
 ## Status
 
-`uv run pytest`: 249 tests, including the validator's broken-variant cases, param tests, the
+`uv run pytest`: 255 tests, including the validator's broken-variant cases, param tests, the
 state machine's refusals and its walk (`tests/test_run_finish.py`, `tests/test_state_machine.py`), compiled
 waves run in a mock of `runs.run/runs.all` (real batch tool and gates, fake children), and both
-extensions type-checked and driven with Pi's real types. The 146 outside `tests/test_agent.py`
-pass without Node or uv; that file's 103 (the scenario and the extensions) need `npm install` and uv.
+extensions type-checked and driven with Pi's real types. The 153 outside `tests/test_agent.py`
+pass without Node or uv; that file's 102 (the scenario and the extensions) need `npm install` and uv.
 
 Verified in live runs of emails-to-excel (see `docs/design.md` and "The second run" in `docs/how-it-works.md`): planning with the
 critic and questions; discovery + replan; explicit acceptance; derived waves and run folders;

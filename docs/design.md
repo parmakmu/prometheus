@@ -60,6 +60,10 @@ In the first real runs, a model child wrote the extraction program from scratch 
 
 Reusing the program still left a model child to run it. In run 7, two children spent 35 seconds running two reviewed programs that take about a second as commands. So stage programs now run as plain commands, through the `batcher` runner, with no model involved. In run 8, `read-emails` and `build-workbook` took 0.1 s each, at no cost, and the whole run fell from 2 min 22 s to about a minute.
 
+### The same judgment on the same inputs is made once
+
+With its programs running as commands, emails-to-excel still spent every run's model cost on `discover`, a scout and a reviewer reading the same eight emails and writing a slightly different report each time. A model stage's output depends only on what it is told and what it reads: the rules let a child use only the listed inputs. So the compiler fingerprints each model stage that has no side effect (its child and review items, the contents of the files it consumes, its subagent file, program and gates) and, when an earlier run finished the stage with the same fingerprint, copies that run's outputs into this run instead of launching it, and skips its review, which that run passed. A stage after it in the same wave counts the producer by its fingerprint and the run its output came from, so it is reused only if it read exactly that output. Side effects always run; so does a stage that reads an app or a url, or whose subagent has a connector, since what it reads or does there no file shows.
+
 ### An agent's packages live in one place
 
 Told to use "the standard library or what is installed", models hand-wrote their own XLSX readers and writers, about 100 lines each, instead of using openpyxl. Now programs and gates use the packages in the agent's `pyproject.toml`, locked in `uv.lock`, and the validator rejects an import that `pyproject.toml` doesn't list. Per-script package headers (`# /// script`) were tried and rejected: dependencies should be reviewable in one file.

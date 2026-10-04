@@ -122,6 +122,44 @@ def digest_session(path: Path):
     }
 
 
+def agent_costs(sessions_dir: Path, since=None):
+    """{run id: what the agent's own model spent on it}, over the sessions changed since `since` (a
+    timestamp). A turn (a user message up to the next; a wave's completion wakes the agent with a notice,
+    not a user message) counts toward each run an agent tool's result in it names (`run`): the questions
+    before the run starts, the waves, and the report and review after its last wave."""
+    after = moment(since).timestamp() if since and moment(since) else 0
+    costs = {}
+
+    def close(turn_cost, runs):
+        for rid in runs:
+            costs[rid] = costs.get(rid, 0) + turn_cost
+
+    for path in Path(sessions_dir).glob("*.jsonl") if Path(sessions_dir).is_dir() else []:
+        if path.stat().st_mtime < after:
+            continue
+        turn_cost, runs = 0, set()
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                msg = json.loads(line).get("message") or {}
+            except ValueError:
+                continue
+            role = msg.get("role")
+            if role == "user":
+                close(turn_cost, runs)
+                turn_cost, runs = 0, set()
+            elif role == "assistant":
+                turn_cost += ((msg.get("usage") or {}).get("cost") or {}).get("total", 0)
+            elif role == "toolResult" and str(msg.get("toolName")).startswith("agent_"):
+                try:
+                    rid = json.loads(text_of(msg.get("content"))).get("run")
+                except (ValueError, AttributeError):
+                    rid = None
+                if isinstance(rid, str):
+                    runs.add(rid)
+        close(turn_cost, runs)
+    return {rid: round(c, 6) for rid, c in costs.items()}
+
+
 def digest_run(run_id: str, run_dir: Path):
     state = read_yaml(run_dir / "run.yaml", {})
     launches = [x for x in state.get("launches") or [] if isinstance(x, dict)]

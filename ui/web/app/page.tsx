@@ -10,7 +10,7 @@ import { StatusBar } from "./status-bar";
 import { api } from "./api";
 import { useAgent } from "./agent";
 import { Conversations, sidebarRow } from "./conversations";
-import { Workspace, type Run, type AgentSummary } from "./workspace";
+import { Workspace, costSplit, runCost, type Run, type AgentSummary } from "./workspace";
 import { References } from "./references";
 import { TerminalPanel } from "./terminal";
 import { SlashMenu } from "./slash-menu";
@@ -45,8 +45,13 @@ const needsYou = (w: Agent) => !!stateOf(w).needsYou || w.open_questions.length 
 
 const when = (iso?: string) => (iso ? new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
 
+// The page remounts on every switch of agent or conversation (AgentRuntime is keyed by it): the list is kept here
+// so the sidebar starts from what it last showed instead of empty, then refreshes
+let lastAgents: Agent[] = [];
+
 function useAgents() {
-  const [agents, setAgents] = useState<Agent[]>([]);
+  const [agents, setAgentsState] = useState<Agent[]>(lastAgents);
+  const setAgents = useCallback((next: Agent[] | ((all: Agent[]) => Agent[])) => setAgentsState((all) => (lastAgents = typeof next === "function" ? next(all) : next)), []);
   const [error, setError] = useState<string | null>(null);
   const load = useCallback(() => {
     api<Agent[] | { error?: string }>("/agents")
@@ -92,7 +97,7 @@ function RunsTable({ runs }: { runs: (Run & { slug?: string })[] }) {
               <td className="px-3 py-2">
                 <span className={`rounded-full px-2 py-0.5 text-xs ${r.status === "done" ? "bg-emerald-100 text-emerald-800" : r.status === "active" ? "bg-sky-100 text-sky-800" : "bg-muted"}`}>{r.status}</span>
               </td>
-              <td className="px-3 py-2 text-xs text-emerald-700">{money(r.cost_usd)}</td>
+              <td title={costSplit(r)} className="px-3 py-2 text-xs text-emerald-700">{money(runCost(r))}</td>
             </tr>
           ))}
         </tbody>
@@ -220,7 +225,7 @@ function Overview({ agents }: { agents: Agent[] }) {
     .flatMap((w) => w.recent_runs.map((r) => ({ ...r, slug: w.slug })))
     .sort((a, b) => (b.started_at ?? "").localeCompare(a.started_at ?? ""))
     .slice(0, 8);
-  const spent = runs.reduce((n, r) => n + r.cost_usd, 0);
+  const spent = runs.reduce((n, r) => n + runCost(r), 0);
   return (
     <div>
       <p className="text-muted-foreground text-xs tracking-wide uppercase">Overview</p>
@@ -229,7 +234,7 @@ function Overview({ agents }: { agents: Agent[] }) {
         {[
           ["Agents", String(agents.length)],
           ["Recent runs", String(runs.length)],
-          ["Their cost", money(spent) || "$0"],
+          ["Their cost", money(spent)],
         ].map(([k, v]) => (
           <div key={k} className="bg-card rounded-xl border p-3">
             <p className="text-muted-foreground text-xs">{k}</p>

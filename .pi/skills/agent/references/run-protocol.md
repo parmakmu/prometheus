@@ -141,7 +141,9 @@ tool; enable it only if missing. No `subagent list` first.
 
 Then `agent_log_start` with the wave, the returned run id and mission id,
 and the approvals and decisions. Tell the user what the wave does and roughly
-how many children it launches, and end the turn; Pi wakes the session.
+how many children it launches (a stage compile's `notes` say was reused from
+an earlier run takes that run's outputs: say so in one line, it launches
+nothing), and end the turn; Pi wakes the session.
 
 ### 4. While it runs
 

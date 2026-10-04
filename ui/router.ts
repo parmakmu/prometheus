@@ -737,6 +737,23 @@ async function deleteSession(user: string, agent: string, cwd: string, id: strin
 	send(res, 200, { ok: true });
 }
 
+// a conversation renamed: Pi's session name (what /name sets), by its worker when one has it open, since a line
+// appended beside a live session would not be on its tree; else appended to the file
+async function renameSession(user: string, agent: string, cwd: string, id: string, req: IncomingMessage, res: ServerResponse) {
+	const s = (await sessionsOf(user, cwd)).find((x) => x.id === id);
+	if (!s) return send(res, 404, "no such conversation");
+	const w = workers.get(`${user}/${agent}@${id}`);
+	if (w) return void forward(w, req, res, "/name");
+	const chunks: Buffer[] = [];
+	req.on("data", (c: Buffer) => chunks.push(c));
+	req.on("end", () => {
+		const name = String(JSON.parse(String(Buffer.concat(chunks)) || "{}").name ?? "").trim();
+		if (!name) return send(res, 400, "a name is needed");
+		SessionManager.open(s.path, sessionDirOf(cwd)).appendSessionInfo(name);
+		send(res, 200, { ok: true });
+	});
+}
+
 // --- workers: one process per user and agent --------------------------------------------------------
 
 type Worker = { proc: ChildProcess; socket: string; ready: Promise<void>; lastUsed: number; open: number };
@@ -904,6 +921,8 @@ function route(req: IncomingMessage, res: ServerResponse) {
 	if (req.method === "GET" && rest === "/sessions") return void listSessions(user, agent, cwd, res);
 	const del = rest.match(/^\/sessions\/([\w-]+)$/);
 	if (req.method === "DELETE" && del) return void deleteSession(user, agent, cwd, del[1], res);
+	const ren = rest.match(/^\/sessions\/([\w-]+)\/name$/);
+	if (req.method === "POST" && ren) return void renameSession(user, agent, cwd, ren[1], req, res);
 	// a conversation: /…/s/<session id or new-…>/<agent path>
 	const conv = rest.match(/^\/s\/([\w-]+)(\/.*)$/);
 	if (conv) return void forward(workerFor(user, agent, cwd, conv[1]), req, res, conv[2]);
