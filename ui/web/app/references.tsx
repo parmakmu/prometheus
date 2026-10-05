@@ -22,11 +22,11 @@ export function FolderIcon({ name, open = false, className = "size-4" }: { name:
 
 export const UPLOADS_CHANGED = "uploads-changed";
 
-// where this chat's "+" put its files (attachments.ts): an agent's uploads/ folder, or your files folder for the planner
-const where = (slug: string | null) => ({
-  list: slug ? `/a/${slug}/tree?dir=uploads` : "/files?dir=chat-uploads",
-  file: (name: string) => (slug ? `/a/${slug}/download?path=${encodeURIComponent(`uploads/${name}`)}` : `/files/download?path=${encodeURIComponent(`chat-uploads/${name}`)}`),
-});
+// where this chat's "+" put its files (attachments.ts): the uploads/ folder of the agent, or of prometheus
+const where = (slug: string | null) => {
+  const base = slug ? `/a/${slug}` : "/p";
+  return { list: `${base}/tree?dir=uploads`, file: (name: string) => `${base}/download?path=${encodeURIComponent(`uploads/${name}`)}` };
+};
 
 // an image from the server, fetched with the token (an <img> can't send it)
 function useBlobUrl(url: string, on: boolean) {

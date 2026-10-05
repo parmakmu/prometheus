@@ -239,6 +239,7 @@ You don't call these. They are here so you can read a tool result or a refusal t
 |---|---|---|
 | [`agent_scaffold`](#agent_scaffold) | prometheus | create the folder for the agent being planned |
 | [`agent_check (prometheus)`](#agent_check-prometheus) | prometheus | check an agent's plan from prometheus |
+| [`agent_record_critique (prometheus)`](#agent_record_critique-prometheus) | prometheus | record the plan critic's result for a new agent: what makes its plan ready |
 | [`agent_add_package`](#agent_add_package) | both | add a Python package, after you approve it and its reason |
 | [`agent_check`](#agent_check) | Agent | check the plan and say where the agent stands |
 | [`agent_new_run`](#agent_new_run) | Agent | start a run |
@@ -278,6 +279,18 @@ agent_check({ slug })
 **Called during:** planning · changes nothing
 
 Validates the plan and compile-checks each concrete pending wave. Returns errors, warnings and a summary. It never launches a wave.
+
+### agent_record_critique (prometheus)
+
+Records the plan critic's result for a new agent's plan, as [`agent_record_critique`](#agent_record_critique) does inside an agent.
+
+```text
+agent_record_critique({ slug, run_id, verdict, passes?, findings })
+```
+
+**Called during:** planning
+
+The only way a plan that needs the critic (more than three stages, a judgment stage or a side effect) becomes ready: it checks the critic's run completed, and stamps the plan with a fingerprint of itself (`critique.plan_digest`). A critique or `status: ready` written by hand, or an edit after the record, leaves the plan not ready. After the user's answers are written into the plan, the planner records the same critic run again.
 
 ## Agent tools
 

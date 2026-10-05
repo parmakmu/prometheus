@@ -41,7 +41,15 @@ from typing import Annotated
 
 import typer
 from runs import active_run, list_runs
-from utils import emit, load_yaml, read_yaml, refuse, report_state
+from utils import (
+    PLAN_DIR,
+    PLAN_PARTS,
+    emit,
+    load_yaml,
+    read_plan,
+    refuse,
+    report_state,
+)
 from validate_plan import check_ready, validate
 
 MAIN = "main"
@@ -97,7 +105,7 @@ def identity(agent_dir):
 
 
 def plan_revision(agent_dir):
-    plan = read_yaml(Path(agent_dir) / "plan.yaml", {})
+    plan = read_plan(agent_dir, {})
     return (plan.get("revision", 1), plan.get("status")) if plan else (None, None)
 
 
@@ -228,9 +236,16 @@ def begin_change(kind: Annotated[str, typer.Option(help="revise (/agent-revise) 
 
 
 def main_plan(agent_dir):
-    """plan.yaml as main has it, or None."""
+    """The plan as main has it (plan.yaml with .plan/), or None."""
     r = git(agent_dir, "show", f"{MAIN}:plan.yaml", check=False)
-    return load_yaml(r.stdout) if r.returncode == 0 else None
+    if r.returncode != 0:
+        return None
+    plan = load_yaml(r.stdout)
+    for part in PLAN_PARTS:
+        p = git(agent_dir, "show", f"{MAIN}:{PLAN_DIR}/{part}.yaml", check=False)
+        if p.returncode == 0 and isinstance(data := load_yaml(p.stdout), dict) and part in data and isinstance(plan, dict):
+            plan[part] = data[part]
+    return plan
 
 
 def why_not_ready(agent_dir, plan):
@@ -274,7 +289,7 @@ def merge(action: Annotated[str, typer.Option(help="merge | keep | discard")],
     if run := active_run(agent_dir):
         refuse(f"run {run.id} is still active: let it finish, or stop it (agent_stop_run), then review")
     if action == "merge":
-        plan = read_yaml("plan.yaml", {})
+        plan = read_plan(agent_dir, {})
         errors = validate(plan, None, None, agent_dir)[0]
         if errors or why_not_ready(agent_dir, plan):
             refuse(f"the plan on {b} is {plan.get('status')}" + (f" with errors {errors[:3]}" if errors else "")

@@ -10,18 +10,18 @@ export const LIMITS = SANDBOX === "bwrap" && works("systemd-run", ["--user", "--
 const RESOLV = existsSync("/etc/resolv.conf") ? realpathSync("/etc/resolv.conf") : "";
 
 export function bwrapCommand(spec: Spec, command: string[]): [string, string[]] {
-	const a = [
-		// --new-session stops a sandbox typing into the router's terminal; a terminal of its own (tty) must
-		// keep its pseudo-terminal as the controlling one, for resizes
-		"--unshare-all", "--share-net", "--die-with-parent", ...(spec.tty ? [] : ["--new-session"]), "--clearenv",
-		"--symlink", "usr/bin", "/bin", "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64", "--symlink", "usr/sbin", "/sbin",
-		"--proc", "/proc", "--dev", "/dev",
-		...(RESOLV && !RESOLV.startsWith("/etc/") ? ["--ro-bind", RESOLV, RESOLV] : []),
-	];
-	for (const m of spec.mounts) a.push(...(m.kind === "tmpfs" ? ["--tmpfs", m.dst] : [m.kind === "ro" ? "--ro-bind" : "--bind", m.src, m.dst]));
-	for (const [k, v] of Object.entries(spec.env)) a.push("--setenv", k, v);
-	a.push("--chdir", spec.cwd);
-	const limits = LIMITS ? ["systemd-run", "--user", "--scope", "-q", "-p", `MemoryMax=${process.env.MEMORY_MAX ?? "4G"}`, "-p", `CPUQuota=${process.env.CPU_QUOTA ?? "200%"}`, "--"] : [];
-	const all = [...limits, "bwrap", ...a, "--", ...command];
-	return [all[0], all.slice(1)];
+  const a = [
+    // --new-session stops a sandbox typing into the router's terminal; a terminal of its own (tty) must
+    // keep its pseudo-terminal as the controlling one, for resizes
+    "--unshare-all", "--share-net", "--die-with-parent", ...(spec.tty ? [] : ["--new-session"]), "--clearenv",
+    "--symlink", "usr/bin", "/bin", "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64", "--symlink", "usr/sbin", "/sbin",
+    "--proc", "/proc", "--dev", "/dev",
+    ...(RESOLV && !RESOLV.startsWith("/etc/") ? ["--ro-bind", RESOLV, RESOLV] : []),
+  ];
+  for (const m of spec.mounts) a.push(...(m.kind === "tmpfs" ? ["--tmpfs", m.dst] : [m.kind === "ro" ? "--ro-bind" : "--bind", m.src, m.dst]));
+  for (const [k, v] of Object.entries(spec.env)) a.push("--setenv", k, v);
+  a.push("--chdir", spec.cwd);
+  const limits = LIMITS ? ["systemd-run", "--user", "--scope", "-q", "-p", `MemoryMax=${process.env.MEMORY_MAX ?? "4G"}`, "-p", `CPUQuota=${process.env.CPU_QUOTA ?? "200%"}`, "--"] : [];
+  const all = [...limits, "bwrap", ...a, "--", ...command];
+  return [all[0], all.slice(1)];
 }

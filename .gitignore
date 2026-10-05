@@ -10,3 +10,5 @@ agents/*
 .DS_Store
 # Pi conversations (sessionDir in .pi/settings.json)
 .pi/sessions/
+# files attached in the planner's chat in the web app
+uploads/

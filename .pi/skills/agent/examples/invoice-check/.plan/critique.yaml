@@ -1,0 +1,36 @@
+# ── critique: the plan critic's review and each finding's disposition (written only by agent_record_critique).
+# ── Part of the plan of agent "invoice-check" (plan.yaml); read with it.
+critique:
+  agent: plan-critic
+  run_id: example-critic-run
+  revision: 1
+  passes: 2
+  verdict: revise
+  plan_digest: 38df709d3d98fe9c  # agent_record_critique writes it: the plan as the critic saw it
+  findings:
+    - id: f1
+      severity: major
+      category: should_split
+      target: extract
+      claim: >-
+        extract assumes every invoice PDF has a text layer; scanned ones would drop
+        out of the report silently
+      disposition: accepted
+      note: extract now writes unparsed.json; added the extract-rest judgment stage
+    - id: f2
+      severity: blocking
+      category: missing_question
+      target: done_when
+      claim: >-
+        Q3 could mean invoice date or received date, which changes which invoices
+        are in scope
+      disposition: asked
+      note: became q3
+    - id: f3
+      severity: minor
+      category: other
+      target: review
+      claim: the review stage adds cost and could be dropped
+      disposition: rejected
+      note: it is the only check on judgment output before anything reaches Gmail
+

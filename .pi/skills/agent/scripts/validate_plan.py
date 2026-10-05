@@ -46,7 +46,7 @@ from pydantic import (
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 from runs import active_run, last_run
-from utils import load_yaml
+from utils import PLAN_FILE, load_yaml, parts_in_plan_file, read_plan
 
 
 def plan_digest(plan):
@@ -55,17 +55,29 @@ def plan_digest(plan):
     return hashlib.sha256(json.dumps(content, sort_keys=True, default=str, ensure_ascii=False).encode()).hexdigest()[:16]
 
 
+def critic_required(plan):
+    """Whether the plan needs the critic: more than 3 stages, or a side effect or judgment (SKILL.md)."""
+    stages = [s for s in plan.get("stages") or [] if isinstance(s, dict)]
+    return len(stages) > 3 or any(s.get("kind") in ("side_effect", "judgment") for s in stages)
+
+
 def check_ready(plan, base=None):
-    """Why the plan cannot run, or None: its status is not ready, or it changed after the critic's
-    result was recorded (critique.plan_digest). `base`: main's plan, on a branch; a plan that differs
-    from it needs a critique of exactly this plan, even when its critique predates plan_digest."""
+    """Why the plan cannot run, or None: its status is not ready, or the critic's result was not recorded for
+    exactly this plan (critique.plan_digest, which only agent_record_critique writes: a critique written by
+    hand, or a plan edited after it, is not one). `base`: main's plan, on a branch; a plan that differs from
+    it needs that too, even one small enough to need no critic."""
     if plan.get("status") != "ready":
         return f"the plan is {plan.get('status')}, not ready: finish it first (the critic, then agent_record_critique)"
     critique = plan.get("critique") if isinstance(plan.get("critique"), dict) else {}
     seen, digest = critique.get("plan_digest"), plan_digest(plan)
-    if seen != digest and (seen or (base is not None and plan_digest(base) != digest)):
+    if seen == digest:
+        return None
+    if seen:
         return ("plan.yaml changed after the critic's result was recorded, so the critic has not seen this plan: "
                 "run the critic on it and record the result (agent_record_critique)")
+    if critique or critic_required(plan) or (base is not None and plan_digest(base) != digest):
+        return ("the critic's result for this plan was not recorded with agent_record_critique, which checks the critic "
+                "ran and ties its result to the plan: run the critic and record it (never set status: ready by hand)")
     return None
 
 
@@ -951,7 +963,7 @@ class Checker:
             crev = plan.revision if c.revision is None else c.revision
             if crev != plan.revision:
                 self.warn(f"critique is for revision {crev} but the plan is at revision {plan.revision}; re-run the critic after replanning")
-            if plan.status == "ready" and c.plan_digest and (why := check_ready(self.raw)):
+            if plan.status == "ready" and (why := check_ready(self.raw)):
                 err(why)
             for fid in duplicates(f.id for f in c.findings):
                 err(f"critic finding '{fid}': duplicate id")
@@ -1112,8 +1124,9 @@ def main(
 ):
     """Validate an agent YAML file."""
     plan_path = Path(plan_path)
-    try:
-        plan = load_yaml(plan_path.read_text(encoding="utf-8"))
+    try:  # the whole plan: plan.yaml and .plan/ beside it (another file name: that file alone)
+        plan = (read_plan(plan_path.resolve().parent, strict=True) if plan_path.name == PLAN_FILE
+                else load_yaml(plan_path.read_text(encoding="utf-8")))
     except (OSError, YAMLError) as exc:
         print(json.dumps({"valid": False, "errors": [f"cannot read plan: {exc}"], "warnings": []}))
         sys.exit(2)
@@ -1123,6 +1136,10 @@ def main(
         if (parent / ".pi").is_dir():
             agent_root = parent
     errors, warnings, summary = validate(plan, agents, external, agent_root)
+    # plan.yaml is for people: how it was planned has its own files
+    if plan_path.name == PLAN_FILE:
+        errors += [f"{part}: belongs in .plan/{part}.yaml, not plan.yaml (plan.yaml is for people to read)"
+                   for part in parts_in_plan_file(plan_path.resolve().parent)]
     where = None
     if agent_root is not None:
         from agent_state import state  # imported late: it imports this module

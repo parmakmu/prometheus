@@ -63,9 +63,9 @@ from ruamel.yaml.error import YAMLError
 from runs import RUNS, active_run, list_runs, read_run
 from utils import (
     emit,
-    load_yaml,
     pi_agent_dir,
     read_json,
+    read_plan,
     refuse,
     report_state,
     subagent_records,
@@ -778,7 +778,7 @@ def main(
         refuse(f"{agent_dir} is not an agent", 2)
     report_state(agent_dir)
     try:
-        plan = load_yaml(plan_path.read_text(encoding="utf-8")) or {}
+        plan = read_plan(agent_dir, strict=True) or {}
     except YAMLError as exc:
         refuse(f"cannot read plan: {exc}", 2)
     errors, _warnings, summary = validate(plan, None, None, agent_dir)
@@ -828,7 +828,9 @@ def main(
     if not agent_git.available():
         refuse("git is required: pi-subagents checks each writer child's staged index with git, and the agent's plan is versioned in its own repo. Ask the user to install git.")
 
-    compiler = Compiler(agent_dir, plan, params, run.dir, run.state, {a.strip() for a in approve.split(",") if a.strip()})
+    # approved now, or for the whole run when it started (an API call's `approve`)
+    approvals = {a.strip() for a in approve.split(",") if a.strip()} | set(run.state.get("preapproved") or [])
+    compiler = Compiler(agent_dir, plan, params, run.dir, run.state, approvals)
     result = compiler.compile(wave, reuse=True)
     if result.get("ok"):
         # committed only for a launch: a refused compile (params, approvals) leaves the branch alone

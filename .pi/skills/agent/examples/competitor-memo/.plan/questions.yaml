@@ -1,0 +1,18 @@
+# ── questions: what the planner asked the user, and the answers.
+# ── Part of the plan of agent "competitor-memo" (plan.yaml); read with it.
+questions:
+  - id: q1
+    question: Who is the memo for?
+    why: sets depth, tone and what the recommendation must cover
+    options: [leadership team, product and marketing, sales]
+    default: leadership team
+    blocks: [memo]
+    answer: leadership team
+  - id: q2
+    question: New child page, or replace the content of an existing page?
+    why: replacing is an overwrite in Notion
+    options: [new child page, replace an existing page]
+    default: new child page
+    blocks: [publish]
+    answer: new child page
+

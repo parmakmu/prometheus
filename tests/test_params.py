@@ -156,3 +156,16 @@ def test_an_unset_secret_is_reported_by_its_variable(env):
     c.gate_command("x ${api_token} ${table}")
     assert c.missing_secrets == {"TEST_API_TOKEN"}
     assert c.missing_params == {"table"}
+
+
+def test_a_runs_given_values_win_over_env_for_that_run_only(tmp_path):
+    # an API call's params: on the active run, over .env; a secret only ever from .env or the environment
+    (tmp_path / ".env").write_text("TABLE=from-env\nTEST_API_TOKEN=s3cret\n", encoding="utf-8")
+    run = tmp_path / "runs" / "2026-10-05-1"
+    run.mkdir(parents=True)
+    (run / "run.yaml").write_text("status: active\ngiven_params: {table: given, api_token: nope}\n", encoding="utf-8")
+    v = wp.load(tmp_path, SPECS)
+    assert v["table"] == "given" and v["api_token"].get_secret_value() == "s3cret"
+    (run / "run.yaml").write_text("status: done\ngiven_params: {table: given}\n", encoding="utf-8")
+    assert wp.load(tmp_path, SPECS)["table"] == "from-env"
+    assert wp.problems_with(SPECS, {"api_token": "x"}) and not wp.problems_with(SPECS, {"table": "x"})

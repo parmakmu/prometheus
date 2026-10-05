@@ -14,7 +14,7 @@ only the task. Do not write a script block, list agents first (`subagent list`) 
 
 ```js
 subagent({ async: true, mission: false, workflow: ".pi/skills/agent/references/critic.js",
-  args: { task: "Critique the plan at <absolute plan path>. Read only that file and, if needed, cheap read-only looks at the inputs it names. Return only the structured report." } })
+  args: { task: "Critique the plan at <absolute path of the agent's plan.yaml>. Read that file and the files in .plan/ beside it (unknowns, questions, the subagents seen; not critique.yaml, an earlier review) and, if needed, cheap read-only looks at the inputs it names. Return only the structured report." } })
 ```
 
 At replan or on a change branch, add to the task which stages changed. Tell
@@ -25,8 +25,8 @@ once; if that fails too, tell the user and stop.
 
 ## Folding findings in
 
-Give every finding a disposition in `critique.findings` (in an agent,
-through `agent_record_critique`, with `run_id` the plan-critic child's run
+Give every finding a disposition in `critique.findings` (through
+`agent_record_critique`, in prometheus with the agent's `slug` too, with `run_id` the plan-critic child's run
 id from the result, once it completed: the tool checks it in pi-subagents'
 records, and ties the record to the plan as it is then, so edit first, record
 last):

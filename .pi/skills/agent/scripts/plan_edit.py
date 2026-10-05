@@ -16,6 +16,8 @@ critique  records a plan-critic result {run_id, verdict, passes?, findings} with
           commits. The run id must be a completed critic child in pi-subagents' records; refused
           while a wave runs and, once a run exists, on main.
 params    sets {name: value} in .env for params the plan declares, except secrets.
+card      what a caller of the agent's API needs (the web app's run API): what it does, the params it
+          takes, its outputs, and where a run may stop to ask (approvals, reviews).
 
 Prints one JSON object with the validation result.
 """
@@ -29,7 +31,14 @@ import agent_params
 import typer
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from runs import active_run, list_runs
-from utils import emit, read_yaml, refuse, report_state, subagent_child, write_yaml
+from utils import (
+    emit,
+    read_plan,
+    refuse,
+    report_state,
+    subagent_child,
+    write_plan,
+)
 from validate_plan import plan_digest, validate
 
 PLAN = Path("plan.yaml")
@@ -96,7 +105,7 @@ def main(agent_dir: Annotated[str, typer.Option("--agent", help="agent root")] =
 @app.command()
 def replan(change: Annotated[str, typer.Option(help="the change as a JSON object, or a file holding it")]):
     """Change pending stages after discovery."""
-    plan, c = read_yaml(PLAN, {}), json_arg(change)
+    plan, c = read_plan(Path.cwd(), {}), json_arg(change)
     if not isinstance(c, dict):
         refuse("the change must be a JSON object")
     extra = sorted(set(c) - REPLAN_KEYS)
@@ -164,7 +173,7 @@ def replan(change: Annotated[str, typer.Option(help="the change as a JSON object
     plan["revision"] = rev + 1
     plan["status"] = "draft"
     plan.pop("critique", None)
-    write_yaml(PLAN, plan)
+    write_plan(Path.cwd(), plan)
     new, git_note = commit(f"r{rev + 1} draft: replan" + (f": {c['note']}" if c.get("note") else ""), run)
     emit({"ok": True, "previous_commit": previous, "commit": new, "git_note": git_note, "note": c.get("note"), **report(plan)})
 
@@ -172,7 +181,7 @@ def replan(change: Annotated[str, typer.Option(help="the change as a JSON object
 @app.command()
 def critique(result: Annotated[str, typer.Option(help="the critic's result as JSON {run_id, verdict, passes?, findings}, or a file")]):
     """Record a plan-critic result and mark the plan ready if it validates."""
-    plan, c = read_yaml(PLAN, {}), json_arg(result)
+    plan, c = read_plan(Path.cwd(), {}), json_arg(result)
     if not isinstance(c, dict) or not c.get("run_id") or not c.get("verdict"):
         refuse("the result needs run_id and verdict")
     if not isinstance(c.get("passes", 1), int) or not 1 <= c.get("passes", 1) <= CRITIC_PASSES:
@@ -215,15 +224,16 @@ def critique(result: Annotated[str, typer.Option(help="the critic's result as JS
         "passes": c.get("passes", 1),
         "verdict": c["verdict"],
         "findings": styled(c.get("findings") or []),
+        # the plan the critic saw (status, revision and critique aside): an edit after this record makes it
+        # unready (validate_plan.check_ready), and only this command writes it
+        "plan_digest": plan_digest(plan),
     }
     plan["status"] = "ready"
     r = report(plan)
     if not r["valid"]:
         plan["status"] = "needs_answers" if r["open_questions"] else "draft"
         r = report(plan)
-    # the plan the critic saw: an edit after this record makes it unready (validate_plan.check_ready)
-    plan["critique"]["plan_digest"] = plan_digest(plan)
-    write_yaml(PLAN, plan)
+    write_plan(Path.cwd(), plan)
     new, git_note = commit(f"r{plan.get('revision', 1)} {plan['status']}: critic {c['verdict']}", run)
     emit({"ok": True, "ready": plan["status"] == "ready", "commit": new, "git_note": git_note, **r})
 
@@ -231,7 +241,7 @@ def critique(result: Annotated[str, typer.Option(help="the critic's result as JS
 @app.command()
 def params(values: Annotated[str, typer.Option(help="{name: value} as JSON, or a file")]):
     """Set values for params that are not secrets in .env (agent_params.py)."""
-    plan, v = read_yaml(PLAN, {}), json_arg(values)
+    plan, v = read_plan(Path.cwd(), {}), json_arg(values)
     if not isinstance(v, dict):
         refuse("values must be a JSON object {name: value}")
     problems = agent_params.set_values(Path.cwd(), plan.get("params") or {}, v)
@@ -244,14 +254,14 @@ def params(values: Annotated[str, typer.Option(help="{name: value} as JSON, or a
 @app.command("network-show")
 def network_show():
     """The hosts the plan asks to reach (`network:`), for the web app to offer you to allow."""
-    hosts = read_yaml(PLAN, {}).get("network") or []
+    hosts = read_plan(Path.cwd(), {}).get("network") or []
     emit({"ok": True, "requested": [str(h) for h in hosts if isinstance(h, str)]})
 
 
 @app.command("params-show")
 def params_show():
     """The plan's params and their values for a form (the web app): a secret only as set or not."""
-    specs = read_yaml(PLAN, {}).get("params") or {}
+    specs = read_plan(Path.cwd(), {}).get("params") or {}
     values = agent_params.load(Path.cwd(), specs)
     emit({"ok": True, "params": [{
         "name": n, "description": agent_params.spec_of(s).get("description"), "type": agent_params.kind(s),
@@ -261,5 +271,27 @@ def params_show():
     } for n, s in specs.items()]})
 
 
+@app.command()
+def card():
+    """The agent as a caller sees it: no values (a secret, or a path on this machine, stays here)."""
+    plan = read_plan(Path.cwd(), {})
+    specs = plan.get("params") or {}
+    values = agent_params.load(Path.cwd(), specs)
+    stages = [s for s in plan.get("stages") or [] if isinstance(s, dict)]
+    emit({"ok": True, "ready": plan.get("status") == "ready", "request": plan.get("request"), "goal": plan.get("goal"),
+          "done_when": plan.get("done_when") or [],
+          "params": [{"name": n, "type": agent_params.kind(s), "description": agent_params.spec_of(s).get("description"),
+                      "required": agent_params.spec_of(s).get("required", True), "set_here": values.get(n) is not None}
+                     for n, s in specs.items()],
+          "inputs": [{k: i.get(k) for k in ("id", "kind", "format", "location") if i.get(k) is not None}
+                     for i in plan.get("inputs") or [] if isinstance(i, dict)],
+          "outputs": [{k: o.get(k) for k in ("id", "kind", "format", "location") if o.get(k) is not None}
+                      for o in plan.get("outputs") or [] if isinstance(o, dict)],
+          "approvals": [{"stage": s["key"], "title": s.get("title")} for s in stages
+                        if s.get("kind") == "side_effect" or s.get("approval") == "required" or s.get("pattern") == "approval"],
+          "reviews": [{"stage": s["key"], "title": s.get("title")} for s in stages if s.get("pause_after")]})
+
+
 if __name__ == "__main__":
     app()
+

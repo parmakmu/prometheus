@@ -88,6 +88,16 @@ the plan is <status>, not ready: finish it first
 
 **Fix.** Run `/agent-run`. With a draft plan it goes back to planning and asks what the plan still needs.
 
+### The critic's result was not recorded
+
+```text
+the critic's result for this plan was not recorded with agent_record_critique, which checks the critic ran and ties its result to the plan
+```
+
+**Cause.** The plan says `status: ready`, but its critique wasn't recorded by `agent_record_critique`, which stamps the plan with a fingerprint of itself (`critique.plan_digest`). A model wrote the critique or the status by hand. Before 2026-10-05, prometheus planned new agents this way.
+
+**Fix.** Run `/agent-run` in the agent: it runs the critic and records it. An agent planned before 2026-10-05 was stamped once when this rule came in.
+
 ### A run is already active
 
 ```text
@@ -206,9 +216,9 @@ A wave fails with "no result within 600 s (limits.command_timeout_s)".
 
 `/agent-auto` says pi-subagents did not answer.
 
-**Cause.** The installed pi-subagents has no in-process RPC, or is not loaded in this session.
+**Cause.** The installed pi-subagents has no in-process RPC, or is not loaded in this session. In the web app before 2026-10-05, no package loaded in a sandbox at all (Pi couldn't lock `trust.json` in a read-only folder).
 
-**Fix.** Update pi-subagents (0.74 or later) and restart Pi, or use `/agent-run`.
+**Fix.** Update pi-subagents (0.74 or later) and restart Pi, or use `/agent-run`. In the web app, restart the router.
 
 ### The subagent tool returned an error
 
@@ -407,6 +417,31 @@ With `SANDBOX=podman`, a stage fails with "Tunnel connection failed: 403 Forbidd
 **Cause.** You asked for a container runtime (`PODMAN_RUNTIME`, usually gVisor's `runsc`) that can't start a container on this machine. The router checks at start, rather than run without the boundary you chose. Ubuntu's 2023 `runsc` fails this way as a normal user under WSL.
 
 **Fix.** Install a current gVisor release from [gvisor.dev](https://gvisor.dev/docs/user_guide/install/), or start the router without `PODMAN_RUNTIME` (plain rootless Podman).
+
+### An API call is refused
+
+`POST /a/<agent>/api/runs` answers 400 or 409, or a key gets 403.
+
+**Cause.** The call is checked against what the agent takes before it queues:
+- 409 "the agent's plan isn't ready to run": its plan is a draft or changed since the critic.
+- 400 "params the agent doesn't take": a name its plan doesn't declare, or a secret (secrets are set on the agent, in its `.env`, never sent).
+- 400 "approve": a stage that doesn't ask for approval.
+- 400 "files": a path that is absolute or has `..`.
+- 403 "this key calls one agent's API only": a key used for another agent, or outside `/a/<agent>/api`, or revoked.
+
+**Fix.** Read the agent's card (`GET /a/<agent>/api`): its params, and the stages you can approve. For a plan that isn't ready, finish it in the agent's chat.
+
+### An API call waits in queued
+
+**Cause.** The agent has one active run at a time: another call's, or one started from its chat. The call's `waiting_for` says so.
+
+**Fix.** Let that run finish, or stop it in the agent's chat. The call starts within 15 seconds after.
+
+### An API call failed: "the web app's server stopped while this call ran"
+
+**Cause.** The router drives a call while it runs; it stopped (restart, crash) mid-way. The run stays as it was.
+
+**Fix.** Open the call's session in the web app (the agent's sessions, tagged *API*) and continue the run there with `/agent-run`, or stop it.
 
 ### An agent can't change its own code in the web app
 

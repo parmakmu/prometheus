@@ -366,7 +366,7 @@ function editRefusal(entry: string): string | null {
     if (busy || session.isStreaming) return "The agent is working: edit once it has finished.";
     const users = branchMessages().filter((x) => x.m.role === "user");
     const at = users.findIndex((x) => x.id === entry);
-    if (at < 0) return "That message is not in this conversation's current branch.";
+    if (at < 0) return "That message is not in this session's current branch.";
     const commands = commandsByPrompt();
     const lastCommand = users.reduce((n, x, i) => ((commands.get(hashOf(textOf(x.m.content))) ?? textOf(x.m.content)).trim().startsWith("/agent-") ? i : n), -1);
     if (at <= lastCommand) return "Only messages after the last agent command can be edited: the command's work (runs, commits) would not be undone.";
@@ -548,11 +548,11 @@ const BUILTIN: Record<string, string> = {
     model: "Choose the model: /model, or /model provider/id",
     thinking: "Set the thinking level: /thinking, or /thinking <level>",
     compact: "Compact the context: /compact [instructions]",
-    session: "This conversation: model, messages, tokens, cache, cost",
-    name: "Name this conversation: /name <name>",
+    session: "This session: model, messages, tokens, cache, cost",
+    name: "Name this session: /name <name>",
     reload: "Reload extensions, skills and context files",
-    new: "Start a new conversation (the + in Conversations)",
-    resume: "Open another conversation (the Conversations list)",
+    new: "Start a new session (the + in Sessions)",
+    resume: "Open another session (the Sessions list)",
 };
 const modelKey = (m: any) => `${m.provider}/${m.id}`;
 const fmt = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n));
@@ -591,7 +591,7 @@ async function builtin(text: string): Promise<boolean> {
         const c = s.contextUsage;
         textMessage(
             [
-                `**Conversation** \`${s.sessionId}\``,
+                `**Session** \`${s.sessionId}\``,
                 `- model: ${m ? `${m.name ?? m.id} (${modelKey(m)})` : "none"}, thinking: ${session.thinkingLevel}`,
                 `- messages: ${s.userMessages} from you, ${s.assistantMessages} replies, ${s.toolCalls} tool calls`,
                 `- tokens: ${fmt(s.tokens.input)} in, ${fmt(s.tokens.output)} out; cache ${fmt(s.tokens.cacheRead)} read, ${fmt(s.tokens.cacheWrite)} written`,
@@ -600,12 +600,12 @@ async function builtin(text: string): Promise<boolean> {
             ].join("\n"),
         );
     } else if (name === "name") {
-        const n = arg || (await ask("input", "Name this conversation", undefined, value));
+        const n = arg || (await ask("input", "Name this session", undefined, value));
         if (n) session.setSessionName(String(n)), textMessage(`Named: ${n}`);
     } else if (name === "reload") {
         await (session as any).reload();
         textMessage("Reloaded extensions, skills and context files.");
-    } else textMessage(name === "new" ? "Start a new conversation with the + next to Conversations, on the left." : "Pick a conversation from the Conversations list, on the left.");
+    } else textMessage(name === "new" ? "Start a new session with the + next to Sessions, on the left." : "Pick a session from the Sessions list, on the left.");
     return true;
 }
 

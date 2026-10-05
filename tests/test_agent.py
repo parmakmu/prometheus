@@ -13,7 +13,7 @@ import types
 from pathlib import Path
 
 import pytest
-from conftest import HERE, ROOT, SKILL, fake_critic, git_in
+from conftest import HERE, ROOT, SKILL, copy_example, fake_critic, git_in, stamp
 
 # one continuous scenario (state on disk, module fixtures): its tests run in order on one worker
 pytestmark = pytest.mark.xdist_group("agent-scenario")
@@ -104,8 +104,12 @@ def test_refresh_keeps_the_lessons_section_of_the_role_file(env):
     role = env.b / ".pi" / "APPEND_SYSTEM.md"
     original = role.read_text(encoding="utf-8")
     role.write_text(original + "\n## Lessons for this agent\n\n- Ask for the folder first.\n", encoding="utf-8")
+    # what an older prometheus left under the old name (Pi would load it): removed
+    (env.b / ".pi" / "extensions" / "workflow").mkdir(parents=True)
+    (env.b / ".pi" / "extensions" / "workflow" / "index.ts").write_text("", encoding="utf-8")
     r = env.run_in(env.prometheus, ["scaffold_agent.py", "invoice-check", "--root", "agents", "--refresh"])
-    assert r.data["ok"]
+    assert r.data["ok"] and r.data["removed"] == [".pi/extensions/workflow"]
+    assert not (env.b / ".pi" / "extensions" / "workflow").exists()
     refreshed = role.read_text(encoding="utf-8")
     assert refreshed.startswith(original.rstrip("\n")) and refreshed.endswith("- Ask for the folder first.\n")
     assert refreshed.count("## Lessons for this agent") == 1
@@ -122,8 +126,7 @@ def test_env_and_uploads_stay_out_of_git(env):
 # --- a concrete plan, gates, the first compile check -------------------------
 
 def test_compile_check(env):
-    import shutil
-    shutil.copy(SKILL / "examples" / "invoice-check.yaml", env.b / "plan.yaml")
+    copy_example("invoice-check", env.b)
     (env.b / "gates" / "check_lines.py").write_text(
         "import json,sys,os\nprint(json.dumps({'ok': all(os.path.exists(p) for p in sys.argv[1:])}))\n", encoding="utf-8")
     (env.b / "gates" / "check_report.py").write_text(
@@ -139,6 +142,7 @@ def test_compile_needs_an_active_run(env):
     text = plan.read_text(encoding="utf-8").replace("    batch: 50\n", "    batch: 3\n")
     assert text != plan.read_text(encoding="utf-8")
     plan.write_text(text, encoding="utf-8")
+    stamp(plan)  # the critic's result, recorded for the plan as edited
     r = env.run(["compile_wave.py"])
     assert "no active run" in (r.data or {}).get("error", "")
 
@@ -163,6 +167,14 @@ def test_new_run_commits_the_plan(env):
 def test_second_run_refused_while_one_is_active(env):
     r = env.run(["run_log.py", "new"])
     assert "is active" in (r.data or {}).get("error", "")
+
+
+def test_a_run_refuses_given_values_it_cant_use(env):
+    # what an API call gives up front: declared params only, stages that exist
+    r = env.run(["run_log.py", "new", "--params", '{"nosuch": "x"}'])
+    assert "declares no param 'nosuch'" in (r.data or {}).get("error", "")
+    r = env.run(["run_log.py", "new", "--approve", "nosuch"])
+    assert "names no stage: nosuch" in (r.data or {}).get("error", "")
 
 
 def test_preflight_asks_for_params(env):
@@ -777,7 +789,7 @@ def test_prometheus_extension_registers_commands_and_tools(env, ext):
         {"cmd": "agent-list", "complete": "inv"},
     ])
     env.prometheus_ext_report = report
-    assert (len(report["commands"]), len(report["tools"])) == (4, 3)
+    assert (len(report["commands"]), len(report["tools"])) == (4, 4)  # agent_scaffold, agent_check, agent_record_critique, agent_add_package
 
 
 @skip_extensions
@@ -808,6 +820,36 @@ def test_scaffold_needs_agent_new(env, ext):
     # /agent-new activates subagent (for probes and the critic) before its prompt goes out
     assert "subagent" not in refused["activeTools"]
     assert "subagent" in new["activeTools"]
+
+
+@skip_extensions
+def test_prometheus_records_a_new_agents_critic_which_makes_it_ready(env, ext, run_py):
+    # first planning: a critique written by hand (no fingerprint) is not ready; agent_record_critique checks the critic
+    # ran and stamps the plan, as it does inside an agent
+    from ruamel.yaml import YAML
+    agents = env.prometheus / "agents"
+    assert run_py([SKILL / "scripts" / "scaffold_agent.py", "fresh", "--root", agents, "--request", "x"]).data["ok"]
+    fresh = agents / "fresh"
+    copy_example("invoice-check", fresh)
+    for g in (env.b / "gates").glob("*.py"):
+        shutil.copy(g, fresh / "gates" / g.name)
+    critique = fresh / ".plan" / "critique.yaml"
+    plan = {"critique": YAML(typ="safe").load(critique.read_text(encoding="utf-8"))["critique"]}
+    by_hand = critique.read_text(encoding="utf-8").replace(f"  plan_digest: {plan['critique']['plan_digest']}", "  # none")
+    critique.write_text(by_hand, encoding="utf-8")
+    fake_critic("c-prom")
+    report = drive(ext, ext.tmp / ".ext" / "prometheus.ts", env.prometheus, [
+        {"toolCall": {"toolName": "write", "input": {"path": "agents/fresh/.plan/critique.yaml"}}},
+        {"tool": "agent_check", "params": {"slug": "fresh"}},
+        {"tool": "agent_record_critique", "params": {"slug": "fresh", "run_id": "c-prom", "verdict": "pass", "findings": plan["critique"]["findings"]}},
+    ])
+    written, hand, recorded = report["steps"]
+    assert written["blocked"] and "agent_record_critique" in written["reason"]
+    assert any("not recorded with agent_record_critique" in e for e in hand["result"]["errors"]), hand
+    assert recorded["schemaOk"] and recorded["result"]["ready"] is True, recorded
+    stamped = YAML(typ="safe").load(critique.read_text(encoding="utf-8"))
+    assert stamped["critique"]["run_id"] == "c-prom" and stamped["critique"]["plan_digest"]
+    shutil.rmtree(fresh)
 
 
 @skip_extensions
@@ -929,9 +971,14 @@ def test_change_branch_guard(env, ext):
         {"toolCall": {"toolName": "bash", "input": {"command": "cat plan.yaml"}}},
         {"toolCall": {"toolName": "write", "input": {"path": "runs/x/run.yaml"}}},
         {"toolCall": {"toolName": "edit", "input": {"path": ".env"}}},
+        # how it was planned is part of the plan; the critic's record only agent_record_critique writes
+        {"toolCall": {"toolName": "edit", "input": {"path": ".plan/questions.yaml"}}},
+        {"toolCall": {"toolName": "write", "input": {"path": ".plan/critique.yaml"}}},
+        {"toolCall": {"toolName": "bash", "input": {"command": "sed -i s/revise/pass/ .plan/critique.yaml"}}},
+        {"toolCall": {"toolName": "read", "input": {"path": ".plan/critique.yaml"}}},
     ]
     report = drive(ext, ext.tmp / ".ext" / "agent.ts", env.b, steps)
-    assert [s["blocked"] for s in report["steps"]] == [False, False, True, True]
+    assert [s["blocked"] for s in report["steps"]] == [False, False, True, True, False, True, True, False]
 
 
 @skip_extensions
@@ -974,16 +1021,18 @@ def test_agent_auto_runs_the_waves_without_the_model(ext, tmp_path, run_py):
     (wf / "plan.yaml").write_text(TWO, encoding="utf-8")
     finish = {"toolCall": {"toolName": "agent_log_finish", "input": {"wave": "w1"}}}
     report = drive(ext, ext.tmp / ".ext" / "agent.ts", wf, [
-        {"cmd": "agent-auto"},
-        # a completion notice's turn (no prompt): told to do nothing, and its run tools refused
+        {"cmd": "agent-auto", "background": True}, {"sleep": 3000},
+        # while its wave runs, a completion notice's turn (no prompt): told to do nothing, and its run tools refused
         {"systemPrompt": "Some other opening.", "prompt": ""}, finish,
-        # the hand-over's turn ends the hold
-        {"systemPrompt": "Some other opening.", "prompt": "/agent-auto ran this agent's run to the end."}, finish,
-    ], extra_env={"FAKE_SUBAGENTS_RPC": str(HERE / "mock-subagents.mjs")})
+        {"wait": True},
+        # handed over: the hold is gone at once, even in a turn already under way (the hand-over arrives as a
+        # follow-up and starts none of its own: refused agent_compile, a model once stopped after an approval)
+        {"systemPrompt": "Some other opening.", "prompt": ""}, finish,
+    ], extra_env={"FAKE_SUBAGENTS_RPC": str(HERE / "mock-subagents.mjs"), "FAKE_SUBAGENTS_SLOW": "6000"})
     steps = report["steps"]
-    assert "one word" in steps[1]["systemPrompt"] and steps[2]["blocked"], steps[1:3]
-    assert steps[3]["systemPrompt"] is None and not steps[4]["blocked"], steps[3:5]
-    out = report["steps"][0]["out"]
+    assert "one word" in steps[2]["systemPrompt"] and steps[3]["blocked"], steps[2:4]
+    assert steps[5]["systemPrompt"] is None and not steps[6]["blocked"], steps[5:7]
+    out = [o for s in report["steps"] for o in s["out"]]  # a background command's output lands in later steps
     assert [o["status"] for o in out if o["kind"] == "spawn"] == ["done"], out
     (prompt,) = [o["text"] for o in out if o["kind"] == "prompt" and o["deliverAs"] == "followUp"]
     assert "to the end" in prompt and "run-protocol.md" not in prompt and "mission_close" in prompt, prompt

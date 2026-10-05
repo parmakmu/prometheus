@@ -20,7 +20,7 @@ prometheus asks you a few questions, and when it's done, your request has become
 
 ```text
 agents/emails-to-excel/
-  plan.yaml       the plan
+  plan.yaml       the plan: what it does, in sections
   gates/          programs that check what a stage produced
   scripts/        stage programs: the work itself, as plain code
   .pi/            the agent itself: extension, subagents, skill copy
@@ -72,7 +72,7 @@ Once an agent exists, it no longer needs prometheus at all. The folder carries e
 
 ### The plan
 
-Everything the agent knows about your job lives in one file, `plan.yaml`. It starts with your request in your own words, followed by the goal and a list of what "done" means, written so you can check each line yourself:
+Everything the agent does lives in one file, `plan.yaml`, in sections: what you asked for, what it works on, how it works, the assumptions it makes, and its limits. It starts with your request in your own words, followed by the goal and a list of what "done" means, written so you can check each line yourself:
 
 ```yaml
 request: I want to read emails and save them in Excel

@@ -52,15 +52,27 @@ export function StatusBar() {
   const [s, setS] = useState<Status | null>(null);
   useEffect(() => setBusy(!!s?.busy), [s?.busy]); // eslint-disable-line react-hooks/exhaustive-deps
   const [error, setError] = useState<string | null>(null);
+  // when each status was asked for, and when our last run ended: a status asked before that end may still say busy
+  // about the run itself, and a sync on it ends at once, again and again until the next poll (the send button blinked)
+  const [statusAt, setStatusAt] = useState(0);
+  const endedAt = useRef(0);
+  const load = useRef(() => {});
   useEffect(() => {
-    const load = () =>
+    load.current = () => {
+      const at = Date.now();
       api<Status>(`${agent}/status`)
-        .then((d) => (setS(d), setError(null), setReady())) // the worker answered: its Pi is up
+        .then((d) => (setS(d), setStatusAt(at), setError(null), setReady())) // the worker answered: its Pi is up
         .catch((e: Error) => (setS(null), setError(e.message === NO_ACCESS ? "refused: open the link with the token" : null)));
-    load();
-    const t = setInterval(load, 3000);
+    };
+    load.current();
+    const t = setInterval(() => load.current(), 3000);
     return () => clearInterval(t);
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (running) return;
+    endedAt.current = Date.now();
+    load.current(); // whether the agent goes on working without us, asked now
+  }, [running]);
   // A run with nothing new is a sync: the server answers with the conversation so far and, while the
   // agent works on its own (a wave finished, say), streams that work. Once when the page opens, at once: while the
   // worker starts (~2 s), the router answers from the session file, so the conversation doesn't wait for Pi…
@@ -71,7 +83,7 @@ export function StatusBar() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [s]);
   // …and whenever the agent is busy, or shows a panel, without a run of ours
-  const wants = !!(s?.busy || s?.panels);
+  const wants = !!(s?.busy || s?.panels) && statusAt >= endedAt.current;
   useEffect(() => {
     if (synced.current && wants && !running && !asking) void sync();
     // eslint-disable-next-line react-hooks/exhaustive-deps

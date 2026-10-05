@@ -38,7 +38,7 @@ from utils import (
     mission_of,
     process_alive,
     read_json,
-    read_yaml,
+    read_plan,
     refuse,
     report_state,
     subagents_runs_root,
@@ -73,7 +73,7 @@ def open_agent(need_run=True) -> tuple[dict, Run | None]:
     run = active_run(Path.cwd())
     if need_run and run is None:
         refuse("no active run: start one with agent_new_run (run_log.py new)")
-    return read_yaml(PLAN, {}), run
+    return read_plan(Path.cwd(), {}), run
 
 
 def subagents_outcome(run_id):
@@ -120,9 +120,25 @@ def commit(message, run):
 
 
 @app.command()
-def new(note: Annotated[str | None, typer.Option(help="what this run is for")] = None):
-    """Start a run."""
+def new(
+    note: Annotated[str | None, typer.Option(help="what this run is for")] = None,
+    params: Annotated[str | None, typer.Option(help="{name: value} for this run only, over .env (not secrets)")] = None,
+    approve: Annotated[str, typer.Option(help="side-effect stage keys approved for the whole run, comma-separated")] = "",
+    max_cost_usd: Annotated[float | None, typer.Option(help="this run's cost ceiling (USD), instead of the plan's")] = None,
+):
+    """Start a run. --params, --approve and --max-cost-usd: what a caller (the web app's API) gives up front."""
     plan, run = open_agent(need_run=False)
+    try:
+        given = json.loads(params) if params else {}
+    except ValueError as exc:
+        refuse(f"--params is not JSON: {exc}")
+    if not isinstance(given, dict) or not all(isinstance(v, str | int | float | bool) for v in given.values()):
+        refuse("--params must be a JSON object {name: value} of plain values")
+    if problems := agent_params.problems_with(plan.get("params"), given):
+        refuse("; ".join(problems))
+    approved = [a.strip() for a in approve.split(",") if a.strip()]
+    if unknown := [a for a in approved if a not in {s.get("key") for s in plan.get("stages") or [] if isinstance(s, dict)}]:
+        refuse(f"--approve names no stage: {', '.join(unknown)}")
     if run is not None:
         refuse(f"run {run.id} is active: continue it, or stop it first (agent_stop_run)")
     left = agent_git.branch(Path.cwd())
@@ -148,7 +164,12 @@ def new(note: Annotated[str | None, typer.Option(help="what this run is for")] =
     except RuntimeError as exc:
         refuse(f"cannot commit the plan: {exc}")
     run.state.update({"id": rid, "status": "active", "revision": plan.get("revision", 1), "commit": commit_sha,
-                      "started_at": now(), **({"note": note} if note else {}), "stages": {}, "launches": []})
+                      "started_at": now(), **({"note": note} if note else {}), "stages": {}, "launches": [],
+                      # a relative path resolves inside this run, as a relative value in .env does (inputs/ a caller sent)
+                      **({"given_params": {k: agent_params.resolve(k, (plan.get("params") or {})[k], v, (Path.cwd() / run.dir).resolve())
+                                           for k, v in given.items()}} if given else {}),
+                      **({"preapproved": approved} if approved else {}),
+                      **({"max_cost_usd": max_cost_usd} if max_cost_usd is not None else {})})
     (run.dir / "work").mkdir(parents=True)
     run.save()
     emit({"ok": True, "run": rid, "path": str(run.dir.resolve()), "commit": commit_sha,
@@ -214,7 +235,7 @@ def next_preflight(plan, run, wave):
     parent collects it in the same turn instead of compiling once just to hear it."""
     try:
         compiled = Compiler(Path.cwd(), plan, agent_params.load(Path.cwd(), plan.get("params")),
-                            run.dir, run.state, set()).compile(wave)
+                            run.dir, run.state, set(run.state.get("preapproved") or [])).compile(wave)
     except (OSError, ValueError, KeyError, TypeError):  # only a hint: the compile itself reports what went wrong
         return None
     return {k: v for k, v in (compiled.get("preflight") or {}).items() if v} or None

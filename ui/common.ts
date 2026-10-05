@@ -13,10 +13,10 @@ export const REPO = path.resolve(import.meta.dirname, "..");
 // their entry is worker.ts, not Pi's cli.js, so pi-subagents cannot find the Pi package from argv and refuses
 // background children ("neither is available") unless it is named for them.
 export const PI_PACKAGE_ROOT =
-	process.env.PI_PACKAGE_ROOT ?? path.join(execFileSync("npm", ["root", "-g"], { encoding: "utf8" }).trim(), "@earendil-works", "pi-coding-agent");
+  process.env.PI_PACKAGE_ROOT ?? path.join(execFileSync("npm", ["root", "-g"], { encoding: "utf8" }).trim(), "@earendil-works", "pi-coding-agent");
 if (!existsSync(path.join(PI_PACKAGE_ROOT, "dist", "index.js"))) {
-	console.error(`No Pi at ${PI_PACKAGE_ROOT}: install it (npm install -g @earendil-works/pi-coding-agent), or set PI_PACKAGE_ROOT`);
-	process.exit(1);
+  console.error(`No Pi at ${PI_PACKAGE_ROOT}: install it (npm install -g @earendil-works/pi-coding-agent), or set PI_PACKAGE_ROOT`);
+  process.exit(1);
 }
 export const { SessionManager } = await import(pathToFileURL(path.join(PI_PACKAGE_ROOT, "dist", "index.js")).href);
 export const PORT = Number(process.env.PORT ?? 8787);
@@ -31,8 +31,8 @@ export const USER_HEADER = process.env.TRUST_USER_HEADER?.toLowerCase();
 export const PROXY_SECRET = process.env.PROXY_SECRET ?? "";
 export const PROXY_SECRET_HEADER = (process.env.PROXY_SECRET_HEADER ?? "x-proxy-secret").toLowerCase();
 if (USER_HEADER && PROXY_SECRET.length < 16) {
-	console.error("TRUST_USER_HEADER needs PROXY_SECRET (16+ characters), sent by the login proxy in the header PROXY_SECRET_HEADER (default x-proxy-secret): an agent's sandbox can reach the router too");
-	process.exit(1);
+  console.error("TRUST_USER_HEADER needs PROXY_SECRET (16+ characters), sent by the login proxy in the header PROXY_SECRET_HEADER (default x-proxy-secret): an agent's sandbox can reach the router too");
+  process.exit(1);
 }
 export const DEV_USER = process.env.DEV_USER ?? userInfo().username;
 export const TOKEN = process.env.PROMETHEUS_TOKEN || randomBytes(24).toString("base64url");
@@ -41,17 +41,17 @@ export const IDLE_MS = Number(process.env.IDLE_MINUTES ?? 15) * 60_000;
 export const SOCKETS = mkdtempSync(path.join(tmpdir(), "prometheus-workers-")); // created 0700
 
 export const works = (cmd: string, args: string[]) => {
-	try {
-		execFileSync(cmd, args, { stdio: "ignore" });
-		return true;
-	} catch {
-		return false;
-	}
+  try {
+    execFileSync(cmd, args, { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
 };
 export const SANDBOX = process.env.SANDBOX ?? (works("bwrap", ["--version"]) ? "bwrap" : "off"); // bwrap | podman | off
 if (!["bwrap", "podman", "off"].includes(SANDBOX)) {
-	console.error(`SANDBOX=${SANDBOX}: use bwrap, podman or off`);
-	process.exit(1);
+  console.error(`SANDBOX=${SANDBOX}: use bwrap, podman or off`);
+  process.exit(1);
 }
 export const HOME = homedir();
 export const PI_AGENT = path.join(HOME, ".pi", "agent");
@@ -60,8 +60,8 @@ export const EMPTY = path.join(SOCKETS, "empty"); // what a hidden file reads as
 writeFileSync(EMPTY, "");
 
 export const send = (res: ServerResponse, code: number, body: unknown) => {
-	res.writeHead(code, { "Content-Type": typeof body === "string" ? "text/plain" : "application/json" });
-	res.end(typeof body === "string" ? body : JSON.stringify(body));
+  res.writeHead(code, { "Content-Type": typeof body === "string" ? "text/plain" : "application/json" });
+  res.end(typeof body === "string" ? body : JSON.stringify(body));
 };
 
 // --- who is calling -------------------------------------------------------------------------------
@@ -69,8 +69,8 @@ export const send = (res: ServerResponse, code: number, body: unknown) => {
 // a header only: a token in a URL ends up in proxy and server logs (the page takes it from the printed link
 // once, then keeps it in sessionStorage and drops it from the address bar)
 export function tokenOf(req: IncomingMessage) {
-	const auth = req.headers.authorization ?? "";
-	return auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  const auth = req.headers.authorization ?? "";
+  return auth.startsWith("Bearer ") ? auth.slice(7) : "";
 }
 export const sameToken = (t: string) => t.length === TOKEN.length && timingSafeEqual(Buffer.from(t), Buffer.from(TOKEN));
 // a user name that is safe as a folder name
@@ -78,21 +78,21 @@ export const folderName = (u: string) => u.trim().replace(/[^a-zA-Z0-9._-]/g, "_
 
 // the user making the request, or null after answering 401/403 (host, origin, identity)
 export function caller(req: IncomingMessage, res: ServerResponse): string | null {
-	const host = (req.headers.host ?? "").replace(/:\d+$/, "");
-	const origin = req.headers.origin;
-	if (!HOSTS.includes(host)) return send(res, 403, "forbidden: host"), null;
-	if (origin && !ORIGINS.includes(origin)) return send(res, 403, "forbidden: origin"), null;
-	if (origin) res.setHeader("Access-Control-Allow-Origin", origin);
-	res.setHeader("Vary", "Origin");
-	if (req.method === "OPTIONS") return ""; // a preflight carries no credentials
-	if (USER_HEADER) {
-		const secret = String(req.headers[PROXY_SECRET_HEADER] ?? "");
-		if (!(secret.length === PROXY_SECRET.length && timingSafeEqual(Buffer.from(secret), Buffer.from(PROXY_SECRET))))
-			return send(res, 403, "forbidden: not from the login proxy"), null;
-		const user = folderName(String(req.headers[USER_HEADER] ?? ""));
-		return user ? user : (send(res, 401, "no user from the login proxy"), null);
-	}
-	return sameToken(tokenOf(req)) ? folderName(DEV_USER) : (send(res, 403, "forbidden: token"), null);
+  const host = (req.headers.host ?? "").replace(/:\d+$/, "");
+  const origin = req.headers.origin;
+  if (!HOSTS.includes(host)) return send(res, 403, "forbidden: host"), null;
+  if (origin && !ORIGINS.includes(origin)) return send(res, 403, "forbidden: origin"), null;
+  if (origin) res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Vary", "Origin");
+  if (req.method === "OPTIONS") return ""; // a preflight carries no credentials
+  if (USER_HEADER) {
+    const secret = String(req.headers[PROXY_SECRET_HEADER] ?? "");
+    if (!(secret.length === PROXY_SECRET.length && timingSafeEqual(Buffer.from(secret), Buffer.from(PROXY_SECRET))))
+      return send(res, 403, "forbidden: not from the login proxy"), null;
+    const user = folderName(String(req.headers[USER_HEADER] ?? ""));
+    return user ? user : (send(res, 401, "no user from the login proxy"), null);
+  }
+  return sameToken(tokenOf(req)) ? folderName(DEV_USER) : (send(res, 403, "forbidden: token"), null);
 }
 
 // --- the user's folders ---------------------------------------------------------------------------
@@ -109,16 +109,16 @@ export const SUBAGENTS_ROOT = path.join(HOME, ".cache", "pi-subagents");
 export const pythonFor = (root: string) => [path.join(root, ".venv/bin/python"), path.join(REPO, ".venv/bin/python")].find(existsSync) ?? "python3";
 
 export const readBody = (req: IncomingMessage, max: number) =>
-	new Promise<Buffer>((resolve, reject) => {
-		const chunks: Buffer[] = [];
-		let size = 0;
-		req.on("data", (c: Buffer) => {
-			size += c.length;
-			if (size <= max) chunks.push(c);
-		});
-		req.on("end", () => (size > max ? reject(new Error("too large")) : resolve(Buffer.concat(chunks))));
-		req.on("error", reject);
-	});
+  new Promise<Buffer>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    req.on("data", (c: Buffer) => {
+      size += c.length;
+      if (size <= max) chunks.push(c);
+    });
+    req.on("end", () => (size > max ? reject(new Error("too large")) : resolve(Buffer.concat(chunks))));
+    req.on("error", reject);
+  });
 
 
 // an agent's or prometheus's conversations: Pi's sessionDir in its .pi/settings.json

@@ -1,10 +1,13 @@
-# Example: a plan that is concrete from the start. In an agent this file is
-# agents/invoice-check/plan.yaml, with gates/check_lines.py and
+# ── Plan for agent "invoice-check"
+# Example: a plan that is concrete from the start. In an agent this folder is
+# agents/invoice-check/plan.yaml (and .plan/), with gates/check_lines.py and
 # gates/check_report.py written during planning.
+
 version: 1
 revision: 1
 status: ready
 
+# ── What you asked for ──────────────────────────────────────────────────────
 request: >-
   Go through the supplier folder in my mail export, find the invoices, check
   them against the Q3 budget sheet, flag anything over budget and draft
@@ -20,6 +23,7 @@ done_when:
   - one reply draft exists for each invoice with status "po_mismatch"
   - nothing is sent
 
+# ── What it works on ────────────────────────────────────────────────────────
 params:
   mail_dir:
     description: folder with the supplier mail export (.eml files)
@@ -43,20 +47,6 @@ inputs:
     access: read
     note: sheet "Q3" with columns cost_center, supplier, po_number, po_amount, budget
 
-agents:
-  checked: subagent list, 2026-09-26
-  available:
-    - scout
-    - researcher
-    - evidence-auditor
-    - worker
-    - reviewer
-    - oracle
-    - name: plan-critic
-      source: project
-    - name: reader
-      source: project
-
 outputs:
   - id: variance_report
     kind: file
@@ -68,17 +58,7 @@ outputs:
     location: Gmail drafts
     format: email
 
-unknowns:
-  - id: u1
-    text: what the mail export looks like (formats, attachments)
-    resolve_by: probe
-    finding: 1,240 .eml files; about 300 carry PDF attachments; a sample of 3 PDFs all had a text layer
-    run_id: example-probe-run
-  - id: u2
-    text: when an amount difference counts as a PO mismatch
-    resolve_by: user
-    question: q2
-
+# ── How it works ────────────────────────────────────────────────────────────
 stages:
   - key: find
     title: Classify which emails carry supplier invoices
@@ -196,70 +176,22 @@ stages:
     verify:
       check: draft count equals number of po_mismatch rows; none sent
 
-
+# ── Assumptions ─────────────────────────────────────────────────────────────
 assumptions:
   - id: a1
-    text: Most invoices are PDF attachments with a text layer; the rest go through extract-rest
+    text: >-
+      Most invoices are PDF attachments with a text layer; the rest go through
+      extract-rest
     source: observed
     confirm: false
   - id: a2
-    text: Report columns are invoice_no, supplier, date, amount, po_number, po_amount, budget_line, budget_remaining, status
+    text: >-
+      Report columns are invoice_no, supplier, date, amount, po_number, po_amount,
+      budget_line, budget_remaining, status
     source: default
     confirm: true
 
-critique:
-  agent: plan-critic
-  run_id: example-critic-run
-  revision: 1
-  passes: 2
-  verdict: revise
-  findings:
-    - id: f1
-      severity: major
-      category: should_split
-      target: extract
-      claim: extract assumes every invoice PDF has a text layer; scanned ones would drop out of the report silently
-      disposition: accepted
-      note: extract now writes unparsed.json; added the extract-rest judgment stage
-    - id: f2
-      severity: blocking
-      category: missing_question
-      target: done_when
-      claim: Q3 could mean invoice date or received date, which changes which invoices are in scope
-      disposition: asked
-      note: became q3
-    - id: f3
-      severity: minor
-      category: other
-      target: review
-      claim: the review stage adds cost and could be dropped
-      disposition: rejected
-      note: it is the only check on judgment output before anything reaches Gmail
-
-questions:
-  - id: q1
-    question: Should replies be sent, or only drafted?
-    why: sending is irreversible and decides the last wave
-    options: [draft only, send after I approve each, send all after one approval]
-    default: draft only
-    blocks: [drafts]
-    answer: draft only
-  - id: q2
-    question: How large a difference counts as a PO mismatch?
-    why: decides which invoices get a reply
-    options: [any difference, above 1% or 5 CHF, above 5%]
-    default: above 1% or 5 CHF
-    blocks: [compare, drafts]
-    answer: above 1% or 5 CHF
-  - id: q3
-    question: Does Q3 mean the invoice date or the date the email arrived?
-    why: decides which invoices are in scope
-    options: [invoice date, received date]
-    default: invoice date
-    blocks: [find, compare]
-    from_finding: f2
-    answer: invoice date
-
+# ── Limits and models ───────────────────────────────────────────────────────
 limits:
   max_parallel: 4
   max_retries: 2

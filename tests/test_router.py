@@ -1,5 +1,6 @@
 """The web app's router: who may call it (host, origin, token or a login proxy's user header).
 Runs the real router on a free port (SANDBOX=off unless a test asks for bubblewrap); then escapes from an agent's sandbox."""
+import json
 import os
 import shutil
 import socket
@@ -234,9 +235,16 @@ def test_an_agent_cannot_plant_code_that_runs_outside_its_sandbox(tmp_path, run_
     assert not (tmp_path / "ada" / "pi-agent" / "extensions" / "x.ts").exists()
     # Pi's settings in the sandbox are a copy: a change there (say, adding an extension) never reaches the user's own
     real = tmp_path / "ada" / "pi-agent" / "settings.json"
+    real.write_text('{"packages": []}\n', encoding="utf-8")
     before = real.read_text(encoding="utf-8")
     assert in_sandbox(tmp_path, "s", f"echo '{{\"extensions\": [\"/evil.ts\"]}}' > '{pi / 'settings.json'}'", backend).returncode == 0
     assert real.read_text(encoding="utf-8") == before
+    # trust.json (which folders' extensions run) read-only, yet Pi can lock it: it makes trust.json.lock beside it,
+    # and a read-only folder stopped it loading any package (pi-subagents, so /agent-auto) in every worker
+    (tmp_path / "ada" / "pi-agent" / "trust.json").write_text("{}", encoding="utf-8")
+    r = in_sandbox(tmp_path, "s", f"mkdir '{pi / 'trust.json.lock'}' && ! touch '{pi / 'trust.json'}' && touch '{pi / 'new-file'}'", backend)
+    assert r.returncode == 0, r.stderr
+    assert not (tmp_path / "ada" / "pi-agent" / "trust.json.lock").exists() and not (tmp_path / "ada" / "pi-agent" / "new-file").exists()
 
 
 def test_the_router_runs_an_agents_git_in_its_sandbox(tmp_path, run_py, backend):
@@ -270,6 +278,83 @@ def test_an_upload_does_not_follow_a_link_an_agent_left(tmp_path, run_py):
                 urllib.request.urlopen(req, timeout=10)
             assert refused.value.code == 400, target
         assert list(outside.iterdir()) == []
+    finally:
+        stop(proc)
+
+
+def test_the_planner_has_uploads_and_the_page_sees_only_them(tmp_path, run_py):
+    home = agent_home(tmp_path, run_py).parent.parent
+    (home / "uploads").mkdir()
+    (home / "uploads" / "away").symlink_to(home / ".pi")
+    head = {"X-Forwarded-User": "ada", "X-Proxy-Secret": SECRET}
+    proc, port = start(TRUST_USER_HEADER="x-forwarded-user", PROXY_SECRET=SECRET, USERS_ROOT=str(tmp_path))
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/p/upload?unique=1&path=sample.txt", method="PUT", data=b"hi",
+                                     headers={"Host": "localhost", **head})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            assert json.loads(r.read())["path"] == str(home / "uploads" / "sample.txt")
+        code, body = get(port, "/p/tree?dir=uploads", head)
+        assert code == 200 and "sample.txt" in body, body
+        assert get(port, "/p/download?path=uploads/sample.txt", head) == (200, "hi")
+        for bad in ("/p/tree?dir=", "/p/tree?dir=.pi", "/p/tree?dir=uploads/../.pi", "/p/tree?dir=uploads/away",
+                    "/p/download?path=.pi/APPEND_SYSTEM.md", "/p/download?path=uploads/away/APPEND_SYSTEM.md"):
+            assert get(port, bad, head)[0] == 404, bad
+    finally:
+        stop(proc)
+
+
+def call(port, path, method="GET", body=None, headers=None):
+    req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", method=method, data=None if body is None else json.dumps(body).encode(),
+                                 headers={"Host": "localhost", "Content-Type": "application/json", **(headers or {})})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return r.status, json.loads(r.read() or b"null")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode()
+
+
+def test_an_api_key_calls_its_own_agents_api_and_nothing_else(tmp_path, run_py):
+    agent_home(tmp_path, run_py)
+    agent_home_also = tmp_path / "ada" / "prometheus" / "agents"
+    assert run_py([ROOT / ".pi/skills/agent/scripts/scaffold_agent.py", "t", "--root", agent_home_also, "--request", "y"]).data["ok"]
+    head = {"X-Forwarded-User": "ada", "X-Proxy-Secret": SECRET}
+    proc, port = start(TRUST_USER_HEADER="x-forwarded-user", PROXY_SECRET=SECRET, USERS_ROOT=str(tmp_path))
+    try:
+        code, made = call(port, "/a/s/api-keys", "POST", {"label": "ci"}, head)
+        assert code == 200 and made["key"].startswith("pak."), made
+        assert "hash" not in json.dumps(call(port, "/a/s/api-keys", headers=head)[1])
+        assert made["key"] not in (tmp_path / "ada" / "api-keys.json").read_text(encoding="utf-8")  # only its hash
+        key = {"Authorization": f"Bearer {made['key']}"}
+        code, card = call(port, "/a/s/api", headers=key)
+        assert code == 200 and card["agent"] == "s" and "params" in card and "next" not in card, card
+        # a draft plan: no run until it is ready
+        assert call(port, "/a/s/api/runs", "POST", {"request": "go"}, key)[0] == 409
+        for path in ("/a/t/api", "/a/s/tree?dir=", "/me", "/a/s/api-keys", "/p/sessions"):
+            assert call(port, path, headers=key)[0] == 403, path
+        assert call(port, "/a/s/api", headers={"Authorization": f"Bearer {made['key'][:-2]}xx"})[0] == 403
+        assert call(port, f"/a/s/api-keys?id={made['id']}", "DELETE", headers=head)[0] == 200
+        assert call(port, "/a/s/api", headers=key)[0] == 403
+    finally:
+        stop(proc)
+
+
+def test_a_call_is_checked_against_what_the_agent_takes(tmp_path, run_py):
+    agent = agent_home(tmp_path, run_py)
+    plan = agent / "plan.yaml"
+    plan.write_text(plan.read_text(encoding="utf-8").replace("status: draft", "status: ready").replace(
+        "params: {}", "params:\n  mail_dir: {description: d}\n  token: {description: d, type: secret}"), encoding="utf-8")
+    head = {"X-Forwarded-User": "ada", "X-Proxy-Secret": SECRET}
+    proc, port = start(TRUST_USER_HEADER="x-forwarded-user", PROXY_SECRET=SECRET, USERS_ROOT=str(tmp_path))
+    try:
+        for body, why in (({}, "request"), ({"request": "go", "params": {"nosuch": "x"}}, "doesn't take"),
+                          ({"request": "go", "params": {"token": "x"}}, "secrets"),
+                          ({"request": "go", "files": {"../x": "aGk="}}, "files"),
+                          ({"request": "go", "approve": ["nosuch"]}, "approve"),
+                          ({"request": "go", "max_cost_usd": -1}, "max_cost_usd")):
+            code, text = call(port, "/a/s/api/runs", "POST", body, head)
+            assert code == 400 and why in text, (body, code, text)
+        assert call(port, "/a/s/api/runs/c-000000000000", headers=head)[0] == 404
+        assert call(port, "/a/s/api/runs", headers=head) == (200, [])
     finally:
         stop(proc)
 

@@ -1,0 +1,36 @@
+# ── critique: the plan critic's review and each finding's disposition (written only by agent_record_critique).
+# ── Part of the plan of agent "competitor-memo" (plan.yaml); read with it.
+critique:
+  agent: plan-critic
+  run_id: example-critic-run
+  revision: 1
+  passes: 1
+  verdict: revise
+  plan_digest: e268685b8d9d1486  # agent_record_critique writes it: the plan as the critic saw it
+  findings:
+    - id: f1
+      severity: major
+      category: missing_stage
+      target: analyse
+      claim: >-
+        analysis effort starts on whatever discovery returns; nobody confirms the
+        competitor list first
+      disposition: accepted
+      note: added the confirm-list decision stage at the start of w2
+    - id: f2
+      severity: major
+      category: invented_detail
+      target: analyse
+      claim: >-
+        an earlier draft fixed a profile schema and batch size before knowing how
+        many competitors or what sources exist
+      disposition: accepted
+      note: analyse is now provisional, resolved after discover
+    - id: f3
+      severity: minor
+      category: unknown_misrouted
+      target: u3
+      claim: Notion access could fail for children even if the parent sees the tools
+      disposition: rejected
+      note: the publish wave reports failure without side effects; no need to probe now
+

@@ -55,7 +55,7 @@ export function MyRuntimeProvider({
       threadId: currentThreadId,
       threads: [...threadsRef.current.values()]
         .reverse()
-        .map((t) => ({ id: t.id, status: "regular" as const, title: t.title ?? "New conversation" })),
+        .map((t) => ({ id: t.id, status: "regular" as const, title: t.title ?? "New session" })),
       onSwitchToNewThread: async () => {
         const newId = crypto.randomUUID();
         threadsRef.current.set(newId, { id: newId, messages: [] });

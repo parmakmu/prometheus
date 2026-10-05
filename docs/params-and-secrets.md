@@ -41,6 +41,7 @@ A `secret` that only a connector reads (its token, say) goes in the environment 
 
 Each param reads one environment variable: the one its `env:` names, or its name in upper case (`email_folder` → `EMAIL_FOLDER`). A value is looked up in this order:
 
+0. for a run started through the web app's run API, the values the call gave (for that run only; never a secret; a relative path resolves inside the run, so `inputs/emails` is the files the call sent; see [ui/README.md](../ui/README.md), "The run API");
 1. the environment pi was started in;
 2. `.env` in the agent's folder;
 3. the plan's `default`.

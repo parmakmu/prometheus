@@ -1,26 +1,26 @@
-# Plan for agent "{{slug}}". Written by the agent skill.
-# Schema: .pi/skills/agent/references/plan-schema.md
+# ── Plan for agent "{{slug}}"
+
 version: 1
 revision: 1
 status: draft
 
+# ── What you asked for ──────────────────────────────────────────────────────
 request: {{request}}
 goal: ""
 done_when: []
 
+# ── What it works on ────────────────────────────────────────────────────────
 params: {}
 inputs: []
 outputs: []
 
-agents:
-  checked: null
-  available: []
-
-unknowns: []
+# ── How it works ────────────────────────────────────────────────────────────
 stages: []
-assumptions: []
-questions: []
 
+# ── Assumptions ─────────────────────────────────────────────────────────────
+assumptions: []
+
+# ── Limits and models ───────────────────────────────────────────────────────
 limits:
   max_parallel: 4
   max_retries: 2

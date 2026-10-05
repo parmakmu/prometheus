@@ -15,7 +15,7 @@ from typing import Annotated
 import agent_git
 import typer
 from runs import active_run, list_runs
-from utils import emit, read_yaml, refuse
+from utils import emit, read_plan, refuse
 
 MOVES = {
     "planning": ["edit plan.yaml", "agent_record_critique", "/agent-revise"],
@@ -59,7 +59,7 @@ def state(agent_dir):
     """{state, moves, hint, merge?, run?, last_launch?, branch?}: where the agent stands and what may
     happen next; `last_launch` is the active run's latest launch (wave, status, subagent_run_id)."""
     agent_dir = Path(agent_dir)
-    plan = read_yaml(agent_dir / "plan.yaml", {})
+    plan = read_plan(agent_dir, {})
     ready = isinstance(plan, dict) and agent_git.why_not_ready(agent_dir, plan) is None
     run = active_run(agent_dir)
     branch = agent_git.branch(agent_dir) or agent_git.MAIN

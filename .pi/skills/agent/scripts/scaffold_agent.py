@@ -19,7 +19,8 @@ The template holds README.md, pyproject.toml (Python deps for `uv sync`),
 batcher) and the plan skeleton.
 
 --refresh rewrites the template files and the skill copy in an existing
-agent. It never touches plan.yaml, .env, runs/, uploads/, gates/, scripts/ or agents
+agent, and moves an older plan's planning sections (unknowns, questions,
+critique, agents) from plan.yaml to .plan/. Otherwise it never touches plan.yaml, .env, runs/, uploads/, gates/, scripts/ or agents
 the plan added.
 
 The agent is its own git repo (agent_git.py); both modes commit the result.
@@ -44,7 +45,7 @@ import agent_params
 import prometheus_version
 import typer
 from runs import active_run
-from utils import read_yaml, refuse, write_yaml
+from utils import parts_in_plan_file, read_plan, refuse, write_plan
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 SKILL_DIR = SCRIPT_DIR.parent
@@ -136,6 +137,10 @@ def rehome_sessions(agent_dir: Path):
     return n
 
 
+# before agents were called agents (2026-10-04): a refresh removes these
+OBSOLETE = (".pi/extensions/workflow", ".pi/skills/workflow")
+
+
 def refresh_refusal(agent_dir: Path):
     """Why a refresh must wait, or None: its commit would land on a run or change branch."""
     if run := active_run(agent_dir):
@@ -148,13 +153,13 @@ def refresh_refusal(agent_dir: Path):
 def copy_from(source: Path, agent_dir: Path, slug: str, request: str):
     """Start `agent_dir` from another agent: its plan as a draft for `request` (revision 1, no critique),
     its gates, stage programs, subagents and packages. Runs, .env and sessions stay with the source."""
-    plan = read_yaml(source / PLAN, None)
+    plan = read_plan(source, None)
     if not isinstance(plan, dict):
         refuse(f"{source} has no readable plan.yaml to start from", 1)
     plan["status"], plan["revision"], plan["request"] = "draft", 1, request or plan.get("request")
     for key in ("critique", "questions"):
         plan.pop(key, None)
-    write_yaml(agent_dir / PLAN, plan)
+    write_plan(agent_dir, plan)
     copied = [str(PLAN) + f" (from {source.name}, draft)"]
     for rel in ("gates", "scripts", ".pi/agents"):
         if (source / rel).is_dir():
@@ -228,6 +233,16 @@ def main(
         dst.write_text(text, encoding="utf-8")
         written.append(str(rel))
 
+    # an older agent's plan.yaml holds how it was planned too: that moves to .plan/ (the same plan, read as one)
+    if refresh and (moved := parts_in_plan_file(agent_dir)):
+        write_plan(agent_dir, read_plan(agent_dir, {}))
+        written.append(f"{PLAN} ({', '.join(moved)} moved to .plan/)")
+
+    # what an older prometheus put in an agent under names it no longer uses: Pi would still load it
+    removed = [rel for rel in OBSOLETE if (agent_dir / rel).exists()]
+    for rel in removed:
+        shutil.rmtree(agent_dir / rel)
+
     skill_dst = agent_dir / ".pi" / "skills" / "agent"  # never this script's own copy: that has no templates
     if skill_dst.exists():
         shutil.rmtree(skill_dst)
@@ -268,6 +283,7 @@ def main(
         "was": was,
         "written": written,
         "kept": kept,
+        **({"removed": removed} if removed else {}),
         "plan": str(agent_abs / PLAN),
         "today": datetime.datetime.now().astimezone().date().isoformat(),  # local date
     }, indent=2))

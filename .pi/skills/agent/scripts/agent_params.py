@@ -10,12 +10,14 @@ The plan declares each param (`params:` in plan.yaml) with a type:
 A param reads the environment variable its `env:` names, else its name in upper
 case (email_folder -> EMAIL_FOLDER). Values come from the process environment
 first, then `.env` in the agent root (pydantic-settings), then the plan's
-default. `.env` is per machine and not in git; the agent extension loads it
-into pi's environment too, so children and gate commands see the same values.
+default; values a run was started with (`run_log.py new --params`, an API call) win
+over all of them for that run. `.env` is per machine and not in git, and never loaded
+into pi's environment: the batcher adds the secrets a command names (compile_wave.py).
 """
 import re
 from pathlib import Path
 
+import runs
 from dotenv import dotenv_values, set_key
 from pydantic import Field, SecretStr, create_model
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -66,9 +68,11 @@ def load(root: Path, specs):
         for name, s in specs.items() if ENV_NAME_RE.match(env_name(name, s))
     }
     settings = create_model("Params", __base__=_Base, **fields)(_env_file=Path(root) / ENV_FILE)
+    run = runs.active_run(root)
+    given = (run.state.get("given_params") or {}) if run else {}
     values = {}
     for name, s in specs.items():
-        value = getattr(settings, name, None)
+        value = given.get(name) if kind(s) != "secret" and given.get(name) is not None else getattr(settings, name, None)
         if value is None and kind(s) != "secret" and s.get("default") not in (None, ""):
             value = str(s["default"])
         values[name] = value
@@ -105,14 +109,20 @@ def record(specs, values):
             for n, s in (specs or {}).items()}
 
 
-def set_values(root: Path, specs, new):
-    """Write {name: value} to `.env` for declared params that are not secrets;
-    returns a list of problems (nothing is written when there are any)."""
+def problems_with(specs, new):
+    """Why {name: value} can't be set: undeclared params, secrets (never given, only in .env)."""
     specs = {n: spec_of(s) for n, s in (specs or {}).items()}
     problems = [f"the plan declares no param '{n}'; declared: {sorted(specs)}" for n in new if n not in specs]
     problems += [f"'{n}' is a secret: the user adds {env_name(n, specs[n])} to .env (or the environment) themselves; "
                  "never ask for a secret's value" for n in new if n in specs and kind(specs[n]) == "secret"]
-    if problems:
+    return problems
+
+
+def set_values(root: Path, specs, new):
+    """Write {name: value} to `.env` for declared params that are not secrets;
+    returns a list of problems (nothing is written when there are any)."""
+    specs = {n: spec_of(s) for n, s in (specs or {}).items()}
+    if problems := problems_with(specs, new):
         return problems
     path = Path(root) / ENV_FILE
     if not path.exists():

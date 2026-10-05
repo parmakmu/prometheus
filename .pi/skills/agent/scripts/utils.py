@@ -1,13 +1,16 @@
 """Small helpers shared by the other scripts: JSON results, YAML files, and where Pi and
 pi-subagents keep their records."""
 import io
+import itertools
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 
 import typer
 from ruamel.yaml import YAML
+from ruamel.yaml.comments import CommentedMap
 from ruamel.yaml.error import YAMLError
 from ruamel.yaml.scalarstring import FoldedScalarString
 
@@ -106,6 +109,102 @@ def write_yaml(path, data, header=""):
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(text if text.startswith("#") else header + text, encoding="utf-8")
     tmp.replace(path)
+
+
+# --- an agent's plan: plan.yaml for people, .plan/ for how it was planned -----------------
+
+PLAN_FILE = "plan.yaml"
+PLAN_DIR = ".plan"
+# How the plan was made, kept beside it for the planner, the critic and the scripts (plan.yaml is for people):
+# each in .plan/<part>.yaml under its own key. The scripts read and write the plan as one (read_plan, write_plan).
+PLAN_PARTS = {
+    "unknowns": "what planning did not know, how each is resolved, and what was found",
+    "questions": "what the planner asked the user, and the answers",
+    "critique": "the plan critic's review and each finding's disposition (written only by agent_record_critique)",
+    "agents": "the subagents the planner saw when it planned",
+}
+# plan.yaml's sections, in this order, each under a banner (BANNER); keys the plan does not know go last
+PLAN_SECTIONS = (
+    (None, ("version", "revision", "status")),
+    ("What you asked for", ("request", "goal", "done_when")),
+    ("What it works on", ("params", "inputs", "outputs", "network")),
+    ("How it works", ("stages",)),
+    ("Assumptions", ("assumptions",)),
+    ("Limits and models", ("limits", "models")),
+)
+BANNER = "# ── "  # a line that starts so is the writer's: dropped when the plan is written again
+PLAN_HEADER = "{banner}Plan for agent \"{slug}\"\n"  # a title: the schema and .plan/ are for the planner, not the reader
+
+
+def _plan_file_data(path, strict):
+    if not strict:
+        return read_yaml(path, None)
+    try:
+        return load_yaml(Path(path).read_text(encoding="utf-8"))
+    except YAMLError as exc:
+        raise YAMLError(f"{Path(path).parent.name}/{Path(path).name}: {exc}") from exc
+
+
+def read_plan(agent_dir, default=None, strict=False):
+    """The whole plan: plan.yaml with each .plan/<part>.yaml merged in, as one mapping. `strict`: a file that
+    can't be read raises (OSError, or YAMLError naming the file) instead of giving `default`."""
+    agent_dir = Path(agent_dir)
+    if not strict and not (agent_dir / PLAN_FILE).is_file():
+        return default
+    plan = _plan_file_data(agent_dir / PLAN_FILE, strict)
+    if not isinstance(plan, dict):
+        return default if plan is None else plan
+    for part in PLAN_PARTS:
+        f = agent_dir / PLAN_DIR / f"{part}.yaml"
+        if f.is_file() and isinstance(data := _plan_file_data(f, strict), dict) and part in data:
+            plan[part] = data[part]
+    return plan
+
+
+def parts_in_plan_file(agent_dir):
+    """The planning parts plan.yaml itself holds (they belong in .plan/): written there by hand, or an older agent."""
+    data = read_yaml(Path(agent_dir) / PLAN_FILE, {})
+    return [p for p in PLAN_PARTS if isinstance(data, dict) and p in data]
+
+
+def plan_text(plan, slug):
+    """plan.yaml's text: its sections in order, each under a banner, the planning parts left out."""
+    known = {k for _, keys in PLAN_SECTIONS for k in keys}
+    rest = tuple(k for k in plan if k not in known and k not in PLAN_PARTS)
+    chunks = [PLAN_HEADER.format(banner=BANNER, slug=slug).rstrip("\n")]
+    for title, keys in (*PLAN_SECTIONS, ("Other", rest)):
+        entries = []
+        for k in (k for k in keys if k in plan):
+            buf = io.StringIO()
+            rt_yaml().dump(fold_long(CommentedMap([(k, plan[k])])), buf)
+            # a banner read back sticks to the value before it: the writer's own lines go, the rest stays
+            body = "\n".join(line for line in buf.getvalue().splitlines() if not line.startswith(BANNER)).strip("\n")
+            if k == "stages":  # each stage its own paragraph
+                body = re.sub(r"\n+(?=  - key: )", "\n\n", body).replace("stages:\n\n", "stages:\n")
+            entries.append(body)
+        if entries:  # a blank line around anything longer than a line
+            text = entries[0]
+            for prev, cur in itertools.pairwise(entries):
+                text += ("\n" if "\n" not in prev and "\n" not in cur else "\n\n") + cur
+            chunks.append((f"{BANNER}{title} " + "─" * (72 - len(title)) + "\n" if title else "") + text)
+    return re.sub(r"\n{3,}", "\n\n", "\n\n".join(chunks)) + "\n"
+
+
+def write_plan(agent_dir, plan):
+    """Write the whole plan: the planning parts each to .plan/<part>.yaml (removed when empty), the rest to
+    plan.yaml in its sections (plan_text). Atomic per file."""
+    agent_dir = Path(agent_dir)
+    for part, what in PLAN_PARTS.items():
+        f = agent_dir / PLAN_DIR / f"{part}.yaml"
+        value = plan.get(part)
+        if value is None or value == [] or value == {}:
+            f.unlink(missing_ok=True)
+            continue
+        f.parent.mkdir(exist_ok=True)
+        write_yaml(f, CommentedMap([(part, value)]), header=f"{BANNER}{part}: {what}.\n{BANNER}Part of the plan of agent \"{agent_dir.name}\" (plan.yaml); read with it.\n")
+    tmp = agent_dir / f"{PLAN_FILE}.tmp"
+    tmp.write_text(plan_text(plan, agent_dir.name), encoding="utf-8")
+    tmp.replace(agent_dir / PLAN_FILE)
 
 
 def read_json(path):

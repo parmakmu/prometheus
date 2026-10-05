@@ -27,7 +27,8 @@ New runs and `/agent-revise` refuse until this is done.
 critic is recorded (which raises the revision); gates, programs and subagents alone need no critic.
 
 1. If no change was given, ask what should change.
-2. Edit `plan.yaml` (anything), `gates/`, stage programs in `scripts/` and
+2. Edit `plan.yaml` (anything; its unknowns, questions and subagents seen are in
+   `.plan/`, the critic's record only through the tool), `gates/`, stage programs in `scripts/` and
    `.pi/agents/` directly (packages: `agent_add_package`, which asks the user), following
    `<skill>/SKILL.md` for what you touch; `agent_check`. Delete a program
    to have the next run write it again.

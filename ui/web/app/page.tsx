@@ -9,7 +9,7 @@ import { CanvasPanel, useCanvas } from "./canvas";
 import { StatusBar } from "./status-bar";
 import { api } from "./api";
 import { useAgent } from "./agent";
-import { Conversations, sidebarRow } from "./conversations";
+import { Sessions, sidebarRow } from "./sessions";
 import { Workspace, costSplit, runCost, type Run, type AgentSummary } from "./workspace";
 import { References } from "./references";
 import { TerminalPanel } from "./terminal";
@@ -227,7 +227,7 @@ function Sidebar({ agents, error, load }: ReturnType<typeof useAgents>) {
         ))}
       </div>
 
-      <Conversations />
+      <Sessions />
     </aside>
   );
 }
@@ -281,9 +281,9 @@ function ChatHeader({ agents }: { agents: Agent[] }) {
   const aui = useAui();
   const run = (command: string) => void aui.thread().append(command);
   const actions: [string, () => void][] = [
-    ["Conversation info", () => run("/session")],
+    ["Session info", () => run("/session")],
     ["Rename…", () => {
-      const name = prompt("Name this conversation");
+      const name = prompt("Name this session");
       if (name?.trim()) run(`/name ${name.trim()}`);
     }],
     ["Reload extensions and skills", () => run("/reload")],

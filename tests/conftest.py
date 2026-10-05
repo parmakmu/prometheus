@@ -19,6 +19,28 @@ SKILL = ROOT / ".pi" / "skills" / "agent"
 HERE = Path(__file__).resolve().parent
 
 
+def copy_example(name, agent_dir):
+    """An example plan (examples/<name>/: plan.yaml and .plan/) into an agent's folder."""
+    import shutil
+    src = SKILL / "examples" / name
+    shutil.copy(src / "plan.yaml", Path(agent_dir) / "plan.yaml")
+    shutil.copytree(src / ".plan", Path(agent_dir) / ".plan", dirs_exist_ok=True)
+
+
+def stamp(plan_path):
+    """Tie a ready plan's critique to the plan as it now is, as agent_record_critique does: tests that edit a ready
+    plan (and plans written for a test) are not the critic's subject."""
+    sys.path.insert(0, str(SKILL / "scripts"))
+    from utils import read_plan, write_plan
+    from validate_plan import plan_digest
+    agent = Path(plan_path).parent
+    plan = read_plan(agent, {})
+    plan.setdefault("critique", {"agent": "plan-critic", "run_id": "test-critic", "revision": plan.get("revision", 1),
+                                 "passes": 1, "verdict": "pass", "findings": []})
+    plan["critique"]["plan_digest"] = plan_digest(plan)
+    write_plan(agent, plan)
+
+
 class Result:
     """A finished process: .data is its parsed stdout JSON (None if not JSON)."""
 

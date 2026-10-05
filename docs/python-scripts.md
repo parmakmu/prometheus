@@ -22,9 +22,9 @@ This page is for contributors. It has one entry per script in [`.pi/skills/agent
 
 **`agent_state.py`** works out the agent's [state](state-machine.md) from four facts (the plan's readiness, the active run, a running wave, the checked-out branch) and lists the moves the scripts accept from it (`MOVES`). Every agent tool's result carries it as `next`.
 
-**`run_log.py`** owns `runs/<id>/run.yaml`. It starts and stops runs, records launches and decisions, and finishes waves. Finishing reads the outcome and cost from pi-subagents, updates the stages, and commits the files the wave wrote into the agent (stage programs, say) on the run's branch.
+**`run_log.py`** owns `runs/<id>/run.yaml`. It starts and stops runs (a run can start with its own param values, approvals and cost ceiling: `new --params --approve --max-cost-usd`, what the web app's run API gives), records launches and decisions, and finishes waves. Finishing reads the outcome and cost from pi-subagents, updates the stages, and commits the files the wave wrote into the agent (stage programs, say) on the run's branch.
 
-**`plan_edit.py`** makes the plan changes that must be checked: a replan of pending stages, a critic's result with its dispositions, and param values written to `.env` (`params`; `params-show` lists them for the web app's form, a secret only as set or not). A replan keeps the stages that ran and the locked fields, validates the result, raises the revision and commits on the run's branch.
+**`plan_edit.py`** makes the plan changes that must be checked: a replan of pending stages, a critic's result with its dispositions, and param values written to `.env` (`params`; `params-show` lists them for the web app's form, a secret only as set or not), and the agent as a caller of its API sees it (`card`: no values). A replan keeps the stages that ran and the locked fields, validates the result, raises the revision and commits on the run's branch.
 
 **`agent_git.py`** does every git operation: creating the repository, committing the plan and the files runs write (`runs/` itself is not versioned), opening `run/`, `revise/` and `improve/` branches, and merging (as one squashed commit), keeping or discarding them.
 

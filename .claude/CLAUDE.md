@@ -84,7 +84,9 @@ Runs and changes
 - Runs are folders; ≤1 active; relative params resolve inside the run; one mission per run.
 - Each agent is its own git repo; only scripts commit, never during a wave; the extension blocks writing git.
 - `main` changes only by a reviewed, squashed merge of `run/`, `revise/` or `improve/`; editing `plan.yaml`
-  unreadies it (`plan_digest`) until the critic is recorded; a new run starts from `main`.
+  unreadies it (`plan_digest`, written only by `agent_record_critique`, in prometheus too) until the critic is recorded; a new run starts from `main`.
+- `plan.yaml` is for people, in sections under `# ── ` banners; how it was planned is in `.plan/` (`unknowns`,
+  `questions`, `critique`, `agents`, a file each). Scripts use `utils.read_plan`/`write_plan` (one plan in memory).
 - Plan edits during a run go through `plan_edit.py` (locked: what ran, request, goal, done_when, params, inputs,
   outputs, agents). Round-trip YAML in house style; long strings folded; repeated keys are an error.
 - The state machine is code (`agent_state.MOVES`); every tool result carries `next`.
@@ -109,17 +111,21 @@ Web app
 - AG-UI to assistant-ui, no CopilotKit; dialogs become interrupts; the UI context defines every method.
 - Panels: the worker renders frames and records pi-tui widgets; the page draws native controls.
 - Who may call: the web app's origin, loopback hosts, a token (header only) or a login proxy's user header.
-- Conversations live in the folder (`.pi/sessions`); a refresh rewrites their `cwd` header.
+- Sessions ("conversations" until 2026-10-05) live in the folder (`.pi/sessions`); a refresh rewrites their `cwd` header.
 - The page loads history before Pi: the router answers the first sync from the session file (`ui/history.ts`, the
   one snapshot builder); hovering warms a worker; a refreshed agent's idle worker restarts (not during a run).
 - Terminal via `pty_relay.py` (stdlib), not `node-pty`.
+- An agent is called on its own through its run API (`ui/api.ts`, `/a/<slug>/api`): a call is a run with its own
+  values (`given_params` on the run, over `.env`, never secrets; `preapproved`), in a session of its own; questions
+  wait in `needs_input` for the caller; one at a time per agent, queued; keys per agent, hashed, outside sandboxes.
+- A sandbox's `~/.pi/agent` is its own tmpfs with each entry of yours mounted in (Pi locks beside `trust.json`).
 
 ## Status (2026-10-05)
 
-`uv run pytest`: 280 tests (104 in `tests/test_agent.py`, which needs `npm install` and uv; the rest skip what
+`uv run pytest`: 312 tests (104 in `tests/test_agent.py`, which needs `npm install` and uv; the rest skip what
 they can't run). Verified live on emails-to-excel: planning with critic and questions, discovery + replan,
 approvals, programs written, committed, reviewed and run as commands, review/merge, reuse of programs, the
-question tool, "Used next by", `/agent-auto` launching through the RPC (runs 2026-10-05-1/-2). Not yet live: its
+question tool, "Used next by", `/agent-auto` launching through the RPC (runs 2026-10-05-1/-2), a run API call with its own files and params (run -5). Not yet live: its
 follow-up hand-over and hold, lost runners, `pi -p`; per-stage models; budgets; map stages and `batcher` batches;
 `<key>-fix`; cross-wave resume; secret params; the guards and `next` (mock-tested). Sandboxes: bwrap and rootless
 Podman 4.9 pass the escape tests here (WSL; no cgroup controllers, so no Podman limits); gVisor (Ubuntu's 2023
@@ -127,12 +133,12 @@ runsc) can't start rootless under WSL, so the router refuses `PODMAN_RUNTIME=run
 browser up to 2026-10-02 (chat, planning, question cards, panels, status bar); today's additions not yet seen there.
 
 Next: a plan with a map stage; a live run that fails and relaunches, stops at a review and records a real critic;
-an agent run from the web app end to end; worker tests; team setup (model proxy, network allow-list, per-person
-Linux users, systemd limits).
+an agent run from the web app end to end; an agent calling another (API caller side); team setup
+(model-key proxy, per-person Linux users, systemd limits).
 
 ## Testing
 
 `uv sync && uv run pytest` (add `npm install` for the extension tests); `uv run ruff check`. `tests/test_agent.py`
-is one scenario in file order; tests sharing state carry an `xdist_group` mark; `-n 0` to debug. A validator rule
+is one scenario in file order; `tests/test_worker.py` runs a real worker per sandbox (a probe extension, no model); tests sharing state carry an `xdist_group` mark; `-n 0` to debug. A validator rule
 gets a broken-variant case; a changed script output is checked against both extensions; a refusal a user can meet
 goes in `docs/troubleshooting.md`; the two `plan-critic.md` copies stay identical.

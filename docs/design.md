@@ -48,7 +48,13 @@ A planner made to fill in every stage before seeing any data invents the detail 
 
 A model grading its own plan misses the same things it missed writing it. So the critic is another agent, with a fresh context, that reads the plan only as a file. Every finding gets a disposition, and the critic's result is tied by a digest to the plan it saw, so a plan edited afterwards can't run unreviewed.
 
+Until 2026-10-05 that tie held only inside an agent. A new agent's first plan was planned in prometheus's chat, which had no recording tool, so the planner wrote the critic's result and `status: ready` itself. It did so honestly in the live run that found this, but nothing checked it: a planner could have skipped the critic. Now prometheus records it with the same tool, and a plan that needs the critic is ready only with a matching digest. The three agents planned before then were stamped once, trusting the reviews they had.
+
 The second pass is for checking fixes. When emails-to-excel's stages were given their programs, the first pass caught that `build-workbook` named a program but kept `pattern: worker`; the second approved the fix. That combination is now a validator error, so the planner catches it before the critic runs.
+
+### The plan is for people; how it was planned is kept beside it
+
+`plan.yaml` used to hold everything: the stages, but also the unknowns and their findings, every question and answer, the critic's findings with their dispositions, and the list of subagents the planner saw. A person opening it to see what their agent does had to read past all of that. So the plan holds what the agent does, in sections under banners (what you asked for, what it works on, how it works, assumptions, limits), and `.plan/` holds how it was planned, a file per part. The scripts read and write the two as one plan, so the rules, the replan and the digest didn't change. Assumptions stay in the plan: they're what a person should check.
 
 ### Few questions, asked late
 

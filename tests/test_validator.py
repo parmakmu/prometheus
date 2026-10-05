@@ -17,8 +17,8 @@ def example(name):
     return (EX / name).read_text(encoding="utf-8")
 
 
-INV = validate_plan.load_yaml(example("invoice-check.yaml"))
-COMP = validate_plan.load_yaml(example("competitor-memo.yaml"))
+INV = validate_plan.read_plan(EX / "invoice-check", strict=True)  # plan.yaml with its .plan/
+COMP = validate_plan.read_plan(EX / "competitor-memo", strict=True)
 
 
 def st(p, key):
@@ -33,7 +33,10 @@ def ran(p, **stages):
 def check(base, mutate):
     p = copy.deepcopy(base)
     mutate(p)
-    return validate_plan.validate(p, run_state=p.pop("__run__", None))
+    run_state = p.pop("__run__", None)
+    if isinstance(p.get("critique"), dict):  # the critic's record follows the change: these cases test other rules
+        p["critique"]["plan_digest"] = validate_plan.plan_digest(p)
+    return validate_plan.validate(p, run_state=run_state)
 
 
 # (name, base plan, mutation, expected substring, "error" | "warning")
@@ -130,10 +133,28 @@ def test_derived_waves(name, base, mutate, expected):
     assert got == expected
 
 
+def test_a_ready_plan_needs_its_critique_recorded_by_the_tool():
+    # agent_record_critique writes plan_digest; a critique written by hand (none), or a plan edited after it, is
+    # not ready. A small plan that needs no critic needs no record either.
+    hand = copy.deepcopy(INV)
+    del hand["critique"]["plan_digest"]
+    assert any("not recorded with agent_record_critique" in e for e in validate_plan.validate(hand)[0])
+    edited = copy.deepcopy(INV)
+    edited["goal"] = "something else"
+    assert any("changed after the critic" in e for e in validate_plan.validate(edited)[0])
+    assert validate_plan.check_ready({"status": "ready", "stages": [{"key": "a", "kind": "deterministic"}]}) is None
+
+
+def test_the_examples_carry_the_fingerprint_of_their_own_plan():
+    # they show the model a ready plan: one edited without restamping would teach a stale record
+    for plan in (INV, COMP):
+        assert plan["critique"]["plan_digest"] == validate_plan.plan_digest(plan)
+
+
 def test_repeated_key_after_a_dropped_list_item():
     # Text-level case: an edit that drops a `- id:` line merges two list items;
     # a plain YAML loader would silently keep the second item's values.
-    text = example("invoice-check.yaml").replace("  - id: q2\n", "", 1)
+    text = example("invoice-check/.plan/questions.yaml").replace("  - id: q2\n", "", 1)
     with pytest.raises(validate_plan.YAMLError, match="duplicate key"):
         validate_plan.load_yaml(text)
 

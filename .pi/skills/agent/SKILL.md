@@ -19,14 +19,18 @@ edits, never by rewriting the file.
 ## Protocol
 
 1. **Create the agent** with `agent_scaffold` (slug `^[a-z0-9-]+$`,
-   the request verbatim). All planning edits `agents/<slug>/plan.yaml`.
-   Its result carries `today`, for `agents.checked`. Inside an agent
+   the request verbatim). The plan is `agents/<slug>/plan.yaml`, what it
+   does, for people to read; how it was planned goes beside it in `.plan/`:
+   `unknowns.yaml`, `questions.yaml` and `agents.yaml`, each under its own
+   key (`questions:` …), and `critique.yaml`, which only
+   `agent_record_critique` writes. A planning section in plan.yaml is an
+   error. Its result carries `today`, for `agents.checked`. Inside an agent
    (`/agent-run` on a draft plan), skip this step.
 
 2. **Record the agents.** `subagent({ action: "list" })`, then fill `agents`
-   (plan-schema "Agents").
+   in `.plan/agents.yaml` (plan-schema "Agents").
 
-3. **List the unknowns**, each with a `resolve_by`, chosen in this order:
+3. **List the unknowns** in `.plan/unknowns.yaml`, each with a `resolve_by`, chosen in this order:
    - `planner` — one or two cheap read-only calls you can make now (list a
      folder, read a header). Do it.
    - `probe` — a child can check it cheaply (a folder only a child reaches, a
@@ -81,7 +85,12 @@ edits, never by rewriting the file.
 
 7. **Check and critique.** Call `agent_check` after every plan change and
    fix every error. If the plan has a side_effect or judgment stage or more
-   than 3 stages, run the critic (`references/critic-contract.md`).
+   than 3 stages, run the critic (`references/critic-contract.md`) and
+   record its result with `agent_record_critique` (`slug`, the critic's
+   `run_id`, every finding's disposition) after your edits: it checks the
+   critic ran, ties the record to the plan as it is, and sets the status
+   (ready, or needs_answers while questions are open). Never write
+   `critique` or `status: ready` yourself: the plan would not run.
 
 8. **Ask, or finish.**
    - Open questions → `status: needs_answers`, check, ask (below). Write each
@@ -91,7 +100,10 @@ edits, never by rewriting the file.
      answer that leaves the stages as they were needs no critic.
      After two rounds, remaining gaps become assumptions with
      `confirm: true`. Then the next bullet.
-   - None open → `status: ready` (never back to `draft`), check, and tell the user, in their terms
+   - None open → record the critic again with `agent_record_critique` (the
+     same run and dispositions: the answers changed the plan it is tied to),
+     which marks it ready; a plan that needs no critic → `status: ready`
+     yourself. Never back to `draft`. Check, and tell the user, in their terms
      (see Asking): what they will get; what a run does, in order, from `summary.waves`, and
      where it will stop for them (to approve something, or to settle details once it has seen
      their data); what `/agent-run` will ask for, described ("the folder your emails are
@@ -100,7 +112,7 @@ edits, never by rewriting the file.
      kinds, provisional, critic or validation talk.
 
 9. **On a change of mind**, bump `revision`, keep answers that still apply,
-   clear `critique`, redo steps 3–8.
+   redo steps 3–8 (recording the critic replaces its old record).
 
 If the user says "just do it", finish the plan with defaults and tell them to
 start it; running is not planning. After the first run, plan changes happen
@@ -146,5 +158,6 @@ inside the agent (`references/replanning.md`, `references/changing.md`).
   Set `models` (or a stage's `model`) only to models the user named.
 - A pause in the wrong place is fixed with a need, a kind or `pause_after`.
 - Only if the schema leaves a field's use unclear, read one example:
-  `examples/invoice-check.yaml` (concrete from the start) or
-  `examples/competitor-memo.yaml` (discovery, then replan).
+  `examples/invoice-check/` (concrete from the start) or
+  `examples/competitor-memo/` (discovery, then replan): each a `plan.yaml`
+  and its `.plan/`.

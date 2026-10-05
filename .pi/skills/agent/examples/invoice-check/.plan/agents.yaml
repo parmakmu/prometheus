@@ -1,0 +1,16 @@
+# ── agents: the subagents the planner saw when it planned.
+# ── Part of the plan of agent "invoice-check" (plan.yaml); read with it.
+agents:
+  checked: subagent list, 2026-09-26
+  available:
+    - scout
+    - researcher
+    - evidence-auditor
+    - worker
+    - reviewer
+    - oracle
+    - name: plan-critic
+      source: project
+    - name: reader
+      source: project
+

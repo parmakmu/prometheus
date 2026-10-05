@@ -1,0 +1,26 @@
+# ── questions: what the planner asked the user, and the answers.
+# ── Part of the plan of agent "invoice-check" (plan.yaml); read with it.
+questions:
+  - id: q1
+    question: Should replies be sent, or only drafted?
+    why: sending is irreversible and decides the last wave
+    options: [draft only, send after I approve each, send all after one approval]
+    default: draft only
+    blocks: [drafts]
+    answer: draft only
+  - id: q2
+    question: How large a difference counts as a PO mismatch?
+    why: decides which invoices get a reply
+    options: [any difference, above 1% or 5 CHF, above 5%]
+    default: above 1% or 5 CHF
+    blocks: [compare, drafts]
+    answer: above 1% or 5 CHF
+  - id: q3
+    question: Does Q3 mean the invoice date or the date the email arrived?
+    why: decides which invoices are in scope
+    options: [invoice date, received date]
+    default: invoice date
+    blocks: [find, compare]
+    from_finding: f2
+    answer: invoice date
+

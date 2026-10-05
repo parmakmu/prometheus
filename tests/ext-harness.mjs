@@ -1,6 +1,7 @@
 // Load an agent extension with a mock pi host and drive it.
 // Usage: node --experimental-strip-types ext-harness.mjs <entry index.ts> <cwd> <steps.json>
 // steps: [{cmd:"agent-list", args:""}, {systemPrompt:"..."}, {tool:"agent_check", params:{...}}, {toolCall:{toolName, input}}, {env:"NAME"}, ...]
+// {cmd, background: true} starts a command and goes on; {sleep: ms} waits; {wait: true} waits for that command to end
 // With FAKE_SUBAGENTS_RPC=<mock-subagents.mjs>, pi-subagents' RPC answers ping and spawn: a spawned wave
 // runs in the mock at once and its status.json is written under $PI_SUBAGENTS_TEMP_ROOT (FAKE_SUBAGENTS_DEAD: as
 // still running, under a process that is gone).
@@ -45,7 +46,12 @@ if (process.env.FAKE_SUBAGENTS_RPC) pi.events.on("subagents:rpc:v1:request", (re
   const value = JSON.parse(r.stdout).result;
   // FAKE_SUBAGENTS_DEAD: a runner that died before recording how the wave ended (no such process)
   const record = process.env.FAKE_SUBAGENTS_DEAD ? { runId: id, state: "running", pid: 2147483646 } : { runId: id, state: "complete", workflow: { value } };
-  fs.writeFileSync(path.join(dir, "status.json"), JSON.stringify(record));
+  // FAKE_SUBAGENTS_SLOW=<ms>: the wave runs that long first (under a live process), so steps can happen meanwhile
+  const slow = Number(process.env.FAKE_SUBAGENTS_SLOW ?? 0);
+  if (slow) {
+    fs.writeFileSync(path.join(dir, "status.json"), JSON.stringify({ runId: id, state: "running", pid: process.pid }));
+    setTimeout(() => fs.writeFileSync(path.join(dir, "status.json"), JSON.stringify(record)), slow);
+  } else fs.writeFileSync(path.join(dir, "status.json"), JSON.stringify(record));
   out.push({ kind: "spawn", id, status: value.status });
   reply({ details: { runId: id, asyncDir: dir } });
 });
@@ -57,11 +63,16 @@ mod.default(pi);
 for (const h of handlers.session_start ?? []) await h({ type: "session_start", reason: "startup" }, ctx);
 const steps = JSON.parse(fs.readFileSync(stepsFile, "utf8"));
 const report = { commands: Object.keys(commands).sort(), tools: Object.keys(tools).sort(), steps: [] };
+let background = Promise.resolve();
 for (const step of steps) {
   out = [];
   const rec = { step };
   try {
-    if (step.env) {
+    if (step.sleep) {
+      await new Promise((r) => setTimeout(r, step.sleep));
+    } else if (step.wait) {
+      await background;
+    } else if (step.env) {
       rec.env = process.env[step.env] ?? null;
     } else if (step.toolCall) {
       let res;
@@ -75,6 +86,7 @@ for (const step of steps) {
     } else if (step.cmd) {
       const def = commands[step.cmd];
       if (step.complete !== undefined) rec.completions = await def.getArgumentCompletions?.(step.complete);
+      else if (step.background) background = def.handler(step.args ?? "", ctx);
       else await def.handler(step.args ?? "", ctx);
     } else {
       const tool = tools[step.tool];

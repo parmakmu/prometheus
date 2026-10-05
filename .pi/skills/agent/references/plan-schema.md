@@ -1,8 +1,17 @@
 # Plan schema (version 1)
 
-`<agent>/plan.yaml`. `agent_check` enforces every **rule**;
-*warnings* do not fail it. The plan is reusable and holds no run state: each
-execution is a run, `runs/<id>/`.
+`<agent>/plan.yaml`: what the agent does, for people to read. How it was
+planned lives beside it in `<agent>/.plan/`, one file per section, each
+under its own key: `unknowns.yaml`, `questions.yaml`, `agents.yaml`, and
+`critique.yaml` (written only by `agent_record_critique`). The scripts read
+them as one plan; a planning section in plan.yaml is an error. `agent_check`
+enforces every **rule**; *warnings* do not fail it. The plan is reusable
+and holds no run state: each execution is a run, `runs/<id>/`.
+
+The scripts write plan.yaml in sections, each under a `# ── …` banner:
+version and status; what you asked for (request, goal, done_when); what it
+works on (params, inputs, outputs, network); how it works (stages); assumptions;
+limits and models. Keep that order when you edit it.
 
 Write text longer than a line (a finding, a note, a check) as a folded block,
 `>-` with lines of about 75 characters, so the plan reads as paragraphs; the
@@ -19,10 +28,11 @@ scripts write the same way.
 | `goal` | yes | one sentence: the outcome, not the steps |
 | `done_when` | yes (≥1) | observable acceptance criteria |
 | `params`, `inputs`, `outputs` | no | see below |
-| `agents` | no (*warning*) | what `subagent({ action: "list" })` showed |
-| `unknowns`, `assumptions`, `questions` | no | see below |
+| `agents` | no (*warning*) | in `.plan/agents.yaml`: what `subagent({ action: "list" })` showed |
+| `unknowns`, `questions` | no | in `.plan/unknowns.yaml`, `.plan/questions.yaml`; see below |
+| `assumptions` | no | see below |
 | `stages` | yes (≥1) | units of work; waves are derived |
-| `critique` | see rules | the critic's result and each finding's disposition |
+| `critique` | see rules | in `.plan/critique.yaml`, written by `agent_record_critique`: the critic's result and each finding's disposition |
 | `limits` | no | `max_parallel`, `max_retries`, `max_batch`; `command_timeout_s` (a program or gate run as a command, default 600); `max_cost_usd` (the run's children may spend this much, then the user is asked) |
 | `network` | no | hosts the stages call (APIs, sites), e.g. `[api.github.com, .example.com]` (a leading `.` covers subdomains). In the web app with Podman, only hosts the user allowed are reachable; these are offered to them to allow |
 | `models` | no | `default`, `review`: the models children use (a stage's `model` wins over `default`; `review` is for `<key>-review` children). Omitted: each subagent's own |
@@ -99,6 +109,8 @@ outputs:                  # final deliverables
 
 ## Agents
 
+In `.plan/agents.yaml`:
+
 ```yaml
 agents:
   checked: subagent list, 2026-09-26
@@ -121,6 +133,8 @@ agents:
 - Builtin contexts: `oracle` is `fork`; the others are `fresh`.
 
 ## Unknowns
+
+In `.plan/unknowns.yaml`, under `unknowns:`:
 
 ```yaml
 - id: u1
@@ -298,6 +312,9 @@ had side effects: report them) > `none`.
 
 ## Assumptions and questions
 
+Assumptions in plan.yaml (the user should see them); questions in
+`.plan/questions.yaml`:
+
 ```yaml
 assumptions:
   - id: a1
@@ -323,6 +340,8 @@ questions:
   assumptions.
 
 ## Critique
+
+In `.plan/critique.yaml`, written by `agent_record_critique` (never by hand):
 
 ```yaml
 critique:

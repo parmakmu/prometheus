@@ -28,8 +28,7 @@ import prometheus_version
 import typer
 from runs import last_run, list_runs, read_run
 from session_digest import agent_costs, default_sessions_dir
-from utils import read_json, refuse, subagents_runs_root
-from utils import read_yaml as load
+from utils import read_json, read_plan, refuse, subagents_runs_root
 from validate_plan import validate
 
 
@@ -86,7 +85,7 @@ def waiting_for(run_state, next_wave):
 
 def summarise(root, slug, current):
     """One agent's summary; `current` is this Prometheus's version (prometheus_version.current(), the same for all)."""
-    plan = load(Path(root) / slug / "plan.yaml", {})
+    plan = read_plan(Path(root) / slug, {})
     if not isinstance(plan, dict):
         return {"slug": slug, "error": "plan.yaml is not a mapping"}
     stages = [s for s in plan.get("stages") or [] if isinstance(s, dict)]

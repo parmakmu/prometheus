@@ -3,7 +3,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { ChevronDown, ChevronRight, CheckCircle2, Circle, Loader2, Lock, Pencil } from "lucide-react";
 import { useAui } from "@assistant-ui/react";
-import { api, send } from "./api";
+import { API, api, send, sendJson } from "./api";
 import { useAgent } from "./agent";
 import { useCanvas } from "./canvas";
 import { FileView } from "./files";
@@ -267,6 +267,51 @@ function NetworkAccess({ slug }: { slug: string }) {
   );
 }
 
+type ApiKey = { id: string; label: string; created: string };
+
+// The agent's run API (ui/api.ts): keys that let a script or another agent call this agent, and only it. A key is
+// shown once, when made: the server keeps only its hash.
+function ApiAccess({ slug }: { slug: string }) {
+  const [keys, setKeys] = useState<ApiKey[]>([]);
+  const [made, setMade] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const load = () => api<ApiKey[]>(`/a/${slug}/api-keys`).then(setKeys, () => setKeys([]));
+  useEffect(() => (setMade(null), void load()), [slug]); // eslint-disable-line react-hooks/exhaustive-deps
+  const make = () => {
+    const label = prompt("What is this key for? (a name to recognise it by)");
+    if (label === null) return;
+    sendJson<{ key: string }>(`/a/${slug}/api-keys`, "POST", JSON.stringify({ label })).then(
+      (r) => (setMade(r.key), setNote(null), load()),
+      (e: Error) => setNote(e.message),
+    );
+  };
+  const revoke = (k: ApiKey) => confirm(`Revoke the key "${k.label}"? Whatever uses it can no longer call this agent.`) &&
+    send(`/a/${slug}/api-keys?id=${k.id}`, "DELETE").then(load, (e: Error) => setNote(e.message));
+  const base = `${API}/a/${slug}/api`;
+  return (
+    <Section title="API" hint="call this agent from a script or another agent" count={String(keys.length)} open={false}>
+      <p className="text-muted-foreground mb-2 text-xs">
+        <code>POST {base}/runs</code> with <code>{"{request, params, files}"}</code> starts a run; questions wait for the caller. See the web app&apos;s README, &quot;The run API&quot;.
+      </p>
+      {made && (
+        <div className="mb-2 rounded border border-dashed p-2 text-xs">
+          <p className="mb-1 font-medium">Copy it now: it isn&apos;t shown again.</p>
+          <code className="block break-all select-all">{made}</code>
+          <button type="button" className="mt-1 underline" onClick={() => void navigator.clipboard.writeText(made)}>Copy</button>
+        </div>
+      )}
+      {keys.map((k) => (
+        <div key={k.id} className="mb-1 flex items-center justify-between gap-2 text-xs">
+          <span className="truncate">{k.label} <span className="text-muted-foreground">· {k.id} · {new Date(k.created).toLocaleDateString()}</span></span>
+          <button type="button" className="text-muted-foreground hover:text-red-600" onClick={() => void revoke(k)}>Revoke</button>
+        </div>
+      ))}
+      <button type="button" onClick={make} className="bg-primary text-primary-foreground mt-1 rounded px-3 py-1 text-xs">New key</button>
+      {note && <p className="text-muted-foreground mt-1 text-xs">{note}</p>}
+    </Section>
+  );
+}
+
 function Output({ w }: { w: AgentSummary }) {
   const [files, setFiles] = useState<{ run: string; path: string }[]>(() => lastOutputs.get(w.slug) ?? []);
   const latest = w.recent_runs[0];
@@ -347,6 +392,7 @@ export function Workspace({ w }: { w: AgentSummary }) {
       <div className="mt-auto border-t pt-4">
         <Params slug={w.slug} />
         <NetworkAccess slug={w.slug} />
+        <ApiAccess slug={w.slug} />
         <Input slug={w.slug} />
       </div>
     </div>

@@ -1,0 +1,17 @@
+# ── unknowns: what planning did not know, how each is resolved, and what was found.
+# ── Part of the plan of agent "competitor-memo" (plan.yaml); read with it.
+unknowns:
+  - id: u1
+    text: who our main competitors are and where their positioning is stated
+    resolve_by: discovery
+    stage: discover
+    affects: [analyse]
+  - id: u2
+    text: who the memo is for
+    resolve_by: user
+    question: q1
+  - id: u3
+    text: whether children can write to Notion from this machine
+    resolve_by: planner
+    finding: the Notion MCP tools are listed in this Pi session; children inherit extensions
+
