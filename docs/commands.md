@@ -9,7 +9,10 @@
 | [`/agent-export`](#agent-export) | prometheus | copy an agent somewhere else to run it |
 | [`/agent-refresh`](#agent-refresh) | prometheus | update agents to this prometheus's template and skill |
 | [`/agent-run`](#agent-run) | Agent | plan, continue or run, from wherever it stands |
+| [`/agent-auto`](#agent-auto) | Agent | run the next waves with no model, until one needs you |
 | [`/agent-status`](#agent-status) | Agent | show where it stands; changes nothing |
+| [`/agent-history`](#agent-history) | Agent | the last runs, and how each stage went |
+| [`/agent-prune`](#agent-prune) | Agent | delete old runs' work folders |
 | [`/agent-revise`](#agent-revise) | Agent | change the plan on a branch you review |
 | [`/agent-improve`](#agent-improve) | Agent | propose fixes from past sessions and runs |
 
@@ -26,8 +29,10 @@ Inside an agent, each entry names the [states](state-machine.md) it is accepted 
 Plans a new agent for a request.
 
 ```text
-/agent-new <request>
+/agent-new [--from <agent>] <request>
 ```
+
+With `--from`, the new agent starts from another one: its plan as a draft for the new request, its gates, stage programs, subagents and packages. Planning keeps what fits and changes the rest; the critic still reviews the whole plan.
 
 **Runs in:** prometheus
 
@@ -120,6 +125,46 @@ It activates pi-subagents' `subagent` tool first, so the model doesn't spend a t
 ```
 
 **See also:** [Running](how-it-works.md#running) · [Params, `.env` and secrets](params-and-secrets.md)
+
+### /agent-auto
+
+Runs the next waves without the model.
+
+```text
+/agent-auto
+```
+
+**Runs in:** an agent · **States:** `planned`, `ready`, `branch_review`, `change_ready` (it starts a run), `between_waves`
+
+It compiles a wave, launches it through pi-subagents' in-process RPC, waits for it, records it, and goes on to the next, all in code. It hands over to the model only where a person or judgment is needed: an approval, a decision, a review, a missing value, the run's budget, a failed wave, a replan, a child's question, or the final report (a short prompt, without the run protocol). The model's turns are most of a run's cost once its programs run as commands, so a run that needs nothing from you costs little more than its children.
+
+The chat shows one line as each wave starts (its stages) and one as it ends (how long it took, its children's cost, the next wave). It also runs without a terminal: `pi -p "/agent-auto"` in the agent's folder. With `AGENT_NOTIFY_COMMAND` set (for example `notify-send prometheus`, or a `curl` to a webhook), each hand-over, and each wave that waits for you during `/agent-run`, runs that command with the message as its last argument.
+
+Needs pi-subagents with its RPC (0.74 or later). Not yet verified in a live run.
+
+### /agent-history
+
+Shows the last runs and how each stage went in them.
+
+```text
+/agent-history [n]
+```
+
+**Runs in:** an agent · **States:** all · changes nothing
+
+Per run: its status, revision and children's cost; per stage, how many times it completed, failed or was reused. A stage that keeps failing, or keeps costing, stands out. Default: the last 10 runs.
+
+### /agent-prune
+
+Deletes the work folders of old finished runs.
+
+```text
+/agent-prune [keep]
+```
+
+**Runs in:** an agent · **States:** all
+
+Keeps the newest `keep` finished runs whole (default 10). For older ones it deletes `work/` and pi-subagents' records of their launches, after you confirm. Their `run.yaml` and compiled waves stay, so `/agent-history` still shows them; a later run no longer reuses their results. The active run is never touched.
 
 ### /agent-status
 
@@ -215,12 +260,12 @@ You don't call these. They are here so you can read a tool result or a refusal t
 Creates the folder for the agent being planned.
 
 ```text
-agent_scaffold({ slug, request })
+agent_scaffold({ slug, request, from? })
 ```
 
 **Called during:** `/agent-new`
 
-Creates `agents/<slug>/` from the agent template: a draft plan holding the request, the agent's extension, a copy of the skill, its agents and its own git repository. It refuses unless `/agent-new` ran in this session, and allows one agent per `/agent-new`. Running `scaffold_agent.py` from the shell is blocked, so the tool can't be bypassed.
+Creates `agents/<slug>/` from the agent template: a draft plan holding the request, the agent's extension, a copy of the skill, its agents and its own git repository. It refuses unless `/agent-new` ran in this session, and allows one agent per `/agent-new`. Running `scaffold_agent.py` from the shell is blocked, so the tool can't be bypassed. With `from` (only when `/agent-new --from <agent>` named one), the new agent starts from that agent's plan, as a draft, and its gates, programs, subagents and packages.
 
 ### agent_check (prometheus)
 
@@ -269,7 +314,7 @@ Creates `runs/<id>/` (`<date>-<n>`) as the active run. A run always starts from 
 Turns the next wave into the exact pi-subagents call, or says what must happen first.
 
 ```text
-agent_compile({ approve?: [stage, …], reviewed?: true })
+agent_compile({ approve?: [stage, …], reviewed?: true, budget?: usd })
 ```
 
 **States:** `between_waves`
@@ -285,9 +330,10 @@ Otherwise returns `ok: false` and a `preflight` listing what is missing:
 | `decisions_needed` | a decision stage has no answer | the model asks you, then `agent_record_decision` |
 | `approvals_needed` | a side effect needs your approval | the model describes it and asks; then `approve` |
 | `review_needed` | the last wave ended with a review | the model shows you its outputs; on your go, `reviewed: true` |
+| `budget` | the run's children spent `limits.max_cost_usd` | the model tells you the amount; on your go and a new limit, `budget: <usd>` (it holds for the rest of the run) |
 | `plan_errors` | the plan is not ready or doesn't validate | the plan is fixed first |
 
-When it relaunches a wave whose last launch failed, children that completed and haven't changed are not run again; `notes` says which.
+When it relaunches a wave whose last launch failed, children that completed and haven't changed are not run again, nor a map's completed batches; `notes` says which. A model stage an earlier run finished on the same inputs is not run again either: its outputs are copied from that run.
 
 **Refusals:** [the wave was launched but not recorded](troubleshooting.md#launched-but-not-recorded) · [a wave is running](troubleshooting.md#a-wave-is-running) · [uv is missing](troubleshooting.md#uv-is-not-installed)
 

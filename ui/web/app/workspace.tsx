@@ -187,6 +187,86 @@ function Input({ slug }: { slug: string }) {
 
 // each run a folder (its record, results, working files), read-only, with how long it took and what it cost; its
 // status only when it is not done. The latest run's results show right under it: what is usually wanted.
+type Param = { name: string; description?: string; type: "path" | "text" | "secret"; required: boolean; env: string; set: boolean; value: string | null };
+
+// The values a run needs, set here instead of one by one in chat; a secret only as set or not (it goes in .env)
+function Params({ slug }: { slug: string }) {
+  const [params, setParams] = useState<Param[] | null>(null);
+  const [edits, setEdits] = useState<Record<string, string>>({});
+  const [note, setNote] = useState<string | null>(null);
+  const load = () => api<{ params: Param[] }>(`/a/${slug}/params`).then((r) => (setParams(r.params), setEdits({})), () => setParams([]));
+  useEffect(() => void load(), [slug]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!params?.length) return null;
+  const save = () =>
+    send(`/a/${slug}/params`, "POST", JSON.stringify(edits)).then(
+      () => (setNote("Saved."), load()),
+      (e: Error) => setNote(e.message),
+    );
+  return (
+    <Section title="Settings" hint="this machine's values" count={`${params.filter((p) => p.set).length}/${params.length}`}>
+      {params.map((p) => (
+        <label key={p.name} className="mb-2 block text-xs">
+          <span className="font-medium">{p.name}</span>
+          {p.required && !p.set && <span className="text-destructive"> · needed</span>}
+          {p.description && <span className="text-muted-foreground block">{p.description}</span>}
+          {p.type === "secret" ? (
+            <span className="text-muted-foreground block">{p.set ? "set" : `add ${p.env}=… to the agent's .env`}</span>
+          ) : (
+            <input className="bg-background mt-1 w-full rounded border px-2 py-1" value={edits[p.name] ?? p.value ?? ""}
+              placeholder={p.type === "path" ? "/absolute/path" : ""} onChange={(e) => setEdits({ ...edits, [p.name]: e.target.value })} />
+          )}
+        </label>
+      ))}
+      {Object.keys(edits).length > 0 && (
+        <button type="button" onClick={save} className="bg-primary text-primary-foreground rounded px-3 py-1 text-xs">Save</button>
+      )}
+      {note && <p className="text-muted-foreground mt-1 text-xs">{note}</p>}
+    </Section>
+  );
+}
+
+type Network = { enforced: boolean; base: string[]; allowed: string[]; requested: string[]; refused: string[] };
+
+// What this agent may reach on the internet (SANDBOX=podman): hosts you allowed, and those its plan asks for or that
+// it was refused, to allow with one click. Kept in your folder, outside the agent's sandbox; the proxy rereads it at once.
+function NetworkAccess({ slug }: { slug: string }) {
+  const [n, setN] = useState<Network | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const load = () => api<Network>(`/a/${slug}/network`).then(setN, () => setN(null));
+  useEffect(() => void load(), [slug]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!n?.enforced) return null;
+  const save = (allow: string[]) =>
+    send(`/a/${slug}/network`, "POST", JSON.stringify({ allow })).then(() => (setNote(null), load()), (e: Error) => setNote(e.message));
+  const offered = [...new Set([...n.requested, ...n.refused])];
+  const chip = "rounded-full border px-2 py-0.5";
+  return (
+    <Section title="Internet" hint="what this agent may reach" count={String(n.allowed.length)} open={offered.length > 0}>
+      <p className="text-muted-foreground mb-2 text-xs">Always: the model providers and PyPI. Allowed for this agent:</p>
+      <div className="mb-2 flex flex-wrap gap-1 text-xs">
+        {n.allowed.length === 0 && <span className="text-muted-foreground">nothing else</span>}
+        {n.allowed.map((h) => (
+          <button key={h} type="button" className={chip} title="Remove" onClick={() => save(n.allowed.filter((x) => x !== h))}>
+            {h} ×
+          </button>
+        ))}
+      </div>
+      {offered.length > 0 && (
+        <>
+          <p className="text-muted-foreground mb-1 text-xs">Asked for by its plan, or refused when it tried:</p>
+          <div className="flex flex-wrap gap-1 text-xs">
+            {offered.map((h) => (
+              <button key={h} type="button" className={`${chip} border-dashed`} title={n.refused.includes(h) ? "Refused when the agent tried: allow it" : "Its plan asks for it: allow it"} onClick={() => save([...n.allowed, h])}>
+                + {h}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+      {note && <p className="text-muted-foreground mt-1 text-xs">{note}</p>}
+    </Section>
+  );
+}
+
 function Output({ w }: { w: AgentSummary }) {
   const [files, setFiles] = useState<{ run: string; path: string }[]>(() => lastOutputs.get(w.slug) ?? []);
   const latest = w.recent_runs[0];
@@ -265,6 +345,8 @@ export function Workspace({ w }: { w: AgentSummary }) {
       <ChangesSection slug={w.slug} branches={w.unmerged} branch={w.branch} />
       <References />
       <div className="mt-auto border-t pt-4">
+        <Params slug={w.slug} />
+        <NetworkAccess slug={w.slug} />
         <Input slug={w.slug} />
       </div>
     </div>

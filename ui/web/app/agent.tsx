@@ -24,6 +24,13 @@ type Agent = {
   // thread's own running, which stops and starts with each sync while the agent writes
   busy: boolean;
   setBusy: (busy: boolean) => void;
+  // this conversation's history is on the page (the status bar's first sync is done): until then the chat shows a
+  // loading skeleton, not the welcome of a new chat (a worker starting, after a refresh say, takes seconds)
+  loaded: boolean;
+  setLoaded: () => void;
+  // its Pi is up (the worker answered a status): until then the input is grayed out
+  ready: boolean;
+  setReady: () => void;
 };
 const AgentContext = createContext<Agent | null>(null);
 export const useAgent = () => useContext(AgentContext)!;
@@ -50,10 +57,12 @@ export function AgentProvider({ children }: { children: ReactNode }) {
   // state, not a ref: a command for the conversation already open (no remount) reaches it too
   const [draft, setDraft] = useState<{ text: string; send: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [loadedBase, setLoadedBase] = useState<string | null>(null); // the conversation whose history has loaded
+  const [readyBase, setReadyBase] = useState<string | null>(null); // the conversation whose Pi is up
   const slug = agent.startsWith("/a/") ? agent.slice(3) : null;
   const base = session ? `${agent}/s/${session}` : agent;
   return (
-    <AgentContext.Provider value={{ agent, slug, session, base, label: slug ?? "Forge", setAgent: (a) => go(a, null), setSession: (s) => go(agent, s), open: (a, s, text, send = false) => (setDraft(text ? { text, send } : null), go(a, s)), draft, clearDraft: () => setDraft(null), busy, setBusy }}>
+    <AgentContext.Provider value={{ agent, slug, session, base, label: slug ?? "Forge", setAgent: (a) => go(a, null), setSession: (s) => go(agent, s), open: (a, s, text, send = false) => (setDraft(text ? { text, send } : null), go(a, s)), draft, clearDraft: () => setDraft(null), busy, setBusy, loaded: loadedBase === base, setLoaded: () => setLoadedBase(base), ready: readyBase === base, setReady: () => setReadyBase(base) }}>
       {children}
     </AgentContext.Provider>
   );

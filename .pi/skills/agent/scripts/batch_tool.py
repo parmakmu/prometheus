@@ -19,14 +19,20 @@ split  {"op":"split","source":PATH,"glob":"*.eml"?,"batch":N,"outdir":PATH}
 merge  {"op":"merge","inputs":[PATH,...],"output":PATH}
        Concatenates by the output's extension: .json (arrays are flattened,
        objects appended), .jsonl / .txt (lines), .csv (header once).
-       Missing inputs are an error. Prints {"output":PATH,"count":N}.
+       Missing inputs are an error. Prints {"output":PATH,"count":N}; with
+       "gate" (as in run), the gate's result too, checking the merged output.
 
-run    {"op":"run","command":CMD,"gate":CMD?,"gate_json":BOOL?}
+run    {"op":"run","command":CMD,"gate":CMD?,"gate_json":BOOL?,"timeout":S?,"secrets":[ENV]?,"env_file":PATH?}
        Runs a stage's program, then its gate, each through the shell (so
        ${SECRET} variables expand, as in gates). Prints {"program": {...},
        "gate": {...}}; the gate's JSON when gate_json. A failing program or
        gate exits 1 with the reason on stderr: pi-subagents fails the child
        with it, and the wave hands the reason to the stage's fix child.
+       "timeout" (seconds, default 600) bounds each command: a program that
+       hangs fails like one that exits non-zero, instead of hanging the wave.
+       "secrets" names the variables the commands need from "env_file" (the
+       agent's .env; the environment wins): only they are added, only to
+       these commands. Pi's environment holds no secrets, so no model sees one.
 
 Can also be run directly: batch_tool.py '<json request>'.
 """
@@ -34,6 +40,7 @@ import csv
 import fnmatch
 import io
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -156,25 +163,60 @@ def merge(req):
     return {"output": str(output.resolve()), "count": count}
 
 
-def run(req):
-    command, gate = req.get("command"), req.get("gate")
-    if not command:
-        fail("run needs command")
-    p = subprocess.run(command, shell=True, capture_output=True, text=True, check=False)
-    if p.returncode != 0:
-        fail(f"the program exited with code {p.returncode}: {tail(p.stderr or p.stdout)}")
-    result = {"program": {"exit": 0, "stdout": tail(p.stdout)}}
-    if gate:
-        g = subprocess.run(gate, shell=True, capture_output=True, text=True, check=False)
-        if g.returncode != 0:
-            fail(f"the program ran, but its gate failed (exit code {g.returncode}): {tail(g.stderr or g.stdout)}")
-        if req.get("gate_json"):
-            try:
-                result["gate"] = json.loads(g.stdout)
-            except ValueError:
-                fail(f"the program ran, but its gate did not print JSON: {tail(g.stdout)}")
+def dotenv(path):
+    """KEY=value lines of a .env file (python-dotenv's common forms: comments, `export `, quotes)."""
+    values = {}
+    for line in Path(path).read_text(encoding="utf-8").splitlines() if Path(path).is_file() else []:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.removeprefix("export ").split("=", 1)
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] == "'":
+            value = value[1:-1]
+        elif len(value) >= 2 and value[0] == value[-1] == '"':
+            value = value[1:-1].encode().decode("unicode_escape")
         else:
-            result["gate"] = {"exit": 0}
+            value = value.split(" #", 1)[0].strip()
+        values[key.strip()] = value
+    return values
+
+
+ENV = None  # the environment the commands run with (main sets it: the request's secrets added)
+
+
+def shell(command, timeout, failed):
+    """Run `command` through the shell; on a non-zero exit or a timeout, fail with `failed` and the reason."""
+    try:
+        p = subprocess.run(command, shell=True, capture_output=True, text=True, check=False, timeout=timeout, env=ENV)
+    except subprocess.TimeoutExpired:
+        fail(f"{failed}: no result within {timeout} s (limits.command_timeout_s)")
+    if p.returncode != 0:
+        fail(f"{failed} (exit code {p.returncode}): {tail(p.stderr or p.stdout)}")
+    return p
+
+
+def gate(req, timeout):
+    """The gate's result ({exit: 0} or its JSON), or None without a gate."""
+    if not req.get("gate"):
+        return None
+    g = shell(req["gate"], timeout, "the gate failed")
+    if not req.get("gate_json"):
+        return {"exit": 0}
+    try:
+        return json.loads(g.stdout)
+    except ValueError:
+        fail(f"the gate did not print JSON: {tail(g.stdout)}")
+
+
+def run(req):
+    if not req.get("command"):
+        fail("run needs command")
+    timeout = req.get("timeout") or 600
+    p = shell(req["command"], timeout, "the program failed")
+    result = {"program": {"exit": 0, "stdout": tail(p.stdout)}}
+    if (g := gate(req, timeout)) is not None:
+        result["gate"] = g
     return result
 
 
@@ -183,11 +225,17 @@ def main(argv):
         req = read_request(argv)
     except ValueError as exc:
         fail(f"bad request JSON: {exc}")
+    global ENV
+    if req.get("secrets"):
+        found = dotenv(req.get("env_file") or "")
+        ENV = {**os.environ, **{k: found[k] for k in req["secrets"] if k in found and k not in os.environ}}
     op = req.get("op")
     if op == "split":
         result = split(req)
     elif op == "merge":
         result = merge(req)
+        if (g := gate(req, req.get("timeout") or 600)) is not None:
+            result["gate"] = g
     elif op == "run":
         result = run(req)
     else:

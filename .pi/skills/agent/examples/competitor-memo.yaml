@@ -55,6 +55,8 @@ agents:
     - oracle
     - name: plan-critic
       source: project
+    - name: reader
+      source: project
 
 unknowns:
   - id: u1
@@ -117,7 +119,7 @@ stages:
     kind: judgment
     kind_reason: comparing positions and recommending ours is argument, not computation
     pattern: worker
-    agent: worker
+    agent: reader
     needs: [analyse]
     consumes: [profiles, brief]
     out:

@@ -61,7 +61,15 @@ import agent_params
 import typer
 from ruamel.yaml.error import YAMLError
 from runs import RUNS, active_run, list_runs, read_run
-from utils import emit, load_yaml, read_json, refuse, report_state, subagent_records
+from utils import (
+    emit,
+    load_yaml,
+    pi_agent_dir,
+    read_json,
+    refuse,
+    report_state,
+    subagent_records,
+)
 from validate_plan import agent_tools, check_ready, project_subagents, validate
 
 HERE = Path(__file__).resolve().parent
@@ -88,6 +96,14 @@ def unrecorded_launch(run_dir, state, wave_id):
         if rid not in recorded and (st.get("workflow") or {}).get("scriptDigest") == digest:
             return st.get("runId") or rid, st.get("state")
     return None
+
+
+def subagents_package(agent_dir):
+    """pi-subagents' package.json (its version), project install first, else Pi's; [] when not found."""
+    for root in (Path(agent_dir) / ".pi" / "npm", pi_agent_dir() / "npm"):
+        if (f := root / "node_modules" / "pi-subagents" / "package.json").is_file():
+            return [f]
+    return []
 
 
 def canonical(value):
@@ -133,6 +149,10 @@ class Compiler:
         self.launches = launches if isinstance(launches, list) else []
         self.approvals = approvals
         self.params = plan.get("params") or {}
+        self.models = plan.get("models") or {}
+        self.timeout = (plan.get("limits") or {}).get("command_timeout_s")
+        # the run's own ceiling (raised with --budget when the user says go on), else the plan's
+        self.budget = (run_state.get("max_cost_usd") if isinstance(run_state, dict) else None) or (plan.get("limits") or {}).get("max_cost_usd")
         self.stages = {s["key"]: s for s in plan.get("stages") or [] if isinstance(s, dict) and s.get("key")}
         self.inputs = {i["id"]: i for i in plan.get("inputs") or [] if isinstance(i, dict) and i.get("id")}
         self.producer = {}
@@ -147,6 +167,7 @@ class Compiler:
         self.missing_secrets = set()
         self.uses_uv = False  # a program or gate runs with `uv run` (the agent's environment)
         self.errors = []
+        self.unresolved = set()  # errors only a run can clear (a resume of an earlier wave's stage)
         self.notes = []
         self.spliced = set()  # keys whose result a later child's task splices in (reuse_finished)
         self.fingerprints = {}  # stage -> fingerprint, written to .compiled/<wave>.inputs.json (reuse_earlier)
@@ -304,10 +325,14 @@ class Compiler:
                 subagent_run_id = next((r.get("subagent_run_id") for r in reversed(self.launches)
                                if r.get("status") == "done" and resumes in (r.get("children") or {})), None)
                 if not subagent_run_id:
-                    self.errors.append(f"stage '{key}' resumes '{resumes}' but run {self.run_id} has no finished launch of stage '{resumes}'")
+                    err = f"stage '{key}' resumes '{resumes}' but run {self.run_id} has no finished launch of stage '{resumes}'"
+                    self.errors.append(err)
+                    self.unresolved.add(err)  # --check skips it: the earlier wave hasn't run yet
                 c["resume"] = {"workflowRunId": subagent_run_id, "key": resumes, "latest": True}
         else:
             c["agent"] = st.get("agent")
+            if model := self.model(st):
+                c["model"] = model
         c["task"] = task
         if output:
             c["output"] = output
@@ -324,6 +349,12 @@ class Compiler:
         if acceptance:
             c["acceptance"] = acceptance
         return c
+
+    def model(self, st, role="default"):
+        """The model a stage's children use: its own, else the plan's for the role, else None (the subagent's)."""
+        if st.get("agent") in self.external | {BATCHER}:
+            return None
+        return (st.get("model") if role == "default" else None) or self.models.get(role) or self.models.get("default")
 
     def project_writers(self):
         """Subagents whose frontmatter declares acceptanceRole: writer."""
@@ -357,12 +388,10 @@ class Compiler:
         gate (no model). `fix` is the child the runner launches only if that fails: it is shown the
         failure, repairs the program and runs it again, checked by the usual acceptance gate."""
         command = self.program_command(st)
-        req = {"op": "run", "command": command}
-        gate = (st.get("verify") or {}).get("gate")
-        if gate is not None:
-            typed = isinstance(gate, dict)
-            req["gate"] = self.gate_command(gate["command"] if typed else gate)
-            req["gate_json"] = typed
+        req = {"op": "run", "command": command, **self.batcher_gate(st)}
+        if self.timeout:
+            req["timeout"] = self.timeout
+        req.update(self.secrets_for(req))
         fix_task = self.task(key, st, in_wave, extra_lines=(
             f"\nThe program failed when this wave ran it as a command:\n  {command}\n",
             {"failure": key},
@@ -373,11 +402,28 @@ class Compiler:
         return {"key": key, "label": st.get("title", key), "agent": BATCHER, "cwd": str(self.work),
                 "task": "BATCH_TOOL_REQUEST " + json.dumps(req), "fix": fix}
 
+    def batcher_gate(self, st):
+        """{gate, gate_json} for batch_tool, which runs the stage's gate itself (no acceptance on a command runner)."""
+        gate = (st.get("verify") or {}).get("gate")
+        if gate is None:
+            return {}
+        typed = isinstance(gate, dict)
+        return {"gate": self.gate_command(gate["command"] if typed else gate), "gate_json": typed}
+
+    def secrets_for(self, req):
+        """{secrets, env_file} for a batcher request whose command or gate names secrets (`"${ENV}"`): the batcher adds
+        just those to that command's environment, read from .env then. Pi's own environment holds none, so no model
+        child sees one (validate_plan allows secrets only here)."""
+        secret_envs = {agent_params.env_name(n, s) for n, s in self.params.items() if agent_params.kind(s) == "secret"}
+        named = sorted(set(re.findall(r"\$\{(\w+)\}", f"{req.get('command') or ''} {req.get('gate') or ''}")) & secret_envs)
+        return {"secrets": named, "env_file": str(self.agent_dir / agent_params.ENV_FILE)} if named else {}
+
     def gate_command(self, command):
         """The gate with params resolved and ../gates/ pointing at the agent's gates/."""
         if "uv run" in command:
             self.uses_uv = True
-        return GATES_RE.sub(lambda m: str(self.agent_dir / "gates") + "/", self.resolve_text(command))
+        # values quoted, as in run: (a value with `;` would otherwise run as a command); secrets stay "${ENV}"
+        return GATES_RE.sub(lambda m: str(self.agent_dir / "gates") + "/", self.resolve_command(command))
 
     def acceptance(self, key, agent, gate):
         """Explicit acceptance for children that write or have a gate. Left to infer it,
@@ -433,8 +479,16 @@ class Compiler:
                        "task": "BATCH_TOOL_REQUEST " + json.dumps(split_req)}}
         if st.get("context"):
             m["context"] = st["context"]
+        if model := self.model(st):
+            m["model"] = model
+        gate = (st.get("verify") or {}).get("gate")
         if pattern == "map_reduce":
             m["reduce_task"] = self.task(key, st, in_wave)
+            if acceptance := self.acceptance(key, st.get("agent"), gate):
+                m["reduce_acceptance"] = acceptance  # the gate checks the reduced output
+        else:
+            m["merge"] = {**self.batcher_gate(st), **({"timeout": self.timeout} if self.timeout else {})}
+            m["merge"].update(self.secrets_for(m["merge"]))
         return {"map": m}
 
     def review_step(self, key, st):
@@ -451,9 +505,12 @@ class Compiler:
                   "properties": {"blocking": {"type": "boolean"}, "findings": {"type": "array", "items": {"type": "string"}}}}
         if not outs:
             self.spliced.add(key)  # the reviewer reads the returned result
-        return {"review": {"key": f"{key}-review", "agent": (st.get("verify") or {}).get("review"), "label": f"Review: {key}",
-                           "cwd": str(self.work), "context": "fresh",
-                           "task": task if outs else [{"text": task + "\n"}, {"result": key}], "outputSchema": schema}}
+        review = {"key": f"{key}-review", "agent": (st.get("verify") or {}).get("review"), "label": f"Review: {key}",
+                  "cwd": str(self.work), "context": "fresh",
+                  "task": task if outs else [{"text": task + "\n"}, {"result": key}], "outputSchema": schema}
+        if model := self.model({"agent": review["agent"]}, "review"):
+            review["model"] = model
+        return {"review": review}
 
     # --- wave ------------------------------------------------------------------------
     def fingerprint(self, key, item, review, in_wave):
@@ -461,7 +518,16 @@ class Compiler:
         folder masked), the contents of what it consumes, its subagent's file, program and gates.
         None when that can't be known: it consumes an app or url, a returned result, or the output of
         a stage in this wave that has no fingerprint (a program, a map)."""
-        h = hashlib.sha256(canonical([item, review]).replace(str(self.run_dir), "<run>").encode())
+        text = canonical([item, review]).replace(str(self.run_dir), "<run>")
+        # an input's place is masked: its contents are hashed below, so the same files moved elsewhere (run
+        # 2026-10-05-1: scratch/emails to uploads/emails) still reuse
+        for cid in self.stages[key].get("consumes") or []:
+            inp = self.inputs.get(cid) or {}
+            if inp.get("kind") in ("file", "folder") and inp.get("location"):
+                where = self.resolve_text(inp["location"])
+                for form in {where, str(Path(where).expanduser())}:
+                    text = text.replace(form, f"<input {cid}>")
+        h = hashlib.sha256(text.encode())
         for cid in self.stages[key].get("consumes") or []:
             if cid in self.inputs:
                 inp = self.inputs[cid]
@@ -486,7 +552,9 @@ class Compiler:
             if not digest_tree(path, h):
                 return None
         st = self.stages[key]
-        files = [self.agent_dir / ".pi" / "agents" / f"{st.get('agent')}.md", Path(self.script_path(st) or "")]
+        # the subagent's file, and what picks a builtin's model and prompt: the agent's settings, pi-subagents' version
+        files = [self.agent_dir / ".pi" / "agents" / f"{st.get('agent')}.md", Path(self.script_path(st) or ""),
+                 self.agent_dir / ".pi" / "settings.json", *subagents_package(self.agent_dir)]
         files += [self.agent_dir / "gates" / g for g in re.findall(r"\.\./gates/(\S+)", canonical(st.get("verify")))]
         for f in files:
             if f.is_file():
@@ -502,6 +570,7 @@ class Compiler:
         outs = [self.out_path(o) for o in st.get("out") or [] if isinstance(o, dict)]
         tools = agent_tools(project_subagents(self.agent_dir).get(st.get("agent")) or {})
         if (st.get("kind") not in ("judgment", "deterministic") or st.get("approval") == "required" or st.get("resumes")
+                or st.get("reuse") is False
                 or not outs or not all(o and Path(o).is_relative_to(self.work) for o in outs)
                 or any(t.startswith("mcp:") for t in tools)):  # a connector: outside state no file shows
             return None
@@ -527,7 +596,9 @@ class Compiler:
         `reuse`, so a relaunch runs only the rest; returns their keys. A child is reused only when its
         item is unchanged since that launch (.compiled/<wave>.wave.json), every stage it needs in this
         wave is reused too (else its input may change), and, when a later child splices in its result,
-        it has a structured output (a child's text output is not kept between launches)."""
+        it has a structured output (a child's text output is not kept between launches). A map stage
+        whose spec is unchanged and whose input stages are reused keeps the batches that completed (their
+        output files still there) and, when all did, its reduce; the split and merge run again (no model)."""
         last = next((r for r in reversed(self.launches) if r.get("wave") == wid), None)
         before = read_json(self.run_dir / ".compiled" / f"{wid}.wave.json")
         outcome = read_json(self.run_dir / ".compiled" / f"{wid}-result.json")
@@ -535,11 +606,29 @@ class Compiler:
             return []
         previous = {it["key"]: canonical({k: v for k, v in it.items() if k != "reuse"})
                     for step in before.get("steps") or [] for it in step.get("layer") or []}
+        previous_maps = {s["map"]["key"]: canonical({k: v for k, v in s["map"].items() if k != "reuse"})
+                         for s in before.get("steps") or [] if "map" in s}
         children = outcome.get("children") or {}
         reused, rerun = [], set()
         for step in steps:
             if "map" in step:
-                rerun.add(step["map"]["key"])  # a map stage always runs again whole
+                m = step["map"]
+                key = m["key"]
+                done = {k: v for k, v in children.items() if re.fullmatch(rf"{re.escape(key)}-\d+", k)
+                        and v.get("status") == "completed" and Path(m["outdir"], k[len(key) + 1:] + m["ext"]).is_file()}
+                if (previous_maps.get(key) != canonical(m) or set((self.stages.get(key) or {}).get("needs") or []) & rerun
+                        or not done):
+                    rerun.add(key)
+                    continue
+                m["reuse"] = {k: {f: v.get(f) for f in ("runId", "outputReference", "structuredOutput")} for k, v in done.items()}
+                # every batch the split wrote (work/batches/<key>/) completed: what follows sees the same result
+                complete = len(done) == len(list((self.work / "batches" / key).glob("*")))
+                reduce = children.get(f"{key}-reduce") or {}
+                if complete and m["pattern"] == "map_reduce" and reduce.get("status") == "completed":
+                    m["reuse"][f"{key}-reduce"] = {f: reduce.get(f) for f in ("runId", "outputReference", "structuredOutput")}
+                elif not complete or m["pattern"] == "map_reduce":
+                    rerun.add(key)  # some batch or the reduce runs again: what follows may change
+                reused.extend(sorted(m["reuse"]))
             for it in step.get("layer") or []:
                 key, done = it["key"], children.get(it["key"]) or {}
                 if "reuse" in it:
@@ -558,7 +647,11 @@ class Compiler:
         members = [s for s in wave.get("stages") or [] if s in self.stages]
         decisions = [s for s in members if self.stages[s].get("kind") == "decision" or self.stages[s].get("pattern") == "approval"]
         runnable = [s for s in members if s not in decisions]
-        preflight = {"decisions_needed": [], "approvals_needed": [], "missing_params": [], "missing_secrets": []}
+        preflight = {"decisions_needed": [], "approvals_needed": [], "missing_params": [], "missing_secrets": [], "budget": None}
+        spent = round(sum(r.get("cost_usd") or 0 for r in self.launches), 4)
+        if self.budget and spent >= self.budget:
+            preflight["budget"] = {"spent_usd": spent, "max_cost_usd": self.budget,
+                                   "do": "tell the user what the run spent; to go on, compile with a higher budget they give"}
 
         for d in decisions:
             path = self.decision_path(d)
@@ -672,6 +765,7 @@ class Compiler:
 def main(
     agent_dir: Annotated[str, typer.Option("--agent", help="agent root")] = ".",
     approve: Annotated[str, typer.Option(help="side-effect stage keys the user approved, comma-separated")] = "",
+    budget: Annotated[float | None, typer.Option(help="raise the run's cost ceiling (USD) to this, after the user said to go on")] = None,
     reviewed: Annotated[bool, typer.Option("--reviewed", help="the user has seen the last wave's outputs and said to go on (it ended with review)")] = False,
     out: Annotated[str | None, typer.Option(help="also write the result JSON to this file")] = None,
     no_commit: Annotated[bool, typer.Option("--no-commit", help="report only (e.g. for a status view): do not commit the plan")] = False,
@@ -701,7 +795,7 @@ def main(
             c = Compiler(agent_dir, plan, params, run_dir, state, set())
             c.compile(w)
             # a resume across waves cannot be resolved before the earlier wave has run
-            results[w["id"]] = [e for e in c.errors if "has no finished run" not in e]
+            results[w["id"]] = [e for e in c.errors if e not in c.unresolved]
         compile_errors = {k: v for k, v in results.items() if v}
         emit({"ok": not errors and not compile_errors, "plan_errors": errors,
               "compile_errors": compile_errors, "waves_checked": sorted(results)}, 0 if not errors and not compile_errors else 1)
@@ -728,6 +822,9 @@ def main(
         emit({"ok": False, "wave": wave["id"], "preflight": {"review_needed": {
             "wave": last.get("wave"), "stages": last.get("stages"),
             "do": "summarise this wave's outputs for the user (paths, counts), ask whether to go on, then compile with reviewed"}}}, 1)
+    if budget is not None:
+        run.state["max_cost_usd"] = budget
+        run.save()
     if not agent_git.available():
         refuse("git is required: pi-subagents checks each writer child's staged index with git, and the agent's plan is versioned in its own repo. Ask the user to install git.")
 

@@ -40,7 +40,7 @@ function writePlaceholder(p, key) {
 
 function run(key, opts) {
   const runId = `run-${++n}`;
-  const entry = { key, agent: opts.agent ?? null, resume: opts.resume ?? null, cwd: opts.cwd, output: opts.output ?? null,
+  const entry = { key, agent: opts.agent ?? null, model: opts.model ?? null, resume: opts.resume ?? null, cwd: opts.cwd, output: opts.output ?? null,
                   acceptance: opts.acceptance ?? null, outputSchema: !!opts.outputSchema, context: opts.context ?? null,
                   task: opts.task };
   log.push(entry);

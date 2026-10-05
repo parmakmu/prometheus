@@ -80,6 +80,10 @@ const STANDALONE_TOOLS = new Set(["pi_panel", "pi_models", "ask_user_question", 
 export type ThreadProps = {
   components?: ThreadComponents | undefined;
   autoFocus?: boolean | undefined;
+  // the history is still on its way (the runtime doesn't know: it arrives as a run): a skeleton, not the welcome
+  loading?: boolean | undefined;
+  // the agent's Pi is still starting: the input is grayed out (a message would only wait for it)
+  starting?: boolean | undefined;
 };
 
 const EMPTY_COMPONENTS: ThreadComponents = {};
@@ -124,16 +128,20 @@ const ThreadHistorySkeleton: FC = () => (
 export const Thread: FC<ThreadProps> = ({
   components = EMPTY_COMPONENTS,
   autoFocus = true,
+  loading = false,
+  starting = false,
 }) => {
   return (
     <ThreadComponentsContext.Provider value={components}>
-      <ThreadRoot autoFocus={autoFocus} />
+      <ThreadRoot autoFocus={autoFocus} loading={loading} starting={starting} />
     </ThreadComponentsContext.Provider>
   );
 };
 
-const ThreadRoot: FC<{ autoFocus: boolean }> = ({
+const ThreadRoot: FC<{ autoFocus: boolean; loading: boolean; starting: boolean }> = ({
   autoFocus,
+  loading,
+  starting,
 }) => {
   const { Welcome = ThreadWelcome } = useContext(ThreadComponentsContext);
 
@@ -158,12 +166,12 @@ const ThreadRoot: FC<{ autoFocus: boolean }> = ({
         <div className="mx-auto flex w-full max-w-(--thread-max-width) flex-1 flex-col px-4 pt-4">
           {/* the composer stays at the bottom in every state (a new chat, history loading, a re-sync); only the
               welcome centres itself in the space above it, so nothing jumps when the history arrives */}
-          <AuiIf condition={isNewChatView}>
+          <AuiIf condition={(s) => !loading && isNewChatView(s)}>
             <div className="flex flex-1 flex-col justify-center">
               <Welcome />
             </div>
           </AuiIf>
-          <AuiIf condition={isHistoryLoadingView}>
+          <AuiIf condition={(s) => isHistoryLoadingView(s) || (loading && s.thread.messages.length === 0)}>
             <ThreadHistorySkeleton />
           </AuiIf>
 
@@ -181,8 +189,8 @@ const ThreadRoot: FC<{ autoFocus: boolean }> = ({
           >
             <ThreadScrollToBottom />
             <ThreadFollowupSuggestions />
-            <Composer autoFocus={autoFocus} />
-            <AuiIf condition={(s) => isNewChatView(s) && s.composer.isEmpty}>
+            <Composer autoFocus={autoFocus} starting={starting} />
+            <AuiIf condition={(s) => !loading && isNewChatView(s) && s.composer.isEmpty}>
               <ThreadSuggestions />
             </AuiIf>
           </ThreadPrimitive.ViewportFooter>
@@ -365,9 +373,13 @@ const ThreadSuggestionItem: FC = () => {
   );
 };
 
-const Composer: FC<{ autoFocus: boolean }> = ({ autoFocus }) => {
+const Composer: FC<{ autoFocus: boolean; starting?: boolean }> = ({ autoFocus, starting = false }) => {
   return (
-    <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
+    <ComposerPrimitive.Root
+      className={`aui-composer-root relative flex w-full flex-col transition-opacity ${starting ? "pointer-events-none opacity-50" : ""}`}
+      aria-busy={starting}
+      title={starting ? "Starting pi…" : undefined}
+    >
       <CommandBar />
       <ComposerPrimitive.AttachmentDropzone asChild>
         <div
@@ -376,7 +388,8 @@ const Composer: FC<{ autoFocus: boolean }> = ({ autoFocus }) => {
         >
           <ComposerAttachments />
           <ComposerPrimitive.Input
-            placeholder="Send a message..."
+            disabled={starting}
+            placeholder={starting ? "Starting pi…" : "Send a message..."}
             className="aui-composer-input caret-primary placeholder:text-muted-foreground/60 max-h-48 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-base leading-6 outline-none"
             rows={1}
             autoFocus={autoFocus}

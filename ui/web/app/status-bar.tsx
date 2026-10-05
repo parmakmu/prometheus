@@ -36,7 +36,7 @@ function Chip({ icon, children, title }: { icon: React.ReactNode; children: Reac
 // Below the chat, like pi-cc-extensions' footer: the session's model, context, cache, tokens and cost
 export function StatusBar() {
   const aui = useAui();
-  const { base: agent, draft, clearDraft, setBusy } = useAgent(); // this conversation's endpoints, and a command left for it
+  const { base: agent, draft, clearDraft, setBusy, loaded, setLoaded, setReady } = useAgent(); // this conversation's endpoints, and a command left for it
   const { show, remove } = useCanvas();
   const running = useAuiState((st) => st.thread.isRunning);
   const lastId = useAuiState((st) => st.thread.messages.at(-1)?.id ?? null);
@@ -49,25 +49,25 @@ export function StatusBar() {
       await (aui.thread().startRun({ parentId: lastId }) as unknown);
     } catch {}
   };
-  const [loaded, setLoaded] = useState(false); // the first sync is done: the conversation is on the page
   const [s, setS] = useState<Status | null>(null);
   useEffect(() => setBusy(!!s?.busy), [s?.busy]); // eslint-disable-line react-hooks/exhaustive-deps
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     const load = () =>
       api<Status>(`${agent}/status`)
-        .then((d) => (setS(d), setError(null)))
+        .then((d) => (setS(d), setError(null), setReady())) // the worker answered: its Pi is up
         .catch((e: Error) => (setS(null), setError(e.message === NO_ACCESS ? "refused: open the link with the token" : null)));
     load();
     const t = setInterval(load, 3000);
     return () => clearInterval(t);
   }, []);
   // A run with nothing new is a sync: the server answers with the conversation so far and, while the
-  // agent works on its own (a wave finished, say), streams that work. Once when the page opens…
+  // agent works on its own (a wave finished, say), streams that work. Once when the page opens, at once: while the
+  // worker starts (~2 s), the router answers from the session file, so the conversation doesn't wait for Pi…
   useEffect(() => {
-    if (synced.current || !s || asking) return;
+    if (synced.current || asking) return;
     synced.current = true;
-    void sync().then(() => setLoaded(true));
+    void sync().then(setLoaded);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [s]);
   // …and whenever the agent is busy, or shows a panel, without a run of ours

@@ -495,3 +495,121 @@ def test_the_list_gives_each_agent_its_state_and_recent_runs(tmp_path, run_py):
     assert item["state"] in ("ready", "branch_review"), item
     (run,) = item["recent_runs"]
     assert run["status"] == "stopped" and run["cost_usd"] == 0 and run["id"] == item["last_run"]["id"], run
+
+
+MAP = PLAN.replace("""stages:
+  - key: count""", """models:
+  default: cheap-model
+inputs:
+  - id: lines
+    kind: file
+    location: ${src}
+params:
+  src:
+    description: a text file, one item per line
+stages:
+  - key: tally
+    title: Tally each line
+    kind: deterministic
+    kind_reason: A program can tally a line.
+    pattern: map
+    agent: worker
+    items: lines
+    batch: 1
+    consumes: [lines]
+    out:
+      - id: tallies
+        path: tallies.json
+    verify:
+      check: one tally per line
+      gate: "test -s tallies.json"
+  - key: count""")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node")
+def test_a_map_relaunch_runs_only_the_batches_that_did_not_complete(tmp_path, run_py, run_node):
+    wf, k = ready_agent(tmp_path, run_py, "maprelaunch")
+    (wf / "plan.yaml").write_text(MAP, encoding="utf-8")
+    (tmp_path / "in.txt").write_text("a\nb\nc\n", encoding="utf-8")
+    (wf / ".env").write_text(f"SRC={tmp_path / 'in.txt'}\n", encoding="utf-8")
+    mock = Path(__file__).parent / "mock-subagents.mjs"
+    assert run_py([k / "run_log.py", "new"], cwd=wf).data["ok"]
+    r = run_py([k / "compile_wave.py"], cwd=wf)
+    assert r.data["ok"], r
+    compiled = Path(r.data["call"]["workflow"]).with_suffix(".json")
+    first = run_node([mock, compiled, "--fail", "tally-1"]).data
+    assert first["result"]["status"] == "failed", first
+    assert {e["model"] for e in first["log"] if e["key"].startswith("tally-") and e["agent"] == "worker"} == {"cheap-model"}
+    assert run_py([k / "run_log.py", "start", "--wave", "w1", "--subagent-run-id", "mr-1"], cwd=wf).data["ok"]
+    record_launch(wf, "mr-1", first["result"])
+    assert run_py([k / "run_log.py", "finish", "--wave", "w1"], cwd=wf).data["wave_status"] == "pending"
+    r = run_py([k / "compile_wave.py"], cwd=wf)
+    assert r.data["ok"] and any("tally-0, tally-2" in n for n in r.data["notes"]), r.data["notes"]
+    again = run_node([mock, compiled]).data
+    assert again["result"]["status"] == "done", again
+    # the split and merge are cheap commands: only the failed batch runs a model again
+    assert sorted(e["key"] for e in again["log"]) == ["tally-1", "tally-merge", "tally-split"], again["log"]
+    assert '"gate":"test -s tallies.json"' in next(e["task"] for e in again["log"] if e["key"] == "tally-merge")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node")
+def test_a_failed_child_stops_the_layer_launching_more(tmp_path, run_py, run_node):
+    wf, k = ready_agent(tmp_path, run_py, "failfast")
+    (wf / "plan.yaml").write_text(TWO + "limits:\n  max_parallel: 1\n", encoding="utf-8")
+    assert run_py([k / "run_log.py", "new"], cwd=wf).data["ok"]
+    compiled = Path(run_py([k / "compile_wave.py"], cwd=wf).data["call"]["workflow"]).with_suffix(".json")
+    r = run_node([Path(__file__).parent / "mock-subagents.mjs", compiled, "--fail", "count"]).data
+    assert r["result"]["status"] == "failed" and [e["key"] for e in r["log"]] == ["count"], r
+
+
+def test_a_run_over_its_budget_asks_before_the_next_wave(tmp_path, run_py):
+    wf, k = ready_agent(tmp_path, run_py, "budget")
+    (wf / "plan.yaml").write_text(TWO + "limits:\n  max_cost_usd: 0.01\n", encoding="utf-8")
+    assert run_py([k / "run_log.py", "new"], cwd=wf).data["ok"]
+    run_yaml = next((wf / "runs").glob("*/run.yaml"))
+    run_yaml.write_text(run_yaml.read_text(encoding="utf-8").replace(
+        "launches: []", "launches:\n  - wave: w0\n    status: done\n    cost_usd: 0.02"), encoding="utf-8")
+    r = run_py([k / "compile_wave.py"], cwd=wf)
+    assert r.data["preflight"]["budget"]["spent_usd"] == 0.02, r
+    r = run_py([k / "compile_wave.py", "--budget", "0.05"], cwd=wf)
+    assert r.data["ok"], r
+
+
+def test_history_counts_each_stage_and_prune_keeps_it(tmp_path, run_py):
+    wf, k = ready_agent(tmp_path, run_py, "history")
+    for _ in range(2):
+        assert run_py([k / "run_log.py", "new"], cwd=wf).data["ok"]
+        assert run_py([k / "run_log.py", "stop"], cwd=wf).data["ok"]
+    for d in (wf / "runs").iterdir():
+        (d / "work").mkdir(exist_ok=True)
+        (d / "work" / "out.txt").write_text("x" * 1000, encoding="utf-8")
+    shown = run_py([k / "run_history.py", "show"], cwd=wf).data
+    assert [r["status"] for r in shown["runs"]] == ["stopped", "stopped"], shown
+    dry = run_py([k / "run_history.py", "prune", "--keep", "1", "--dry-run"], cwd=wf).data
+    assert len(dry["pruned"]) == 1 and all((d / "work").is_dir() for d in (wf / "runs").iterdir()), dry
+    done = run_py([k / "run_history.py", "prune", "--keep", "1"], cwd=wf).data
+    oldest = wf / "runs" / done["pruned"][0]
+    assert not (oldest / "work").exists() and (oldest / "run.yaml").is_file() and done["kept"] != done["pruned"]
+
+
+def test_a_new_agent_can_start_from_another(tmp_path, run_py):
+    src, _k = ready_agent(tmp_path, run_py, "source")
+    (src / "gates" / "check.py").write_text("print('ok')\n", encoding="utf-8")
+    r = run_py([SKILL / "scripts" / "scaffold_agent.py", "copy", "--root", tmp_path, "--request", "count words", "--from", "source"])
+    assert r.data["ok"], r
+    plan = (tmp_path / "copy" / "plan.yaml").read_text(encoding="utf-8")
+    assert "status: draft" in plan and "count words" in plan and "key: count" in plan
+    assert (tmp_path / "copy" / "gates" / "check.py").is_file()
+    assert 'name = "copy"' in (tmp_path / "copy" / "pyproject.toml").read_text(encoding="utf-8")
+
+
+def test_prune_deletes_nothing_outside_the_records_whatever_a_run_names(tmp_path, run_py):
+    wf, k = ready_agent(tmp_path, run_py, "prunesafe")
+    assert run_py([k / "run_log.py", "new"], cwd=wf).data["ok"] and run_py([k / "run_log.py", "stop"], cwd=wf).data["ok"]
+    precious = Path(os.environ["PI_SUBAGENTS_TEMP_ROOT"]) / "precious"
+    precious.mkdir(parents=True, exist_ok=True)
+    run_yaml = next((wf / "runs").glob("*/run.yaml"))
+    run_yaml.write_text(run_yaml.read_text(encoding="utf-8").replace(
+        "launches: []", "launches:\n  - wave: w1\n    status: done\n    subagent_run_id: ../precious"), encoding="utf-8")
+    assert run_py([k / "run_history.py", "prune", "--keep", "0"], cwd=wf).data["ok"]
+    assert precious.is_dir()

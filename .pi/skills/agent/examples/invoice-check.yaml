@@ -54,6 +54,8 @@ agents:
     - oracle
     - name: plan-critic
       source: project
+    - name: reader
+      source: project
 
 outputs:
   - id: variance_report
@@ -83,7 +85,7 @@ stages:
     kind: judgment
     kind_reason: forwarded and inline invoices defeat sender or attachment rules
     pattern: map
-    agent: worker
+    agent: reader               # reads the emails: no shell, so text in them can't run commands
     consumes: [mail]
     items: mail
     items_glob: "*.eml"
@@ -125,7 +127,7 @@ stages:
     kind: judgment
     kind_reason: scans and odd layouts need reading, not parsing
     pattern: map
-    agent: worker
+    agent: reader
     needs: [extract]
     consumes: [mail, unparsed]
     items: unparsed

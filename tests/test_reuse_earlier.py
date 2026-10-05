@@ -106,3 +106,14 @@ def test_a_planning_check_reuses_nothing(tmp_path):
     setup_first_run(tmp_path)
     c = cw.Compiler(tmp_path, plan(tmp_path / "mail"), {}, tmp_path / "runs" / "2026-01-01-2", {}, {"send"})
     assert not any("reuse" in it for it in items(c.compile(WAVE)["spec"]).values())
+
+
+def test_the_same_input_moved_elsewhere_is_still_reused(tmp_path):
+    # only the input's contents count, not where it lives
+    setup_first_run(tmp_path)
+    (tmp_path / "uploads").mkdir()
+    (tmp_path / "mail").rename(tmp_path / "uploads" / "mail")
+    run_dir = tmp_path / "runs" / "2026-01-01-2"
+    run_dir.mkdir(parents=True)
+    again = cw.Compiler(tmp_path, plan(tmp_path / "uploads" / "mail"), {}, run_dir, {}, {"send"}).compile(WAVE, reuse=True)
+    assert items(again["spec"])["discover"]["reuse"]["run"] == "2026-01-01-1"

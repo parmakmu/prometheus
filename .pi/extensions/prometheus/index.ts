@@ -36,6 +36,12 @@ active: do not call subagents_enable.
 
 Request (copy it verbatim into the plan): ${request}`;
 
+const FROM_PROMPT = (from: string) => `
+
+Start from the agent "${from}": call \`agent_scaffold\` with \`from: "${from}"\`. It copies that agent's plan
+as a draft (with this request), its gates, stage programs, subagents and packages. Keep what fits this
+request, change the rest, and plan only what is new; the critic still reviews the whole plan.`;
+
 // --- helpers --------------------------------------------------------------------
 
 /** Prometheus's root: the folder whose .pi/ holds APPEND_SYSTEM.md, found from `start` upwards. */
@@ -198,16 +204,19 @@ export default function prometheus(pi: ExtensionAPI) {
 
 	// --- commands ---------------------------------------------------------------
 	pi.registerCommand("agent-new", {
-		description: "Plan a new agent from a request: /agent-new <what you want done>",
+		description: "Plan a new agent from a request: /agent-new [--from <agent>] <what you want done>",
+		getArgumentCompletions: (prefix: string) => (prefix.startsWith("--from ") ? completeSlug(prefix.slice(7)) : null),
 		handler: async (args, ctx) => {
 			if (!rootOrWarn(ctx)) return;
-			if (!args.trim()) {
-				ctx.ui.notify("Usage: /agent-new <what you want done>", "warning");
+			const from = /^--from\s+(\S+)\s*/.exec(args.trim());
+			const request = from ? args.trim().slice(from[0].length) : args.trim();
+			if (!request) {
+				ctx.ui.notify("Usage: /agent-new [--from <agent>] <what you want done>", "warning");
 				return;
 			}
 			newRequested = true;
 			activateSubagent(pi); // probes and the critic
-			ask(ctx, NEW_PROMPT(args.trim()));
+			ask(ctx, NEW_PROMPT(request) + (from ? FROM_PROMPT(from[1]) : ""));
 		},
 	});
 
@@ -335,6 +344,7 @@ export default function prometheus(pi: ExtensionAPI) {
 			parameters: Type.Object({
 				slug: Type.String({ description: "short lowercase slug: letters, digits and dashes" }),
 				request: Type.String({ description: "the user's request, verbatim" }),
+				from: Type.Optional(Type.String({ description: "only when /agent-new named one with --from: the agent to start from" })),
 			}),
 			async execute(_id, params, signal, _onUpdate, ctx) {
 				const root = findRoot(ctx.cwd);
@@ -343,10 +353,10 @@ export default function prometheus(pi: ExtensionAPI) {
 					throw new Error(
 						"agents are created only through /agent-new. Do not plan this request; answer it normally, and if it is multi-step work, tell the user they can run `/agent-new <request>`.",
 					);
-				const res = await runScript(pi, root, "scaffold_agent.py", [params.slug, "--root", AGENTS, "--request", params.request], signal);
+				const res = await runScript(pi, root, "scaffold_agent.py", [params.slug, "--root", AGENTS, "--request", params.request, ...(params.from ? ["--from", params.from] : [])], signal);
 				if (res.data === undefined) throw new Error(`scaffold_agent.py failed: ${(res.stderr || res.stdout).trim().slice(0, 2000)}`);
 				if (res.data.ok) newRequested = false;
-				return { content: [{ type: "text" as const, text: JSON.stringify(res.data, null, 2) }], details: res.data };
+				return { content: [{ type: "text" as const, text: JSON.stringify(res.data) }], details: res.data };
 			},
 		}),
 	);
@@ -366,7 +376,7 @@ export default function prometheus(pi: ExtensionAPI) {
 				const root = findRoot(ctx.cwd);
 				if (!root) throw new Error("not inside the prometheus folder");
 				const res = await check(pi, root, params.slug, signal);
-				return { content: [{ type: "text" as const, text: JSON.stringify(res, null, 2) }], details: res };
+				return { content: [{ type: "text" as const, text: JSON.stringify(res) }], details: res };
 			},
 		}),
 	);
@@ -394,7 +404,7 @@ export default function prometheus(pi: ExtensionAPI) {
 				if (!yes) return { content: [{ type: "text" as const, text: "The user declined. Do not add it: work without it, or ask the user what to do instead." }], details: { declined: true } };
 				const res = await runScript(pi, root, "add_package.py", [...params.packages, "--reason", params.reason, "--agent", path.join(root, AGENTS, params.slug)], signal);
 				if (res.data === undefined) throw new Error(`add_package.py failed: ${(res.stderr || res.stdout).trim().slice(0, 2000)}`);
-				return { content: [{ type: "text" as const, text: JSON.stringify(res.data, null, 2) }], details: res.data };
+				return { content: [{ type: "text" as const, text: JSON.stringify(res.data) }], details: res.data };
 			},
 		}),
 	);

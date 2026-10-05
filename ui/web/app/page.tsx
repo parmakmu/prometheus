@@ -49,6 +49,16 @@ const when = (iso?: string) => (iso ? new Date(iso).toLocaleString([], { month: 
 // so the sidebar starts from what it last showed instead of empty, then refreshes
 let lastAgents: Agent[] = [];
 
+
+// Pointing at an agent starts its worker (a start takes ~2 s, its status answers once it is up), so the chat is
+// likely ready by the click; once a minute per agent at most
+const warmed = new Map<string, number>();
+const warm = (path: string) => {
+  if (Date.now() - (warmed.get(path) ?? 0) < 60_000) return;
+  warmed.set(path, Date.now());
+  void api(`${path}/status`).catch(() => {});
+};
+
 function useAgents() {
   const [agents, setAgentsState] = useState<Agent[]>(lastAgents);
   const setAgents = useCallback((next: Agent[] | ((all: Agent[]) => Agent[])) => setAgentsState((all) => (lastAgents = typeof next === "function" ? next(all) : next)), []);
@@ -163,7 +173,7 @@ function Sidebar({ agents, error, load }: ReturnType<typeof useAgents>) {
         <Flame className="size-5" /> prometheus
       </div>
       <nav className="space-y-0.5 px-4">
-        <button type="button" onClick={() => (setAgent("/p"), select(null))} title="prometheus's own chat, where agents are created" className={row(agent === "/p")}>
+        <button type="button" onClick={() => (setAgent("/p"), select(null))} onMouseEnter={() => warm("/p")} title="prometheus's own chat, where agents are created" className={row(agent === "/p")}>
           <Flame className={icon} /> Forge
         </button>
         <button type="button" onClick={() => (open("/p", `new-${crypto.randomUUID().slice(0, 8)}`, "/agent-new "), select(null))} className={row()}>
@@ -190,7 +200,7 @@ function Sidebar({ agents, error, load }: ReturnType<typeof useAgents>) {
         {agents.map((w) => (
           <div key={w.slug}>
             <div className={row(agent === `/a/${w.slug}`)}>
-              <button type="button" onClick={() => (setAgent(`/a/${w.slug}`), select(null))} title={`${w.slug}: ${stateOf(w).label}`} className="min-w-0 flex-1 truncate text-left">
+              <button type="button" onClick={() => (setAgent(`/a/${w.slug}`), select(null))} onMouseEnter={() => warm(`/a/${w.slug}`)} title={`${w.slug}: ${stateOf(w).label}`} className="min-w-0 flex-1 truncate text-left">
                 {w.slug}
               </button>
               {/* only what calls for attention, as dots (in words on hover) */}
@@ -324,7 +334,7 @@ function DropZone({ children }: { children: ReactNode }) {
 // the agent the workspace shows: the selected one, or (with the planner) the one being planned
 function Layout() {
   const data = useAgents();
-  const { slug } = useAgent();
+  const { slug, loaded, ready } = useAgent();
   const running = useAuiState((s) => s.thread.isRunning);
   useEffect(() => {
     if (!running) data.load(); // what the agent just did (a plan drafted, a wave finished) shows now, not at the next poll
@@ -345,7 +355,7 @@ function Layout() {
       <DropZone>
         <ChatHeader agents={data.agents} />
         <div className="min-h-0 flex-1">
-          <Thread />
+          <Thread loading={!loaded} starting={!ready} />
         </div>
         <QuestionCard />
         <SlashMenu />

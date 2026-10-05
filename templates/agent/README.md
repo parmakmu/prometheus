@@ -5,7 +5,10 @@ A self-contained agent built by prometheus. Start `pi` in this folder (trust it 
 | command | what it does |
 |---|---|
 | `/agent-run [note]` | start a run, or continue the active one |
+| `/agent-auto` | run the next waves without the model, until one needs you (`pi -p "/agent-auto"` runs it unattended) |
 | `/agent-status` | where it stands: what comes next, what waits for you |
+| `/agent-history [n]` | the last runs, and how each stage went |
+| `/agent-prune [keep]` | delete old runs' work folders (keeps their history) |
 | `/agent-revise [change]` | change the plan on a branch you review and merge |
 | `/agent-improve [focus]` | improvements from past sessions and runs, on a branch you review |
 

@@ -10,7 +10,11 @@
 // wave; `resumeFrom: key` resumes that child. A layer item with `fix` runs a stage's program as
 // a command (no model); only if that fails is `fix`, a model child, launched to repair it. A
 // layer item with `reuse` completed in the wave's last launch and is unchanged: its earlier
-// result stands in and it is not launched again (compile_wave.py, reuse_finished).
+// result stands in and it is not launched again (compile_wave.py, reuse_finished); a map's
+// `reuse` does the same for its batches ({<key>-<n>: result}) and its reduce.
+//
+// A layer launches max_parallel children at a time and stops launching once a child failed
+// that has no `fix`: the wave fails anyway, and a relaunch runs only what did not complete.
 //
 // pi-subagents runs this as a script body: top-level await and return, no nested async
 // functions. A child result has `ok` (no status): runs.all returns a failed child as
@@ -49,8 +53,10 @@ function batchChild(m, b) {
               task: text(m.task) + "\n\nYour batch file (one item per line): " + b.file + "\nWrite your batch result to: " + batchOutput(m, b),
               output: batchOutput(m, b) };
   if (m.context) c.context = m.context;
+  if (m.model) c.model = m.model;
   return c;
 }
+function reused(key, r) { R[key] = { ok: true, reused: true, runId: r.runId, outputReference: r.outputReference, structuredOutput: r.structuredOutput }; }
 
 try {
   for (const step of W.steps) {
@@ -67,18 +73,23 @@ try {
       R[m.split.key] = await runs.run(m.split.key, params(m.split));
       if (failed(R[m.split.key])) return stop("failed", [m.split.key]);
       batches = JSON.parse(R[m.split.key].output).batches;
-      items = batches.map((b) => batchChild(m, b));
-    } else {
-      for (const it of step.layer.filter((x) => x.reuse)) {
-        R[it.key] = { ok: true, reused: true, runId: it.reuse.runId, outputReference: it.reuse.outputReference, structuredOutput: it.reuse.structuredOutput };
+      items = [];
+      for (const b of batches) {
+        const c = batchChild(m, b);
+        if (m.reuse && m.reuse[c.key]) reused(c.key, m.reuse[c.key]);
+        else items.push(c);
       }
+    } else {
+      for (const it of step.layer.filter((x) => x.reuse)) reused(it.key, it.reuse);
       items = step.layer.filter((x) => !x.reuse).map(child);
     }
+    const fixable = new Set((step.layer || []).filter((it) => it.fix).map((it) => it.key));
     for (let i = 0; i < items.length; i += W.max_parallel) {
       const part = await runs.all(items.slice(i, i + W.max_parallel));
       part.forEach((r, j) => { R[items[i + j].key] = r; });
+      if (items.slice(0, i + W.max_parallel).some((it) => failed(R[it.key]) && !fixable.has(it.key))) break;
     }
-    let bad = items.map((it) => it.key).filter((k) => failed(R[k]));
+    let bad = items.map((it) => it.key).filter((k) => R[k] !== undefined && failed(R[k]));
     // a stage program that failed as a command: its fix child repairs it and runs it again
     const fixes = (step.layer || []).filter((it) => it.fix && bad.includes(it.key)).map((it) => child(it.fix));
     if (fixes.length) {
@@ -91,10 +102,14 @@ try {
       const outputs = batches.map((b) => batchOutput(m, b));
       const last = m.pattern === "map"
         ? { key: m.key + "-merge", agent: m.split.agent, label: "Merge batches: " + m.key, cwd: m.cwd,
-            task: "BATCH_TOOL_REQUEST " + JSON.stringify({ op: "merge", inputs: outputs, output: m.final }) }
+            task: "BATCH_TOOL_REQUEST " + JSON.stringify(Object.assign({ op: "merge", inputs: outputs, output: m.final }, m.merge)) }
         : { key: m.key + "-reduce", label: m.title + " — reduce", agent: m.agent, cwd: m.cwd,
             task: text(m.reduce_task) + "\n\nThis is the reduce step. Combine these batch results into the output above: " + outputs.join(", "),
             output: m.final };
+      if (m.pattern !== "map" && m.model) last.model = m.model;
+      if (m.reduce_acceptance) last.acceptance = m.reduce_acceptance;
+      const again = (m.reuse || {})[last.key];
+      if (again) { reused(last.key, again); continue; }
       R[last.key] = await runs.run(last.key, params(last));
       if (failed(R[last.key])) return stop("failed", [last.key]);
     }

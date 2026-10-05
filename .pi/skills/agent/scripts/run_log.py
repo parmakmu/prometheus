@@ -291,7 +291,7 @@ def finish(
           # a summary only: outputs are files the gates checked; read one only when something needs a look
           "children": {k: {"status": (v or {}).get("status"), "output": (v or {}).get("outputReference")}
                        for k, v in ((returned or {}).get("children") or {}).items()} if isinstance(returned, dict) else None,
-          "error": entry.get("error"), "failure_kind": entry.get("failure_kind"),
+          "error": entry.get("error"), "failure_kind": entry.get("failure_kind"), "cost_usd": entry.get("cost_usd"),
           "stopped_at": entry.get("stopped_at"), "git_note": git_note,
           # what to compile next, so the parent goes straight to agent_compile (no check in between)
           "next_wave": nxt,

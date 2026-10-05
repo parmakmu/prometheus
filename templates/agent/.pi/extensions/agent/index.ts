@@ -3,7 +3,10 @@
  *
  * Commands
  *   /agent-run [note]        plan, continue or run from where it stands (model)
+ *   /agent-auto              run waves with no model until one needs a person, fails, or the run ends
  *   /agent-status            where the agent stands (no model)
+ *   /agent-history [n]       the last n runs, and how each stage went in them (no model)
+ *   /agent-prune [keep]      delete old finished runs' work/ folders, keeping the newest (default 10; no model)
  *   /agent-revise [change]   change the plan on a branch, for review (no run active; model)
  *   /agent-improve [focus]   propose fixes from the sessions and runs, applied on an improve/ branch (no run active; model)
  *
@@ -30,9 +33,10 @@
  * pi-subagents checks the repo's staged index around writer children); git commands that
  * change the repo are blocked for the model.
  *
- * Param values live in .env (per machine, may hold secrets): this extension loads it into
- * pi's environment, which children and gate commands inherit, and the model may not read or
- * change it directly. Once a run exists, direct edits to runs/<id>/run.yaml are blocked,
+ * Param values live in .env (per machine, may hold secrets), which the model may not read or change
+ * directly. It is not loaded into pi's environment: the scripts read it, the compiler writes values into
+ * tasks and commands, and only a stage program or gate the batcher runs gets the secrets it names. Every
+ * child shares pi's environment and sandbox, and one reading outside content can be told to leak it. Once a run exists, direct edits to runs/<id>/run.yaml are blocked,
  * and plan.yaml may be edited directly only on a change branch with no run active;
  * during a run the plan changes through agent_replan, which refuses to touch what ran,
  * the goal or a side effect's approval.
@@ -42,9 +46,9 @@
  */
 import { defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type, type Static, type TSchema } from "typebox";
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { parseEnv } from "node:util";
 
 
 // --- prompts sent to the model ------------------------------------------------
@@ -62,6 +66,18 @@ subagents_enable or listing agents first. Ask every question that has a fixed se
 answers with the question tool (run-protocol.md, "Asking the user").
 
 Note from the user for this run (may be empty): ${note}`;
+
+/** Starts every /agent-auto hand-over: its turn ends the autopilot's hold on the run tools. */
+const HANDOVER_MARK = "/agent-auto ran";
+/** The tools /agent-auto calls itself while it runs; the model's are refused meanwhile. */
+const AUTO_OWNS = new Set(["agent_compile", "agent_log_start", "agent_log_finish", "agent_new_run", "agent_stop_run", "subagent"]);
+
+const FINISH_PROMPT = (result: string) => `${HANDOVER_MARK} this agent's run to the end. Report each \`done_when\`
+criterion below as met or not, with paths, from what the gates and reviews checked; deliverables are at the
+plan's \`outputs[].location\` (relative values inside \`runs/<id>/\`). Pass \`mission_close\` to the subagent tool
+unchanged. Do not start anything else.
+
+${result}`;
 
 const REVISE_PROMPT = (change: string, branch: string, mode: string) => {
 	const where =
@@ -177,31 +193,6 @@ interface ScriptResult {
 	stderr: string;
 }
 
-/** Values pi's environment got from .env, so a reload can update or drop them. */
-const fromEnvFile = new Map<string, string>();
-
-/** Load the agent's .env into pi's environment: children and gate commands inherit it, and
- * the scripts see the same values. The real environment wins: a variable this extension did
- * not set is left alone. Reloaded before every script, so edits count without a restart. */
-function loadEnvFile(root: string): void {
-	let parsed: Record<string, string>;
-	try {
-		parsed = parseEnv(fs.readFileSync(path.join(root, ".env"), "utf8")) as Record<string, string>;
-	} catch {
-		parsed = {};
-	}
-	for (const [k, v] of [...fromEnvFile]) {
-		if (k in parsed) continue;
-		if (process.env[k] === v) delete process.env[k];
-		fromEnvFile.delete(k);
-	}
-	for (const [k, v] of Object.entries(parsed)) {
-		if (process.env[k] !== undefined && process.env[k] !== fromEnvFile.get(k)) continue;
-		process.env[k] = v;
-		fromEnvFile.set(k, v);
-	}
-}
-
 async function runScript(
 	pi: ExtensionAPI,
 	root: string,
@@ -209,7 +200,6 @@ async function runScript(
 	args: string[],
 	signal?: AbortSignal,
 ): Promise<ScriptResult> {
-	loadEnvFile(root);
 	const file = path.join(root, ".pi", "skills", "agent", "scripts", script);
 	const py = pythonFor(root);
 	const r = await pi.exec(py, [file, ...args], { cwd: root, timeout: 120_000, signal });
@@ -225,6 +215,26 @@ async function runScript(
 		? `Python package '${missing[1]}' is missing for ${py}. Do not install packages yourself: ask the user to run \`uv sync\` in ${root}.`
 		: r.stderr;
 	return { code: r.code, data, stdout: r.stdout, stderr };
+}
+
+/** Whether process `pid` still runs (EPERM: it does, under another user). */
+function alive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (e: any) {
+		return e?.code === "EPERM";
+	}
+}
+
+/** Why a recorded wave (run_log finish) waits for the user, or undefined when the run goes on by itself. */
+function waitsForUser(d: any): string | undefined {
+	if (!d?.ok) return undefined;
+	if (d.run_status === "done") return `run ${d.run} is done`;
+	if (d.wave_status !== "done") return `run ${d.run}: a wave did not complete${d.error ? ` (${String(d.error).slice(0, 200)})` : ""}`;
+	if (d.ends_with && d.ends_with !== "none") return `run ${d.run}: a wave ended with ${d.ends_with}, which needs you`;
+	if (d.next_wave?.preflight) return `run ${d.run}: the next wave needs ${Object.keys(d.next_wave.preflight).join(", ")}`;
+	return undefined;
 }
 
 /** `value` without what says nothing: null, "", [] and {} (absent reads the same to the model, and costs no tokens). */
@@ -359,6 +369,9 @@ export default function agentExtension(pi: ExtensionAPI) {
 	pi.on("tool_call", (event, ctx) => {
 		const root = findRoot(ctx.cwd);
 		if (!root) return;
+		// run 2026-10-05-1: a completion notice woke the model, which called agent_log_finish on a wave /agent-auto had recorded
+		if (autopilot && AUTO_OWNS.has(event.toolName))
+			return { block: true, reason: "/agent-auto is running this run's waves and records them itself; it hands over when it needs you. Do nothing now." };
 		const input = event.input as { path?: string; command?: string };
 		const shellCommand = event.toolName === "bash" || event.toolName === "powershell" ? (input.command ?? "") : "";
 		const packageFile =
@@ -422,15 +435,22 @@ export default function agentExtension(pi: ExtensionAPI) {
 
 	// Swap only Pi's opening line, so the tool list, rules and the appended role stay as Pi builds them
 	// (customPrompt would drop them). If Pi rewords the line, nothing matches and the prompt is left alone.
+	// /agent-auto is running waves: from its start until the turn of its hand-over (which may wait behind a notice turn)
+	let autopilot = false;
+	let looping = false; // its loop is launching or waiting for a wave
 	pi.on("before_agent_start", (event, ctx) => {
-		if (!findRoot(ctx.cwd) || !event.systemPrompt.includes(PI_PREAMBLE)) return;
-		return { systemPrompt: event.systemPrompt.replace(PI_PREAMBLE, ROLE_PREAMBLE) };
+		if (!findRoot(ctx.cwd)) return;
+		let systemPrompt = event.systemPrompt.replace(PI_PREAMBLE, ROLE_PREAMBLE);
+		if (autopilot && event.prompt?.includes(HANDOVER_MARK)) autopilot = false;
+		// pi-subagents wakes the model with each wave's completion notice (no prompt of its own); /agent-auto records
+		// the wave itself, and its run tools are refused meanwhile (tool_call)
+		else if (autopilot && !event.prompt?.trim()) systemPrompt += "\n\n/agent-auto is running the waves and records them itself: answer a completion notice with one word and call no tools.";
+		return systemPrompt === event.systemPrompt ? undefined : { systemPrompt };
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
 		const root = findRoot(ctx.cwd);
 		if (!root) return;
-		loadEnvFile(root);
 		const probe = () => pi.exec(pythonFor(root), ["-c", "import dotenv, pydantic, pydantic_settings, ruamel.yaml, typer"], { cwd: root, timeout: 10_000 });
 		let r = await probe();
 		// First start: no .venv yet. Create it from this agent's pyproject.toml and uv.lock, as the gates and
@@ -464,10 +484,170 @@ export default function agentExtension(pi: ExtensionAPI) {
 		pi.sendUserMessage(text);
 	};
 
+	/** Tell someone away from the chat: $AGENT_NOTIFY_COMMAND (e.g. `notify-send prometheus`, or a curl to a
+	 * webhook) runs with the message as its last argument. Unset: nothing. */
+	const notifyUser = async (message: string) => {
+		const command = process.env.AGENT_NOTIFY_COMMAND;
+		if (!command) return;
+		const root = findRoot(process.cwd()) ?? process.cwd();
+		await pi.exec("sh", ["-c", `${command} "$1"`, "agent-notify", `${path.basename(root)}: ${message}`], { cwd: root, timeout: 15_000 }).catch(() => {});
+	};
+
+	/** One request to pi-subagents' in-process RPC (its docs/extension-api.md); resolves to the reply's data. */
+	const rpc = (method: string, params: object, timeoutMs = 30_000) =>
+		new Promise<any>((resolve, reject) => {
+			const requestId = randomUUID();
+			const timer = setTimeout(() => {
+				off();
+				reject(new Error(`pi-subagents did not answer ${method} (needs a pi-subagents with its RPC, >= 0.74)`));
+			}, timeoutMs);
+			const off = pi.events.on(`subagents:rpc:v1:reply:${requestId}`, (reply: any) => {
+				clearTimeout(timer);
+				off();
+				if (reply?.success) resolve(reply.data);
+				else reject(new Error(reply?.error?.message ?? `pi-subagents ${method} failed`));
+			});
+			pi.events.emit("subagents:rpc:v1:request", { version: 1, requestId, method, params });
+		});
+
+	/** The state a launched wave ended in, read from its status.json (pi-subagents' record; events can be missed);
+	 * "lost" when its runner is gone without recording an end, or the record never appears: else /agent-auto would
+	 * wait forever, and its hold refuses /agent-run. */
+	const waveEnd = async (asyncDir: string) => {
+		const began = Date.now();
+		let dead = 0; // polls in a row that found the runner gone
+		for (;;) {
+			let st: any;
+			try {
+				st = JSON.parse(fs.readFileSync(path.join(asyncDir, "status.json"), "utf8"));
+			} catch {
+				if (Date.now() - began > 120_000) return "lost"; // not written yet, two minutes on
+			}
+			// paused: a child asked its supervisor (contact_supervisor); the model answers it
+			if (["complete", "completed", "failed", "stopped", "paused"].includes(st?.state)) return st.state as string;
+			if (typeof st?.pid === "number" && !alive(st.pid)) {
+				if (++dead >= 2) return "lost"; // twice, so an end written just after it exited is read first
+			} else dead = 0;
+			await new Promise((r) => setTimeout(r, 3_000));
+		}
+	};
+
+	/** Waves run by code, the model woken only where the run protocol needs judgment or a person:
+	 * compile, launch through pi-subagents' RPC, record, repeat. Why: the orchestrator's turns cost
+	 * more than the children of a run whose programs run as commands (run 4: $0.0135 vs $0.0105). */
+	const autoRun = async (ctx: ExtensionContext) => {
+		const root = mustRoot(ctx);
+		const step = async (script: string, args: string[]) => (await runScript(pi, root, script, args)).data ?? { ok: false, error: `${script} printed no result` };
+		const handOver = (why: string, data: any) => {
+			ctx.ui.setStatus("agent-auto", undefined);
+			void notifyUser(why);
+			activateSubagent(pi);
+			// a finished run with nothing to review needs only the report: not the whole run protocol (~3k tokens)
+			const finished = data?.run_status === "done" && !data?.review;
+			// a follow-up: a completion notice may have started a turn, and Pi drops a plain message sent during one
+			// (run 2026-10-05-1 lost its report this way). `autopilot` ends when this message's turn starts.
+			pi.sendUserMessage(finished ? FINISH_PROMPT(compact(data))
+				: `${RUN_PROMPT("")}\n\n${HANDOVER_MARK} the waves it could without you and stopped: ${why}. Go on from here (skip the checks it did):\n${compact(data)}`,
+				{ deliverAs: "followUp" });
+		};
+		try {
+			await rpc("ping", {});
+		} catch (e: any) {
+			return ctx.ui.notify(`${e.message}. Use /agent-run instead.`, "error");
+		}
+		const state = (await step("agent_state.py", [])).state;
+		if (["planned", "ready", "branch_review", "change_ready"].includes(state)) {
+			const r = await step("run_log.py", ["new", "--note", "started by /agent-auto"]);
+			if (!r.ok) return ctx.ui.notify(r.error ?? "cannot start a run", "error");
+		} else if (state !== "between_waves") {
+			return ctx.ui.notify(`/agent-auto starts from a ready plan or a run between waves; the agent is ${state}: use /agent-run.`, "warning");
+		}
+		autopilot = true;
+		for (;;) {
+			const c = await step("compile_wave.py", []);
+			if (!c.ok) return handOver("the next wave needs something first", c);
+			ctx.ui.setStatus("agent-auto", `agent-auto: wave ${c.wave} running`);
+			// one line in the chat per wave start and end: with no model turn, nothing else shows the run moving
+			const started = Date.now();
+			show(`Wave ${c.wave} started`, `${c.stages.join(", ")}${c.notes?.length ? ` (${c.notes.join("; ")})` : ""}`);
+			let launched: any;
+			try {
+				launched = await rpc("spawn", { ...c.call, cwd: root });
+			} catch (e: any) {
+				return handOver(`launching wave ${c.wave} failed: ${e.message}`, { wave: c.wave });
+			}
+			const id = launched?.details?.runId ?? launched?.details?.asyncId;
+			const dir = launched?.details?.asyncDir;
+			const recorded = await step("run_log.py", ["start", "--wave", c.wave, "--subagent-run-id", String(id)]);
+			if (!recorded.ok || !dir) return handOver(`wave ${c.wave} launched as ${id} but not recorded`, recorded);
+			const end = await waveEnd(dir);
+			if (end === "lost") return handOver(`pi-subagents' runner for wave ${c.wave} stopped without recording how it ended (run ${id}); check the run before relaunching`, { wave: c.wave, subagent_run_id: id });
+			if (end === "paused") return handOver(`a child of wave ${c.wave} asked a question (pi-subagents run ${id})`, { wave: c.wave, subagent_run_id: id });
+			const f = await step("run_log.py", ["finish", "--wave", c.wave]);
+			if (!f.ok) return handOver(`recording wave ${c.wave} failed`, f);
+			const took = Math.round((Date.now() - started) / 1000);
+			show(`Wave ${c.wave} ${f.wave_status === "done" ? "done" : "did not complete"}`,
+				`${took >= 60 ? `${Math.floor(took / 60)}m ${took % 60}s` : `${took}s`}${typeof f.cost_usd === "number" ? ` · $${f.cost_usd.toFixed(4)}` : ""}` +
+				(f.wave_status === "done" && f.next_wave ? ` · wave ${f.next_wave.id} next` : ""));
+			if (f.run_status === "done") return handOver("the run is done: close its mission and give the final report", f);
+			if (f.wave_status !== "done") return handOver(`wave ${c.wave} did not complete`, f);
+			if (f.ends_with && f.ends_with !== "none") return handOver(`wave ${c.wave} ended with ${f.ends_with}`, f);
+		}
+	};
+
 	// --- commands ---------------------------------------------------------------
+	pi.registerCommand("agent-auto", {
+		description: "Run the next waves without the model until one needs you, fails, or the run ends",
+		handler: async (_args, ctx) => {
+			if (looping) return ctx.ui.notify("/agent-auto is already running.", "warning");
+			if (!ctx.isIdle()) return ctx.ui.notify("The agent is busy; wait for it to finish, then run the command again.", "warning");
+			looping = true;
+			try {
+				await autoRun(ctx);
+			} catch (e: any) {
+				autopilot = false;
+				ctx.ui.setStatus("agent-auto", undefined);
+				ctx.ui.notify(`/agent-auto stopped: ${e.message}`, "error");
+			} finally {
+				looping = false;
+			}
+		},
+	});
+
+	pi.registerCommand("agent-history", {
+		description: "The last runs and how each stage went in them (no model)",
+		handler: async (args, ctx) => {
+			const root = mustRoot(ctx);
+			const r = (await runScript(pi, root, "run_history.py", ["show", ...opt("--last", args.trim())])).data;
+			if (!r?.ok) return ctx.ui.notify(r?.error ?? "run_history.py failed", "error");
+			const runs = r.runs.map((x: any) => `- ${x.id} (${x.status}, r${x.revision}) $${x.cost_usd.toFixed(4)}`);
+			const stages = Object.entries(r.stages as Record<string, Record<string, number>>).map(
+				([k, c]) => `- ${k}: ${Object.entries(c).map(([s, n]) => `${n} ${s}`).join(", ")}`);
+			show("Run history", [`${r.runs.length} runs, $${r.total_cost_usd.toFixed(4)} in children`, ...runs, "", "Stages:", ...stages].join("\n"));
+		},
+	});
+
+	pi.registerCommand("agent-prune", {
+		description: "Delete old finished runs' work folders (keeps their history; default: keep the newest 10)",
+		handler: async (args, ctx) => {
+			const root = mustRoot(ctx);
+			const keep = opt("--keep", args.trim());
+			const dry = (await runScript(pi, root, "run_history.py", ["prune", "--dry-run", ...keep])).data;
+			if (!dry?.ok) return ctx.ui.notify(dry?.error ?? "run_history.py failed", "error");
+			if (!dry.pruned.length) return ctx.ui.notify("Nothing to prune.", "info");
+			if (!(await ctx.ui.confirm("Prune runs", `Delete the work folders of ${dry.pruned.length} runs (${dry.freed_mb} MB): ${dry.pruned.join(", ")}?`))) return;
+			const r = (await runScript(pi, root, "run_history.py", ["prune", ...keep])).data;
+			ctx.ui.notify(r?.ok ? `Pruned ${r.pruned.length} runs, ${r.freed_mb} MB freed.` : (r?.error ?? "prune failed"), r?.ok ? "info" : "error");
+		},
+	});
+
 	pi.registerCommand("agent-run", {
 		description: "Plan, continue or run this agent from where it stands",
-		handler: async (args, ctx) => ask(ctx, RUN_PROMPT(args.trim())),
+		handler: async (args, ctx) => {
+			if (looping) return ctx.ui.notify("/agent-auto is running this run's waves; it hands over when it needs you.", "warning");
+			autopilot = false; // a hand-over that never arrived: you take the run back
+			ask(ctx, RUN_PROMPT(args.trim()));
+		},
 	});
 
 	/** Open (or continue) the change branch for a command that edits the agent; undefined after telling the user why not. */
@@ -551,6 +731,7 @@ export default function agentExtension(pi: ExtensionAPI) {
 				...(b.active_run ? (pf.decisions_needed ?? []).map((d: any) => `decide: ${d.stage}`) : []),
 				...(b.active_run ? (pf.approvals_needed ?? []).map((a: any) => `approve: ${a.stage}`) : []),
 				...(b.active_run && pf.review_needed ? [`review wave ${pf.review_needed.wave}`] : []),
+				...(b.active_run && pf.budget ? [`over budget: $${pf.budget.spent_usd} of $${pf.budget.max_cost_usd}`] : []),
 				...(b.unmerged ?? []).map((br: string) => `review branch ${br}`),
 				...(s.agent?.missing_params ?? []).map((p: string) => `set ${p}`),
 				...(s.agent?.missing_secrets ?? []).map((v: string) => `add ${v} to .env`),
@@ -724,13 +905,15 @@ export default function agentExtension(pi: ExtensionAPI) {
 			"Never write a wave script by hand; use agent_compile and pass its `call` to the subagent tool unchanged. `call.workflow` is a script path (pi-subagents reads it itself): pass it as-is, do not open the file or paste its contents into the tool call.",
 			"Only list a stage in `approve` after the user explicitly approved that stage's side effect in this session.",
 			"Pass `reviewed: true` only after the user saw the last wave's outputs (preflight review_needed) and said to go on.",
+			"Pass `budget` only after preflight budget: the user saw what the run spent and gave a new limit.",
 		],
 		parameters: Type.Object({
 			approve: Type.Optional(Type.Array(Type.String(), { description: "side-effect stage keys the user explicitly approved" })),
 			reviewed: Type.Optional(Type.Boolean({ description: "the user reviewed the last wave's outputs and said to go on" })),
+			budget: Type.Optional(Type.Number({ description: "the run's new cost limit in USD, given by the user after preflight budget" })),
 		}),
 		script: "compile_wave.py",
-		args: (p) => [...opt("--approve", p.approve?.join(",")), ...(p.reviewed ? ["--reviewed"] : [])],
+		args: (p) => [...opt("--approve", p.approve?.join(",")), ...(p.reviewed ? ["--reviewed"] : []), ...opt("--budget", p.budget?.toString())],
 	});
 
 	scriptTool({
@@ -784,6 +967,11 @@ export default function agentExtension(pi: ExtensionAPI) {
 		// a given result is saved in the run's .compiled/
 		args: (p) => ["finish", "--wave", p.wave, ...opt("--status", p.status),
 			...opt("--result", p.result === undefined ? undefined : JSON.stringify(p.result)), ...opt("--note", p.note)],
+		format: (d) => {
+			const why = waitsForUser(d);
+			if (why) void notifyUser(why);
+			return undefined;
+		},
 	});
 
 	scriptTool({

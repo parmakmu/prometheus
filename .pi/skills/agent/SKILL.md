@@ -135,6 +135,15 @@ inside the agent (`references/replanning.md`, `references/changing.md`).
   A messy tail goes to a leftovers file and a small judgment stage.
 - Judgment work over many items is a `map` / `map_reduce` with a schema.
 - Anything a later wave reads is a file (`out` with `path`).
+- A judgment stage that reads outside content (emails, documents, pages)
+  runs as `reader` (no shell): text in that content can't run commands.
+- List in `network:` every host a stage calls (an API, a site): the web
+  app lets an agent reach only hosts the user allowed, and offers these.
+- A secret is used only in a stage program's `run:` and its gate. A stage
+  that calls a service with a token is a program, or uses a connector.
+- Cost: programs as commands cost nothing per run; a `reviewer` on every
+  stage doubles its children. Review where a wrong output would spread.
+  Set `models` (or a stage's `model`) only to models the user named.
 - A pause in the wrong place is fixed with a need, a kind or `pause_after`.
 - Only if the schema leaves a field's use unclear, read one example:
   `examples/invoice-check.yaml` (concrete from the start) or

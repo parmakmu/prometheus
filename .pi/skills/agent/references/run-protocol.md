@@ -113,6 +113,9 @@ tool, ask in chat and end the turn.
 - `review_needed` — the last wave ended with a review: summarise its outputs
   (paths, counts) and ask, with the question tool, whether to go on. On a go,
   compile with `reviewed: true`; otherwise replan or stop as the user says.
+- `budget` — the run spent its cost limit. Tell the user the amount and
+  ask (question tool) whether to go on; on a go, ask the new limit and
+  compile with `budget: <usd>`; otherwise `agent_stop_run`.
 - error "already launched … and not recorded" — a session ended between a
   launch and its record. Do not launch again: `agent_log_start` with the
   run id it names, then wait for it (or finish it if it has ended).

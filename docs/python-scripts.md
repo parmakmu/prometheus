@@ -4,7 +4,7 @@ This page is for contributors. It has one entry per script in [`.pi/skills/agent
 
 ## Create and maintain agents
 
-**`scaffold_agent.py`** creates an agent from `templates/agent/`. It fills in the slug and request, writes a draft plan, starts the agent's git repository, and runs `uv lock`. With `--refresh`, it rewrites the files an agent got from prometheus and keeps the agent's own: its plan, runs, programs, agents, packages, and the lessons section of `.pi/APPEND_SYSTEM.md`. `agent_scaffold` and `/agent-refresh` use it. An agent's own copy refuses to run, because the templates belong to prometheus.
+**`scaffold_agent.py`** creates an agent from `templates/agent/`. It fills in the slug and request, writes a draft plan, starts the agent's git repository, and runs `uv lock`. With `--refresh`, it rewrites the files an agent got from prometheus and keeps the agent's own: its plan, runs, programs, agents, packages, and the lessons section of `.pi/APPEND_SYSTEM.md`. With `--from <agent>`, a new agent starts from another one: its plan as a draft, its gates, programs, subagents and packages. `agent_scaffold` and `/agent-refresh` use it. An agent's own copy refuses to run, because the templates belong to prometheus.
 
 **`prometheus_version.py`** names the prometheus an agent's skill copy came from: `<pyproject version>+<commit>[.dirty] <hash>`: `.dirty` marks uncommitted changes, and the hash, of the files a refresh copies, alone decides whether an agent is up to date. The commit is the last one that touched the skill or the templates, so a docs or tests commit doesn't make agents stale. Creating or refreshing an agent writes the label to `.pi/skills/agent/VERSION`; `/agent-list` marks agents with another label stale. Standard library only.
 
@@ -24,9 +24,11 @@ This page is for contributors. It has one entry per script in [`.pi/skills/agent
 
 **`run_log.py`** owns `runs/<id>/run.yaml`. It starts and stops runs, records launches and decisions, and finishes waves. Finishing reads the outcome and cost from pi-subagents, updates the stages, and commits the files the wave wrote into the agent (stage programs, say) on the run's branch.
 
-**`plan_edit.py`** makes the plan changes that must be checked: a replan of pending stages, a critic's result with its dispositions, and param values written to `.env`. A replan keeps the stages that ran and the locked fields, validates the result, raises the revision and commits on the run's branch.
+**`plan_edit.py`** makes the plan changes that must be checked: a replan of pending stages, a critic's result with its dispositions, and param values written to `.env` (`params`; `params-show` lists them for the web app's form, a secret only as set or not). A replan keeps the stages that ran and the locked fields, validates the result, raises the revision and commits on the run's branch.
 
 **`agent_git.py`** does every git operation: creating the repository, committing the plan and the files runs write (`runs/` itself is not versioned), opening `run/`, `revise/` and `improve/` branches, and merging (as one squashed commit), keeping or discarding them.
+
+**`run_history.py`** reads the agent's runs side by side (`show`: per run its cost, per stage how it went) and prunes old ones (`prune`: the `work/` folders of finished runs beyond the newest N, and pi-subagents' records of their launches; `run.yaml` and `.compiled/` stay).
 
 **`session_digest.py`** reads the agent's conversations from its own `.pi/sessions` (else Pi's old per-path folder) and condenses what is new since the last `/agent-improve` into evidence: user messages, failed tool results, repeated calls, cost, failed or relaunched waves, and the lessons already in `improvements.yaml`. It reads at most the newest 5 sessions and 3 runs, and skips improve and revise sessions themselves. It changes nothing.
 

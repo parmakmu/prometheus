@@ -1,11 +1,11 @@
 "use client";
 
 import type { LucideIcon } from "lucide-react";
-import { Activity, GitBranch, ListChecks, Play, Sparkles } from "lucide-react";
+import { Activity, FastForward, GitBranch, ListChecks, Play, Sparkles } from "lucide-react";
 import { useAui } from "@assistant-ui/react";
 import { useAgent } from "./agent";
 
-// The chat's commands as small chips above the input: an agent's own (run, status, revise, improve), or in the
+// The chat's commands as small chips above the input: an agent's own (run, auto-run, status, revise, improve), or in the
 // Forge the list of agents (a new agent is the sidebar's: it starts a fresh Forge conversation from anywhere). One
 // that only reads, or is the agent's main action, is sent; one that takes words from you (the change, the focus) or
 // starts a long model session waits in the input box. Always clickable: one sent while the agent works waits for its
@@ -14,6 +14,7 @@ type Command = { label: string; icon: LucideIcon; text: string; send: boolean; t
 
 const AGENT: Command[] = [
   { label: "Run", icon: Play, text: "/agent-run", send: true, title: "Start or continue a run" },
+  { label: "Auto-run", icon: FastForward, text: "/agent-auto", send: true, title: "Run the next waves without the model: it stops and asks only when a wave needs you (cheaper)" },
   { label: "Status", icon: Activity, text: "/agent-status", send: true, title: "Where this agent stands (changes nothing)" },
   { label: "Revise", icon: GitBranch, text: "/agent-revise ", send: false, title: "Change the plan on a branch you review: say what to change" },
   { label: "Improve", icon: Sparkles, text: "/agent-improve ", send: false, title: "Propose improvements from past sessions and runs (add a focus, or just send)" },

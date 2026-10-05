@@ -37,6 +37,20 @@ Use this when the same job has new input, such as next month's emails.
 
 Any value you don't change is used again, since values persist across runs. For the params themselves, see [Params, `.env` and secrets](params-and-secrets.md).
 
+### How to make a run cheaper
+
+Most of a run's cost is the model that orchestrates it and the children that make judgments. In order of effect:
+
+1. Run with `/agent-auto` instead of `/agent-run`: waves are launched and recorded by code, and the model is woken only when something needs you.
+2. Give deterministic stages a program and `run:` arguments: from the second run they run as commands, at no model cost.
+3. Set cheap models for children in the plan: `models: {default: <model>, review: <model>}`, or `model:` on one stage. Reviews are the easiest to make cheaper.
+4. Set `limits.max_cost_usd`: once a run's children have spent that much, the agent asks before the next wave.
+5. Leave `reuse` on (the default): a judgment made on the same inputs is not made again.
+
+### How to run an agent unattended
+
+In the agent's folder, run `pi -p "/agent-auto"`. It runs the waves that need nobody and stops at the first that does. Set `AGENT_NOTIFY_COMMAND` (for example `notify-send prometheus`) to hear when it stops. To give the next run its values without a chat, use the agent's **Settings** in the web app, or edit `.env`.
+
 ### How to add a secret
 
 Use this when the agent asks you to add a variable to `.env`.

@@ -864,7 +864,7 @@ def test_agent_extension_registers_commands_and_tools(env, ext):
     ]
     report = drive(ext, ext.tmp / ".ext" / "agent.ts", env.b, steps)
     env.agent_ext_report = report
-    assert (len(report["commands"]), len(report["tools"])) == (4, 13)
+    assert (len(report["commands"]), len(report["tools"])) == (7, 13)
 
 
 @skip_extensions
@@ -899,8 +899,10 @@ def test_dotenv_guard(env):
 
 
 @skip_extensions
-def test_extension_loads_dotenv_into_pis_environment(env):
-    assert env.agent_ext_report["steps"][11]["env"] == str(env.tmp / "data" / "mail")
+def test_extension_keeps_dotenv_out_of_pis_environment(env):
+    # every child inherits pi's environment and shares its sandbox: values reach children through their tasks, and
+    # secrets only the batcher's commands (compile_wave.secrets_for)
+    assert env.agent_ext_report["steps"][11]["env"] is None
 
 
 @skip_extensions
@@ -959,3 +961,45 @@ def test_the_coding_assistant_line_is_replaced_and_the_rest_kept(env):
     assert swapped["systemPrompt"].startswith("You are the agent") and swapped["systemPrompt"].endswith("<tools>x</tools>")
     assert "coding assistant" not in swapped["systemPrompt"]
     assert untouched["systemPrompt"] is None  # Pi reworded its line: leave the prompt alone
+
+
+@skip_extensions
+def test_agent_auto_runs_the_waves_without_the_model(ext, tmp_path, run_py):
+    # a ready one-wave plan: /agent-auto starts the run, launches its wave through the RPC, records it and hands
+    # over only for the final report (one model turn, not one per step)
+    from test_run_finish import TWO
+    r = run_py([SKILL / "scripts" / "scaffold_agent.py", "auto", "--root", tmp_path, "--request", "count the lines"])
+    assert r.data["ok"], r
+    wf = tmp_path / "auto"
+    (wf / "plan.yaml").write_text(TWO, encoding="utf-8")
+    finish = {"toolCall": {"toolName": "agent_log_finish", "input": {"wave": "w1"}}}
+    report = drive(ext, ext.tmp / ".ext" / "agent.ts", wf, [
+        {"cmd": "agent-auto"},
+        # a completion notice's turn (no prompt): told to do nothing, and its run tools refused
+        {"systemPrompt": "Some other opening.", "prompt": ""}, finish,
+        # the hand-over's turn ends the hold
+        {"systemPrompt": "Some other opening.", "prompt": "/agent-auto ran this agent's run to the end."}, finish,
+    ], extra_env={"FAKE_SUBAGENTS_RPC": str(HERE / "mock-subagents.mjs")})
+    steps = report["steps"]
+    assert "one word" in steps[1]["systemPrompt"] and steps[2]["blocked"], steps[1:3]
+    assert steps[3]["systemPrompt"] is None and not steps[4]["blocked"], steps[3:5]
+    out = report["steps"][0]["out"]
+    assert [o["status"] for o in out if o["kind"] == "spawn"] == ["done"], out
+    (prompt,) = [o["text"] for o in out if o["kind"] == "prompt" and o["deliverAs"] == "followUp"]
+    assert "to the end" in prompt and "run-protocol.md" not in prompt and "mission_close" in prompt, prompt
+    shown = [o["text"] for o in out if o["kind"] == "shown"]
+    assert shown[0].startswith("Wave w1 started") and shown[1].startswith("Wave w1 done"), shown
+    assert "status: done" in next((wf / "runs").glob("*/run.yaml")).read_text(encoding="utf-8")
+
+
+@skip_extensions
+def test_agent_auto_hands_over_when_the_runner_dies_without_an_end(ext, tmp_path, run_py):
+    # else it would poll forever, and its hold would refuse /agent-run
+    from test_run_finish import TWO
+    r = run_py([SKILL / "scripts" / "scaffold_agent.py", "lost", "--root", tmp_path, "--request", "count the lines"])
+    assert r.data["ok"], r
+    (tmp_path / "lost" / "plan.yaml").write_text(TWO, encoding="utf-8")
+    report = drive(ext, ext.tmp / ".ext" / "agent.ts", tmp_path / "lost", [{"cmd": "agent-auto"}],
+                   extra_env={"FAKE_SUBAGENTS_RPC": str(HERE / "mock-subagents.mjs"), "FAKE_SUBAGENTS_DEAD": "1"})
+    (prompt,) = [o["text"] for o in report["steps"][0]["out"] if o["kind"] == "prompt"]
+    assert "stopped without recording how it ended" in prompt, prompt

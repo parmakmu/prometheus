@@ -78,6 +78,7 @@ PATH_CHARS = set("/\\.~_-") | set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRS
 ABS_PATH_RE = re.compile(r"(^|[\s'\"=])(/[^\s'\"]+|~[^\s'\"]*|[A-Za-z]:[\\/][^\s'\"]*)")
 
 # Launch context pi-subagents' builtin agents use when `context` is omitted.
+SHELL_BUILTINS = {"scout", "worker", "delegate", "oracle"}  # pi-subagents' builtins with bash
 BUILTIN_CONTEXT = {
     "oracle": "fork",
     "worker": "fresh",
@@ -181,6 +182,8 @@ class Stage(M):
     batch: int | None = None
     script: str | None = None  # the stage's program, kept in the agent's scripts/ and reused by later runs
     run: str | None = None  # the program's arguments: once it exists, runs execute it as a command (no model)
+    model: Str | None = None  # the model its children use (default: models.default, else the subagent's own)
+    reuse: StrictBool = True  # false: always run again, never take an earlier run's result (reuse_earlier)
 
 
 class Unknown(M):
@@ -234,6 +237,14 @@ class Limits(M):
     max_parallel: Count | None = None
     max_retries: Count | None = None
     max_batch: Count | None = None
+    command_timeout_s: Annotated[int, Field(gt=0)] | None = None  # a stage program or gate run as a command (default 600)
+    max_cost_usd: Annotated[float, Field(gt=0)] | None = None  # the run's children may spend this much before the user is asked
+
+
+class Models(M):
+    """Models the children use, by role; a stage's `model` wins over `default`. Cheap ones for reviews pay off most."""
+    default: Str | None = None
+    review: Str | None = None
 
 
 class Plan(M):
@@ -253,6 +264,10 @@ class Plan(M):
     questions: list[Question] = []
     critique: Critique | None = None
     limits: Limits = Limits()
+    models: Models = Models()
+    # hosts the agent's stages call (APIs, sites): with SANDBOX=podman, only hosts you allowed are reachable, and these
+    # are offered to you to allow; a leading "." covers subdomains
+    network: list[Annotated[str, StringConstraints(pattern=r"^\.?([A-Za-z0-9-]+\.)+[A-Za-z]{2,}$")]] = []
 
 
 LABELS = {"inputs": "input", "outputs": "output", "stages": "stage", "unknowns": "unknown",
@@ -474,7 +489,7 @@ def validate(raw, cli_agents=None, cli_external=None, agent_root=None, run_state
     except ValidationError as exc:
         return shape_errors(exc, raw), [], {}
     c = Checker(plan, raw, cli_agents, cli_external, agent_root, run_state)
-    for rules in (c.limits, c.inputs, c.stage_index, c.graph, c.stages, c.outputs, c.side_effect_reach, c.run_and_waves,
+    for rules in (c.limits, c.inputs, c.stage_index, c.graph, c.stages, c.outputs, c.outside_readers, c.side_effect_reach, c.run_and_waves,
                   c.unknowns, c.assumptions, c.critique, c.questions, c.params, c.agent_folder):
         rules()
     return c.errors, c.warnings, c.summary()
@@ -498,9 +513,10 @@ class Checker:
         self.gate_scripts = []  # (where, file under <agent>/gates/, its command runs uv)
         self.script_owner = {}  # stage program -> the stage it belongs to
 
-    def check_refs(self, where, text, is_path=False):
+    def check_refs(self, where, text, is_path=False, secret_ok=False):
+        """`secret_ok`: a command the batcher runs (a stage program's `run:` and its gate), the one place a secret reaches."""
         if isinstance(text, str):
-            self.param_refs.extend((where, m.group(1), is_path, m.start() > 0 and text[m.start() - 1] in PATH_CHARS)
+            self.param_refs.extend((where, m.group(1), is_path, m.start() > 0 and text[m.start() - 1] in PATH_CHARS, secret_ok)
                                    for m in PARAM_REF_RE.finditer(text))
 
     def check_agent_ref(self, where, name):
@@ -512,6 +528,8 @@ class Checker:
     def limits(self):
         for k in self.plan.limits.model_extra or {}:
             self.warn(f"limits.{k} is not a known limit")
+        for k in self.plan.models.model_extra or {}:
+            self.warn(f"models.{k} is not a known role (default, review)")
 
     def inputs(self):
         for iid in duplicates(inp.id for inp in self.plan.inputs):
@@ -639,7 +657,7 @@ class Checker:
             self.warn(f"{where}: deterministic work in a {st.pattern} child; make it pattern: script with `script:` "
                       "and `run:`, so the program is kept in scripts/ and later runs execute it without a model")
         if st.run is not None:
-            self.check_refs(f"{where} run", st.run)
+            self.check_refs(f"{where} run", st.run, secret_ok=True)
             if st.script is None:
                 self.err(f"{where}: run gives the arguments of the stage's program; name the program with script:")
             returned = [o.id for o in st.out if not o.path]
@@ -685,11 +703,15 @@ class Checker:
                     self.err(f"{where}: resumes '{resumes}', which runs on external runner '{target.agent}'; use a fresh stage that consumes its output instead")
             if st.context is not None:
                 self.warn(f"{where}: context is ignored on a resumed child")
+            if st.model is not None:
+                self.err(f"{where}: a resumed child keeps its model; remove model")
         elif run and not agent:
             self.err(f"{where}: agent is required for {st.kind} stages")
         if agent:
             self.check_agent_ref(where, agent)
         eff_agent = agent or (self.by_key[resumes].agent if resumes in self.by_key else None)
+        if st.model is not None and eff_agent in self.external:
+            self.warn(f"{where}: external runner '{eff_agent}' runs no model; model is ignored")
         if st.context is not None:
             if eff_agent in self.external and st.context == "fork":
                 self.err(f"{where}: external runner '{eff_agent}' cannot use forked context")
@@ -743,7 +765,7 @@ class Checker:
                 self.err(f"{where}: typed gate cannot be combined with a returned schema (outputSchema); give out '{structured[0].id}' a path, or use a plain string gate")
         elif not isinstance(gate, str) or not gate.strip():
             self.err(f"{where}: verify.gate must be a command string or a typed gate mapping")
-        self.check_refs(f"{where} gate", command)
+        self.check_refs(f"{where} gate", command, secret_ok=st.script is not None and st.run is not None)
         if isinstance(command, str):
             self.gate_scripts.extend((where, m, "uv run" in command) for m in GATES_REF_RE.findall(command))
         if literal_absolute(command):
@@ -765,8 +787,6 @@ class Checker:
             src = next((o for o in self.by_key[self.producer[items]].out if o.id == items), None)
             if not (src and src.path):
                 self.err(f"{where}: items '{items}' must be a file output (with a path) so it can be split")
-        if st.verify and st.verify.gate is not None:
-            self.err(f"{where}: gates on {pattern} stages are not supported (batches are merged by a command runner); verify in a following script stage")
         if st.kind == "deterministic":
             self.warn(f"{where}: deterministic work in a {pattern}; one script stage is usually better")
         b, max_batch = st.batch, self.plan.limits.max_batch
@@ -776,6 +796,22 @@ class Checker:
             self.err(f"{where}: batch {b} exceeds limits.max_batch {max_batch}")
 
     # --- the rest of the plan ---------------------------------------------------------
+    def outside_readers(self):
+        """A judgment stage reading outside content (an input folder, file, url or app: emails, documents, pages) with
+        an agent that has a shell: an instruction hidden in that content could run commands, reach the network or read
+        the environment. `reader` (the template's) has no shell."""
+        outside = {i.id for i in self.plan.inputs if i.kind in ("folder", "file", "url", "app")}
+        defined = project_subagents(self.agent_root) if self.agent_root else {}
+        for key, st in self.by_key.items():
+            read = [c for c in st.consumes if c in outside]
+            if st.kind != "judgment" or not read or not st.agent or st.agent in self.external:
+                continue
+            tools = agent_tools(defined[st.agent]) if st.agent in defined else None
+            has_shell = st.agent in SHELL_BUILTINS if tools is None else (not tools or "bash" in tools)
+            if has_shell:
+                self.warn(f"stage '{key}': reads outside content ({', '.join(read)}) as '{st.agent}', which has a shell: "
+                          "an instruction hidden in it could run commands; use the subagent `reader` (no shell)")
+
     def side_effect_reach(self):
         """A side effect that writes outside the agent (an `app` or `message` output) needs an agent
         that can reach it: a connector (`mcp:` tools) or, for a CLI, bash. Builtin agents get neither
@@ -972,14 +1008,19 @@ class Checker:
             env_names.setdefault(env, name)
             if spec.type == "secret" and spec.default not in (None, ""):
                 err(f"param '{name}': a secret has no default; its value stays in the environment or .env")
-        for where, ref, is_path, embedded in self.param_refs:
+        for where, ref, is_path, embedded, secret_ok in self.param_refs:
             if ref not in params:
                 err(f"{where}: references undefined param '${{{ref}}}'")
             elif is_path and params[ref].type == "secret":
                 err(f"{where}: a secret (param '{ref}') cannot be part of a path")
+            elif params[ref].type == "secret" and not secret_ok:
+                # no model child gets a secret: they share one sandbox, and a model reading outside content can be
+                # told to send it somewhere
+                err(f"{where}: secret '{ref}' reaches only a command the batcher runs: a stage program's `run:` "
+                    "and its gate; give the stage a script and run:, or reach the service through a connector")
             elif embedded and params[ref].type == "path":
                 err(f"{where}: '${{{ref}}}' compiles to an absolute path; start the path with it (`${{{ref}}}/…`, not `../${{{ref}}}`)")
-        used = {ref for _, ref, _, _ in self.param_refs}
+        used = {ref for _, ref, *_ in self.param_refs}
         for name, spec in params.items():
             if name not in used and spec.type != "secret":  # a secret may be read only from the environment (tools, scripts)
                 self.warn(f"param '{name}' is declared but never used")

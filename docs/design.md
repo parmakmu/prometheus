@@ -2,7 +2,7 @@
 
 Very few of prometheus's rules were designed up front. Most of them are there because we tried something simpler first, ran it for real, and watched it go wrong. This page tells those stories: what happened, what it taught us, and the rule we ended up with.
 
-You don't need any of this to use prometheus. It's here for the moment you look at a rule and think "surely that's unnecessary", and especially before you change one, so you know what it's quietly preventing. The ideas themselves are explained in [How prometheus works](how-it-works.md), and the same decisions are recorded more tersely in [`CLAUDE.md`](../.claude/CLAUDE.md).
+You don't need any of this to use prometheus. It's here for the moment you look at a rule and think "surely that's unnecessary", and especially before you change one, so you know what it's quietly preventing. The ideas themselves are explained in [How prometheus works](how-it-works.md), and the same decisions are listed one line each in [`CLAUDE.md`](../.claude/CLAUDE.md).
 
 If there's one lesson running through nearly every story below, it's this: **a model is good at judgment and poor at bookkeeping.** Again and again, the fix was to take a decision that could be made by a rule away from the model and put it in code, where it can be tested and costs nothing to run.
 
@@ -19,6 +19,8 @@ This also made the logic testable. A script runs without Pi, so the tests can dr
 ### The orchestrator gets paths and summaries, not text
 
 The session that talks to you costs about as much as the children it launches: $0.021 in run 2, $0.0135 in run 4. Retyping a compiled wave's script into the `subagent` call was about half of its output tokens. So the compiled wave is saved to a file and passed by path, and a finished wave comes back as a summary of the children rather than their outputs. The gates and reviewers have already checked the outputs, so the agent opens one only when you need to see it.
+
+Commands save turns too. pi-subagents starts a session with only its loader tool active, and in run 4 the model spent two turns and a prompt-cache rewrite (about $0.003 of $0.0135) turning the `subagent` tool on. Now `/agent-new`, `/agent-run` and `/agent-revise` turn it on before they send their prompt: running the command is your authorization.
 
 ### The state machine is code
 
@@ -94,6 +96,22 @@ Python used to assemble each wave's JavaScript as strings. That caused two bugs 
 
 A session can end at any moment, and the model can skip a step, so every point where that would leave a run in a bad state has a guard. A run starts only from a ready, valid plan. Compiling commits only a wave that can launch. It refuses a wave that was launched but never recorded (pi-subagents keeps the script's digest, which gives it away), and holds the next wave after a `review` until you say go on. A relaunch reuses the children that completed and haven't changed.
 
+### Waves can run without the model
+
+Once stage programs ran as commands, the session that orchestrates a run cost more than the children doing the work: $0.0135 against $0.0105 in run 4. Most of its turns were mechanical: compile, launch, record, compile the next.
+
+`/agent-auto` does those steps in the agent's extension, launching waves through pi-subagents' in-process RPC, and wakes the model only where it's needed: an approval, a decision, a review, a missing value, the budget, a failed wave, a replan, or the final report. That last one is a short prompt without the run protocol, which is about 3,000 tokens.
+
+The first live run turned up two problems. pi-subagents posts a completion notice for each wave that starts a model turn. Pi drops a message an extension sends during a turn, so the hand-over was lost, and the woken model tried to record a wave that `/agent-auto` had already recorded. Now the hand-over is queued as a follow-up, and until its turn starts, the run tools are refused and notice turns are told to do nothing. A runner that dies without recording an end is noticed too, rather than waited on forever.
+
+### Cost is the plan's to set
+
+A plan can name the models its children use (`models:`, or `model:` on a stage), so reviews and batches can run on cheaper ones; prometheus doesn't pick them, since model names depend on your provider. `limits.max_cost_usd` makes the agent ask before the next wave once a run has spent that much, and a yes raises that run's limit so it isn't asked again every wave.
+
+Failures cost less too. A layer stops launching new children once one has failed with no way to repair it: the wave fails anyway, and a relaunch runs only what didn't finish. A relaunched map keeps the batches that completed, instead of running every batch again.
+
+Reuse got stricter and looser. Stricter: a stage's fingerprint now includes the agent's settings and pi-subagents' version, which can change a builtin subagent's model or prompt. Looser: it ignores where an input lives and hashes only its contents. When the emails moved from `scratch/` to the agent's `uploads/`, an unchanged stage paid for a model again only because its path had changed.
+
 ## Keeping runs and changes apart
 
 ### Runs are folders, and the plan holds no run state
@@ -119,6 +137,44 @@ Those tools save the plan as round-tripped YAML in a house style (quotes kept, n
 ### Params are typed, and values live in `.env`
 
 An earlier `.pi/params.yaml` turned every value into a path, and would have put secrets into chat, compiled waves, child tasks and run logs. Params can be tokens and table names too. Now a param is a `path`, `text` or `secret`; a secret appears only as `${ENV_NAME}`; the model can't read `.env`; and the agent asks you to add a missing secret rather than asking you for it.
+
+### Podman for a server, bubblewrap on your machine
+
+A container or VM per agent was weighed against bubblewrap. Firecracker, alone or through E2B, gives a real VM boundary but can't share folders, and Prometheus is built on agent folders the router reads at the same paths (sessions, outputs, uploads, git); self-hosting E2B also means running a small cluster. A bigger box around an agent doesn't help the risk that remains anyway, which is inside an agent: all its children share one sandbox. So bubblewrap stays for one person, and a server can use rootless Podman instead (`SANDBOX=podman`), which adds what bubblewrap lacks there: memory and CPU limits, its own loopback, and gVisor's kernel if installed. Both are built from one description of the sandbox, so they can't drift, and both run the same escape tests.
+
+### The internet, by allow-list
+
+An agent that reads outside content and can reach any host can be told to send what it read anywhere. With Podman, workers now sit on a network with no route out, and the only way out is a small proxy that lets each agent reach the model providers, PyPI and the hosts you allowed for it. The plan lists the hosts it needs (`network:`), but that's only a request: the list of what's allowed lives in your folder, outside every sandbox, because an agent can edit its own plan. Hosts it was refused show up in the web app with an Allow button, so a missing entry costs one click, not a debugging session. The proxy sees only host names (it tunnels HTTPS, and never decrypts it), and the model providers stay reachable, so a determined injection could still use a provider's API as a channel; a proxy for model keys is the next step.
+
+### Secrets reach only programs, and readers have no shell
+
+Every child of a run shares one sandbox and one environment, and pi-subagents can't give one child an environment of its own. The agent extension used to load all of `.env` into that environment, so a child reading an email had every secret within reach, and an instruction hidden in the email could have told it to send them somewhere. Now `.env` stays out of the environment. A secret can only be used in a stage program's arguments and its gate, the commands the batcher runs, and the batcher adds just the secrets a command names, to that command. A stage that needs a token to call a service does it with a program, or through a connector.
+
+The same email could also tell the child to run a command, if it has a shell. So the agent template has a `reader` subagent, which can read, search and write files but has no shell, and the validator warns when a judgment stage reads outside content (an input folder, file, URL or app) as an agent that has one. Param values in gate commands are quoted now too, as they already were in `run:`, so a value can't add a command.
+
+## The web app
+
+### One worker process per agent
+
+Agents must not see each other's folders, and every child of a session shares its process's environment. So the router starts one Pi process per user and agent (and per conversation), each in a bubblewrap sandbox that sees only its own folder.
+
+A sandbox is only as good as what it can leave behind for something outside it to run. Three such paths were open, and are now closed. Your Pi state was writable, so an agent could drop an extension there that your terminal's `pi` would load with no sandbox; it's now read-only, except what Pi writes while it runs. An agent could edit its own extension, skill copy, settings and subagent profiles, which your terminal loads when you start `pi` in its folder; those are read-only to it now. And the router ran `git` on agents' repositories outside any sandbox, where a line in a repository's `.git/config` names a command git runs on `git diff`; the router now runs every command on an agent inside that agent's sandbox, and only prometheus's copy of a script. Uploads refuse links an agent left in its folder, and behind a login proxy the router needs a secret only the proxy has, since sandboxes can reach the router's port. Each of these has a test that tries it.
+
+### The page speaks AG-UI directly
+
+The worker serves Pi as AG-UI, and the page is built on assistant-ui, which speaks AG-UI itself. CopilotKit was considered, but its Vue SDK needs its own runtime in between. An extension's dialogs, which the question tool falls back to, become AG-UI interrupts, so a question is a card you click.
+
+### Panels are drawn, not streamed
+
+The owner wants Pi's full experience in a chat, and `/ccstyle` refused to run outside a terminal. Streaming a terminal's bytes to the browser was tried first and showed a black card, since the page must get every byte in order. Now the worker renders a panel's frame and records the pi-tui widgets drawn in it, and the page draws native controls from their state.
+
+### Pi loads once, so the router works around the start
+
+A worker takes about 2.3 s to start, most of it loading Pi; once up, the history takes about 15 ms. Three things hide that start. The router answers the page's first request for the history straight from the session file, which takes about 30 ms. Pointing at an agent in the sidebar starts its worker. And because Pi loads an extension only when a session starts, a run after a refresh once used half-hour-old code, so a worker whose agent was refreshed now restarts as soon as it's idle.
+
+### Who may call the router
+
+An early version allowed any origin, so any website could have driven an agent that has bash. Now only the web app's origin and loopback host names are served, with a token printed at start (as Jupyter does) or, on a team, a login proxy's user header. The token travels only as a header, since URLs end up in logs.
 
 ## How the code is laid out
 

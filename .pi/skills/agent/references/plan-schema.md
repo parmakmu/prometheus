@@ -23,7 +23,9 @@ scripts write the same way.
 | `unknowns`, `assumptions`, `questions` | no | see below |
 | `stages` | yes (≥1) | units of work; waves are derived |
 | `critique` | see rules | the critic's result and each finding's disposition |
-| `limits` | no | `max_parallel`, `max_retries`, `max_batch` |
+| `limits` | no | `max_parallel`, `max_retries`, `max_batch`; `command_timeout_s` (a program or gate run as a command, default 600); `max_cost_usd` (the run's children may spend this much, then the user is asked) |
+| `network` | no | hosts the stages call (APIs, sites), e.g. `[api.github.com, .example.com]` (a leading `.` covers subdomains). In the web app with Podman, only hosts the user allowed are reachable; these are offered to them to allow |
+| `models` | no | `default`, `review`: the models children use (a stage's `model` wins over `default`; `review` is for `<key>-review` children). Omitted: each subagent's own |
 
 ## Params and paths
 
@@ -174,6 +176,8 @@ agents:
   pause_after: false           # the user sees its results before stages that need it
   context: fork                # only when not the agent's default
   resumes: null                # an earlier single-child stage to continue
+  model: null                  # its children's model (default: models.default, else the subagent's)
+  reuse: true                  # false: never take an earlier run's result for the same inputs
   notes: free text
 ```
 
@@ -216,6 +220,8 @@ command runner) splits `items` into batches, one child per batch writes
 `<key>/<n>.<ext>`, then a merge (`map`) or a `<key>-reduce` child
 (`map_reduce`). Child keys: `<key>`; maps `<key>-split`, `<key>-<n>`,
 `<key>-merge` / `<key>-reduce`; `verify.review` adds `<key>-review`.
+A map's gate checks the merged output (run by the batcher after the merge)
+or the reduce child's. A relaunch keeps the batches that completed.
 Decision and approval stages launch no child. A returned result exists only
 in its own wave. External runners have no structured output, fork, gates or
 reliable resume. A resumed stage keeps the earlier child's agent, and pi
@@ -250,12 +256,18 @@ Rules for concrete stages:
 - **rule** a typed gate has `command` and `output: json`, and no returned
   `schema`.
 - **rule** `map` / `map_reduce` have `batch` (1 … `limits.max_batch`) and
-  `items` naming a consumed input or file output, and no `gate`.
+  `items` naming a consumed input or file output.
 - **rule** no stage consumes a returned result from an earlier wave.
 - **rule** child-launching stages have an `agent` unless they `resumes`;
   `resumes` names a needed, concrete, single-child native stage, and the
   resuming stage has no `agent` or `gate`.
 - **rule** external-runner stages do not use `context: fork`.
+- **rule** a secret param appears only in a program stage's `run:` and its
+  gate (the batcher runs those; no model child gets a secret).
+- *warning* a judgment stage that consumes an input folder, file, url or app
+  as an agent with a shell: use `reader`.
+- **rule** a resumed stage has no `model` (it keeps the earlier child's).
+  *warning* `model` on an external runner (it runs no model).
 - *warning* `context` equal to the agent's default; a returned `schema` or a
   gate on an external runner; deterministic work in a map; a judgment stage
   without `kind_reason`, or without `verify` and a downstream `reviewer`; a

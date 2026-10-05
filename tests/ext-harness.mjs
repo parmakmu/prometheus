@@ -1,8 +1,12 @@
 // Load an agent extension with a mock pi host and drive it.
 // Usage: node --experimental-strip-types ext-harness.mjs <entry index.ts> <cwd> <steps.json>
 // steps: [{cmd:"agent-list", args:""}, {systemPrompt:"..."}, {tool:"agent_check", params:{...}}, {toolCall:{toolName, input}}, {env:"NAME"}, ...]
+// With FAKE_SUBAGENTS_RPC=<mock-subagents.mjs>, pi-subagents' RPC answers ping and spawn: a spawned wave
+// runs in the mock at once and its status.json is written under $PI_SUBAGENTS_TEMP_ROOT (FAKE_SUBAGENTS_DEAD: as
+// still running, under a process that is gone).
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import path from "node:path";
 import { Value } from "typebox/value";
 
 const [, , entry, cwd, stepsFile] = process.argv;
@@ -22,10 +26,31 @@ const pi = {
     return { stdout: r.stdout ?? "", stderr: r.stderr ?? "", code: r.status ?? 1, killed: !!r.signal };
   },
   sendMessage(m, o) { out.push({ kind: "shown", triggerTurn: o?.triggerTurn, text: m.content }); },
-  sendUserMessage(t) { out.push({ kind: "prompt", text: t }); },
+  sendUserMessage(t, o) { out.push({ kind: "prompt", text: t, deliverAs: o?.deliverAs }); },
 };
+const listeners = {};
+pi.events = {
+  on(ch, h) { (listeners[ch] ??= []).push(h); return () => { listeners[ch] = listeners[ch].filter((x) => x !== h); }; },
+  emit(ch, data) { for (const h of [...(listeners[ch] ?? [])]) h(data); },
+};
+let spawned = 0;
+if (process.env.FAKE_SUBAGENTS_RPC) pi.events.on("subagents:rpc:v1:request", (req) => {
+  const reply = (data) => setTimeout(() => pi.events.emit(`subagents:rpc:v1:reply:${req.requestId}`, { version: 1, requestId: req.requestId, success: true, data }), 0);
+  if (req.method === "ping") return reply({});
+  const id = `fake-${++spawned}`;
+  const dir = path.join(process.env.PI_SUBAGENTS_TEMP_ROOT, "async-subagent-runs", id);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "call.json"), JSON.stringify({ call: req.params }));
+  const r = spawnSync("node", [process.env.FAKE_SUBAGENTS_RPC, path.join(dir, "call.json")], { encoding: "utf8" });
+  const value = JSON.parse(r.stdout).result;
+  // FAKE_SUBAGENTS_DEAD: a runner that died before recording how the wave ended (no such process)
+  const record = process.env.FAKE_SUBAGENTS_DEAD ? { runId: id, state: "running", pid: 2147483646 } : { runId: id, state: "complete", workflow: { value } };
+  fs.writeFileSync(path.join(dir, "status.json"), JSON.stringify(record));
+  out.push({ kind: "spawn", id, status: value.status });
+  reply({ details: { runId: id, asyncDir: dir } });
+});
 let out = [];
-const ctx = { cwd, isIdle: () => true, ui: { notify: (m, t) => out.push({ kind: "notify", type: t, text: m }) } };
+const ctx = { cwd, isIdle: () => true, ui: { notify: (m, t) => out.push({ kind: "notify", type: t, text: m }), setStatus: () => {} } };
 
 const mod = await import(entry);
 mod.default(pi);
@@ -45,7 +70,7 @@ for (const step of steps) {
       rec.reason = res?.reason ?? null;
     } else if (step.systemPrompt !== undefined) {
       let res;
-      for (const h of handlers.before_agent_start ?? []) res = (await h({ type: "before_agent_start", prompt: "", systemPrompt: step.systemPrompt }, ctx)) ?? res;
+      for (const h of handlers.before_agent_start ?? []) res = (await h({ type: "before_agent_start", prompt: step.prompt ?? "", systemPrompt: step.systemPrompt }, ctx)) ?? res;
       rec.systemPrompt = res?.systemPrompt ?? null;
     } else if (step.cmd) {
       const def = commands[step.cmd];

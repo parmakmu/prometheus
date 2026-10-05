@@ -186,6 +186,30 @@ The agent reports a failed wave and offers three options.
 
 **Fix.** Choose one of the options: relaunch the wave, which skips children that completed and haven't changed; change the plan with a replan; or stop the run.
 
+### The run reached its budget
+
+The agent says the run spent its cost limit and asks whether to go on.
+
+**Cause.** The plan sets `limits.max_cost_usd`, and the run's children have spent at least that much.
+
+**Fix.** To go on, give a new, higher limit for this run; it holds for the rest of the run. Otherwise stop the run.
+
+### A program did not finish in time
+
+A wave fails with "no result within 600 s (limits.command_timeout_s)".
+
+**Cause.** A stage program or gate, run as a command, ran longer than the limit; it may be waiting for input or a network.
+
+**Fix.** If it is just slow, raise `limits.command_timeout_s` in the plan. If it hangs, relaunch: its fix child gets the error and repairs the program.
+
+### /agent-auto is not available
+
+`/agent-auto` says pi-subagents did not answer.
+
+**Cause.** The installed pi-subagents has no in-process RPC, or is not loaded in this session.
+
+**Fix.** Update pi-subagents (0.74 or later) and restart Pi, or use `/agent-run`.
+
 ### The subagent tool returned an error
 
 The agent stops and reports an error from the `subagent` tool, with a run id.
@@ -354,9 +378,55 @@ destination is inside the agent
 
 **Fix.** Pick another destination, or pass a different name.
 
+## Web app
+
+### The router doesn't start behind a login proxy
+
+The router exits with "TRUST_USER_HEADER needs PROXY_SECRET".
+
+**Cause.** With a login proxy, the router trusts the user header it sends. Agents' sandboxes can reach the router's port too, so the proxy must also send a secret only it knows.
+
+**Fix.** Set `PROXY_SECRET` (16 characters or more) for the router, and have the proxy send the same value in the `x-proxy-secret` header (or the header named by `PROXY_SECRET_HEADER`).
+
+### A stage can't reach a site or an API
+
+With `SANDBOX=podman`, a stage fails with "Tunnel connection failed: 403 Forbidden" or "… is not allowed for this agent".
+
+**Cause.** The agent may reach only the model providers, PyPI and the hosts you allowed for it.
+
+**Fix.** In the web app, open the agent's workspace: under **Internet**, the refused host is offered with an Allow button. Then relaunch the wave. If the host should always be allowed, add it to the plan's `network:` so it's offered up front.
+
+### The router stops: "the egress proxy didn't start"
+
+**Cause.** With `SANDBOX=podman`, the router starts a proxy container on two networks of its own, and Podman refused (for example, an older Podman without network support).
+
+**Fix.** Check `podman network ls` and `podman info`. To run without the allow-list, start the router with `EGRESS=off`: agents then reach the internet freely.
+
+### The router stops: "PODMAN_RUNTIME=… can't start a container"
+
+**Cause.** You asked for a container runtime (`PODMAN_RUNTIME`, usually gVisor's `runsc`) that can't start a container on this machine. The router checks at start, rather than run without the boundary you chose. Ubuntu's 2023 `runsc` fails this way as a normal user under WSL.
+
+**Fix.** Install a current gVisor release from [gvisor.dev](https://gvisor.dev/docs/user_guide/install/), or start the router without `PODMAN_RUNTIME` (plain rootless Podman).
+
+### An agent can't change its own code in the web app
+
+A change to a file under the agent's `.pi/` (its extension, skill copy, settings or subagent profiles), or to `.git/config`, fails with "Read-only file system". `/agent-improve` can hit this when it proposes a change to a subagent profile.
+
+**Cause.** In the web app, an agent's sandbox can't change its own code: your terminal's `pi` would run that code with no sandbox.
+
+**Fix.** Make that change from a terminal (`pi` in the agent's folder), where you see and approve it. Lessons in `.pi/APPEND_SYSTEM.md` stay writable.
+
 ## Handled by the agent
 
 You may see these messages go by. Each is a guard doing its job, and the agent knows the next step, so you don't need to act.
+
+### A secret used outside a program
+
+`agent_check` reports "secret '…' reaches only a command the batcher runs".
+
+**Cause.** A secret is referenced somewhere a model would see it: a model stage's gate, an input's location, an intent. Models never get secrets.
+
+**Fix.** The agent makes that stage a program (`script:` with `run:`), which gets the secret as an argument, or moves the call to a connector.
 
 ### Plan changed after the critique
 

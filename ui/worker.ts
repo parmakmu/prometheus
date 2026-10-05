@@ -11,7 +11,7 @@
  *
  * Events Pi emits while no run is open (a wave's completion notice) are not delivered yet.
  */
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
 import { createServer, type ServerResponse } from "node:http";
 import path from "node:path";
@@ -19,6 +19,7 @@ import { pathToFileURL } from "node:url";
 import { EventType } from "@ag-ui/core";
 import { EventEncoder } from "@ag-ui/encoder";
 import { thoughtOf } from "./thoughts.ts";
+import { branchMessages as branchMessagesOf, COMMAND_ENTRY, commandsByPrompt as commandsByPromptOf, hashOf, snapshotOf, textOf } from "./history.ts";
 // Pi itself: the global install the router found (it names it for pi-subagents too), loaded by path
 const PI_ROOT = process.env.PI_SUBAGENTS_PI_CODING_AGENT_PACKAGE_ROOT!;
 const { createAgentSession, SessionManager } = await import(pathToFileURL(path.join(PI_ROOT, "dist", "index.js")).href);
@@ -319,12 +320,6 @@ const openSession = async () => {
 const { session } = await createAgentSession({ cwd: CWD, sessionManager: await openSession() });
 await (session as any).bindExtensions({ uiContext, mode: "tui", commandContextActions: { waitForIdle: () => session.waitForIdle() } });
 
-const textOf = (content: unknown): string =>
-    typeof content === "string"
-        ? content
-        : Array.isArray(content)
-            ? content.map((p: any) => (p?.type === "text" ? p.text : "")).join("")
-            : "";
 
 // a command such as /agent-new returns before the turn it starts: wait for Pi to settle
 let busy = false;
@@ -339,8 +334,6 @@ const settled = async () => {
 // worker notes which command a prompt came from in the session itself (a custom entry, which the model never sees
 // and the terminal ignores), so the history shows "/agent-run" as you typed it: not the prompt, and not as two
 // versions of one message (the page's "/agent-run" and the session's prompt, which it showed as branches 1/2, 2/2).
-const COMMAND_ENTRY = "prometheus-ui-command";
-const hashOf = (text: string) => createHash("sha256").update(text.trim()).digest("hex").slice(0, 16);
 // The command being run, from when it is sent until it shows something or sends its prompt: noted then, so each
 // output carries its own command even when another command starts before this one's run has settled.
 let commandRun: { command: string; shown: boolean } | null = null;
@@ -359,58 +352,10 @@ function noteShownCommand(entry: any) {
     session.sessionManager.appendCustomEntry(COMMAND_ENTRY, { command: commandRun.command, before: entry.id });
     commandRun.shown = true;
 }
-const shownCommands = () =>
-    new Map<string, { id: string; command: string }>(
-        session.sessionManager
-            .getEntries()
-            .filter((e: any) => e.type === "custom" && e.customType === COMMAND_ENTRY && e.data?.before)
-            .map((e: any) => [e.data.before, { id: e.id, command: e.data.command }]),
-    );
-const commandsByPrompt = () =>
-    new Map<string, string | null>(
-        session.sessionManager
-            .getEntries()
-            .filter((e: any) => e.type === "custom" && e.customType === COMMAND_ENTRY && e.data?.prompt)
-            .map((e: any) => [e.data.prompt, e.data.hidden ? null : e.data.command]),
-    );
-
-// The conversation so far, from Pi's session (the record that survives reloads and restarts), as AG-UI
-// messages: the current branch of its tree, root to leaf. Ids are "pi-<entry id>": a run whose last user message has
-// such an id brings nothing new, and an edit names the entry it rewinds to. An assistant message's thinking comes
-// first, as a reasoning message, so the page can show it in the turn's Details.
-const branchMessages = () =>
-    (session.sessionManager.getBranch() as any[])
-        .filter((e) => e.type === "message" || e.type === "custom_message")
-        .map((e) => ({ id: e.id, m: e.type === "message" ? e.message : { role: "custom", content: e.content, display: e.display } }));
-
-function snapshot() {
-    const out: Record<string, unknown>[] = [];
-    const commands = commandsByPrompt();
-    const shown = shownCommands();
-    for (const { id: entry, m } of branchMessages()) {
-        const id = `pi-${entry}`;
-        // a pi- id: the page sending it back is a sync, never the command again
-        const command = shown.get(entry);
-        if (command) out.push({ id: `pi-${command.id}`, role: "user", content: command.command });
-        if (m.role === "user") {
-            const hash = hashOf(textOf(m.content));
-            if (commands.get(hash) !== null) out.push({ id, role: "user", content: commands.get(hash) ?? textOf(m.content) }); // null: shown above
-        }
-        else if (m.role === "assistant") {
-            const parts: any[] = Array.isArray(m.content) ? m.content : [];
-            const thinking = [...new Set(parts.filter((p) => p.type === "thinking").map(thoughtOf))].join("\n\n");
-            if (thinking) out.push({ id: `${id}-thinking`, role: "reasoning", content: thinking });
-            const toolCalls = parts
-                .filter((p) => p.type === "toolCall")
-                .map((p) => ({ id: p.id, type: "function", function: { name: p.name, arguments: JSON.stringify(p.arguments ?? {}) } }));
-            out.push({ id, role: "assistant", content: textOf(parts), ...(toolCalls.length ? { toolCalls } : {}) });
-        } else if (m.role === "toolResult") {
-            const limit = String(m.toolName).startsWith("agent_") ? 20000 : 4000;
-            out.push({ id, role: "tool", toolCallId: m.toolCallId, content: textOf(m.content).slice(0, limit) || "done" });
-        } else if (m.role === "custom" && m.display !== false && textOf(m.content)) out.push({ id, role: "assistant", content: textOf(m.content) });
-    }
-    return out;
-}
+const branchMessages = () => branchMessagesOf(session.sessionManager.getBranch() as any[]);
+const commandsByPrompt = () => commandsByPromptOf(session.sessionManager.getEntries() as any[]);
+// The conversation so far, from Pi's session (the record that survives reloads and restarts): history.ts
+const snapshot = () => snapshotOf(session.sessionManager.getEntries() as any[], session.sessionManager.getBranch() as any[]);
 
 // Editing a message of yours: Pi's session is a tree, so an edit is a real branch. POST /edit {entry} rewinds the
 // session to just before that message (Pi's navigateTree, as /tree does in the terminal; the old path stays in the

@@ -240,5 +240,26 @@ def params(values: Annotated[str, typer.Option(help="{name: value} as JSON, or a
     emit({"ok": True, **report(plan)})
 
 
+
+@app.command("network-show")
+def network_show():
+    """The hosts the plan asks to reach (`network:`), for the web app to offer you to allow."""
+    hosts = read_yaml(PLAN, {}).get("network") or []
+    emit({"ok": True, "requested": [str(h) for h in hosts if isinstance(h, str)]})
+
+
+@app.command("params-show")
+def params_show():
+    """The plan's params and their values for a form (the web app): a secret only as set or not."""
+    specs = read_yaml(PLAN, {}).get("params") or {}
+    values = agent_params.load(Path.cwd(), specs)
+    emit({"ok": True, "params": [{
+        "name": n, "description": agent_params.spec_of(s).get("description"), "type": agent_params.kind(s),
+        "required": agent_params.spec_of(s).get("required", True), "env": agent_params.env_name(n, s),
+        "set": values.get(n) is not None,
+        "value": None if agent_params.kind(s) == "secret" or values.get(n) is None else str(values[n]),
+    } for n, s in specs.items()]})
+
+
 if __name__ == "__main__":
     app()

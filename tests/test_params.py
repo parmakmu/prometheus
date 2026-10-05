@@ -6,6 +6,7 @@ read back by a later one, so these run in file order (pytest's default,
 undisturbed by any randomizing plugin).
 """
 import importlib.util
+import json
 import os
 import sys
 import types
@@ -122,12 +123,31 @@ def test_resolve_secret_compiles_to_its_variable(env):
     assert wp.resolve("api_token", SPECS["api_token"], env.v["api_token"], env.run_dir) == "${TEST_API_TOKEN}"
 
 
-def test_gate_text_verbatim_secret_as_var_never_its_value(env):
+def test_gate_quotes_values_and_names_a_secret_never_its_value(env):
     plan = {"params": SPECS, "stages": []}
     c = cw.Compiler(env.root, plan, env.v, env.run_dir, {}, set())
     gate = c.gate_command("python3 ../gates/check.py ${table} ${api_token} ${mail_dir}")
-    assert gate.endswith(f"check.py invoices ${{TEST_API_TOKEN}} {Path('~/Mail').expanduser()}")
+    assert gate.endswith(f'check.py invoices "${{TEST_API_TOKEN}}" {Path("~/Mail").expanduser()}')
     assert "from-file" not in gate
+
+
+def test_a_value_with_shell_syntax_stays_one_argument_of_a_gate(env):
+    plan = {"params": {"table": {"description": "d", "type": "text"}}, "stages": []}
+    c = cw.Compiler(env.root, plan, {"table": "x; touch pwned"}, env.run_dir, {}, set())
+    assert c.gate_command("python3 check.py ${table}").endswith("check.py 'x; touch pwned'")
+
+
+def test_only_a_programs_command_names_its_secrets_for_the_batcher(env):
+    plan = {"params": SPECS, "stages": [{"key": "send", "title": "Send", "kind": "side_effect", "pattern": "script",
+                                         "agent": "worker", "script": "send.py", "run": "${api_token} ${table}",
+                                         "out": [{"id": "sent", "path": "sent.json"}], "verify": {"gate": "true"}}]}
+    (env.root / "scripts").mkdir(exist_ok=True)
+    (env.root / "scripts" / "send.py").write_text("", encoding="utf-8")
+    c = cw.Compiler(env.root, plan, env.v, env.run_dir, {}, set())
+    item = c.command_item("send", c.stages["send"], set(), None)
+    req = json.loads(item["task"].removeprefix("BATCH_TOOL_REQUEST "))
+    assert req["secrets"] == ["TEST_API_TOKEN"] and req["env_file"].endswith(".env")
+    assert "from-file" not in item["task"] and "from-file" not in json.dumps(item["fix"])
 
 
 def test_an_unset_secret_is_reported_by_its_variable(env):

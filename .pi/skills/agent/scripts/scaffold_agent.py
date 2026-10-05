@@ -44,7 +44,7 @@ import agent_params
 import prometheus_version
 import typer
 from runs import active_run
-from utils import refuse
+from utils import read_yaml, refuse, write_yaml
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 SKILL_DIR = SCRIPT_DIR.parent
@@ -145,12 +145,35 @@ def refresh_refusal(agent_dir: Path):
     return None
 
 
+def copy_from(source: Path, agent_dir: Path, slug: str, request: str):
+    """Start `agent_dir` from another agent: its plan as a draft for `request` (revision 1, no critique),
+    its gates, stage programs, subagents and packages. Runs, .env and sessions stay with the source."""
+    plan = read_yaml(source / PLAN, None)
+    if not isinstance(plan, dict):
+        refuse(f"{source} has no readable plan.yaml to start from", 1)
+    plan["status"], plan["revision"], plan["request"] = "draft", 1, request or plan.get("request")
+    for key in ("critique", "questions"):
+        plan.pop(key, None)
+    write_yaml(agent_dir / PLAN, plan)
+    copied = [str(PLAN) + f" (from {source.name}, draft)"]
+    for rel in ("gates", "scripts", ".pi/agents"):
+        if (source / rel).is_dir():
+            shutil.copytree(source / rel, agent_dir / rel, dirs_exist_ok=True, ignore=IGNORE)
+            copied.append(f"{rel}/")
+    if (source / PYPROJECT).is_file():
+        text = re.sub(r'(?m)^name\s*=\s*".*"$', f'name = "{slug}"', (source / PYPROJECT).read_text(encoding="utf-8"), count=1)
+        (agent_dir / PYPROJECT).write_text(text, encoding="utf-8")
+        copied.append(str(PYPROJECT))
+    return copied
+
+
 def main(
     slug: str,
     root: Annotated[str, typer.Option(help="folder that holds agents")] = "agents",
     request: Annotated[str, typer.Option(help="the user's request, verbatim")] = "",
     refresh: Annotated[bool, typer.Option("--refresh", help="update template files and the skill copy")] = False,
     if_stale: Annotated[bool, typer.Option("--if-stale", help="with --refresh: do nothing when the agent already has this prometheus version")] = False,
+    from_agent: Annotated[str | None, typer.Option("--from", help="start from this agent (a slug under --root, or a folder): its plan as a draft, its gates, programs, subagents and packages")] = None,
 ):
     """Create or refresh an agent."""
 
@@ -162,6 +185,11 @@ def main(
     exists = (agent_dir / PLAN).exists()
     if exists and not refresh:
         refuse(f"{agent_dir} already has a plan; use --refresh to update it or pick another slug", 1)
+    source = None
+    if from_agent:
+        source = (Path(root) / from_agent if SLUG_RE.match(from_agent) else Path(from_agent)).resolve()
+        if refresh or not (source / PLAN).is_file():
+            refuse(f"--from needs an agent to copy, for a new agent ({source} has no plan.yaml)" if not refresh else "--from is only for a new agent", 1)
     if refresh and not exists:
         refuse(f"{agent_dir} has no plan.yaml to refresh", 1)
     if refresh and (why := refresh_refusal(agent_dir.resolve())):
@@ -217,6 +245,8 @@ def main(
             path.write_text(content, encoding="utf-8")
             written.append(str(rel))
 
+    if source:
+        written += copy_from(source, agent_dir, slug, request)
     agent_abs = agent_dir.resolve()
     locked = lock_packages(agent_abs)
     if locked:

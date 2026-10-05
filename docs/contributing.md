@@ -62,9 +62,9 @@ Every result also carries `next`, the agent's state and its legal moves (*from a
 | [`templates/agent/`](../templates/agent/) | what a new agent gets: its extension, agents, settings, role. Outside the skill, so agents don't carry a copy |
 | [`.pi/agents/plan-critic.md`](../.pi/agents/plan-critic.md) | the critic; must stay identical to the template's copy (a test checks) |
 | [`tests/`](../tests/) | the pytest suite |
-| [`ui/`](../ui/) | the web app: router, per-agent workers, the page; see its [README](../ui/README.md) |
+| [`ui/`](../ui/) | the web app: router (and its sandboxes), per-agent workers, the egress proxy, the page; see its [README](../ui/README.md) |
 
-The skill's `SKILL.md` and `references/` are instructions for the model, not documentation for people. [`.claude/CLAUDE.md`](../.claude/CLAUDE.md) records the settled design decisions and the reasons for them.
+The skill's `SKILL.md` and `references/` are instructions for the model, not documentation for people. [`.claude/CLAUDE.md`](../.claude/CLAUDE.md) is the short brief for Claude Code: the settled decisions, one line each, linking here and to [Design decisions](design.md).
 
 ## Set up and test
 
@@ -89,6 +89,33 @@ The suite runs on all cores (pytest-xdist, `-n auto --dist loadgroup` in `pyproj
 - **A state or a move** goes in `agent_state.MOVES` and [the state machine](state-machine.md); [`tests/test_state_machine.py`](../tests/test_state_machine.py) walks every state and move and fails on a move the table doesn't list.
 - **Behaviour that changes** is updated in these docs in the same change. Each fact lives on one page; others link to it.
 - **Packages** are never installed by the model or a script: ask the person to run `uv sync`.
+
+## Pi and pi-subagents facts relied on
+
+What the code assumes about Pi and pi-subagents, with the versions it was checked on. Check here first when an upgrade breaks something.
+
+### Pi (0.87.1)
+
+- Extensions: `.pi/extensions/<name>/index.ts` (project, needs trust). `export default function (pi: ExtensionAPI)`; `@earendil-works/pi-coding-agent` and `typebox` are provided by Pi.
+- `pi.registerCommand(name, { description, getArgumentCompletions?, handler(args, ctx) })`; `pi.registerTool(defineTool({ name, label, description, promptSnippet?, promptGuidelines?, parameters, execute(id, params, signal, onUpdate, ctx) }))` → `{ content, details }`, throw on failure.
+- `pi.exec(cmd, args, { cwd, timeout, signal })` → `{ stdout, stderr, code, killed }`. `pi.sendUserMessage(text, {deliverAs?: "steer" | "followUp"})` triggers a turn; during one, without `deliverAs` it is dropped (the error goes to the extension runner, not the caller). `pi.sendMessage({customType, content, display}, {triggerTurn:false})` shows text. `ctx.cwd`, `ctx.ui.notify`, `pi.on("session_start" | "tool_call", …)`.
+- Extensions load once per session: a changed extension takes a new session (or `/reload`).
+- A session file is JSONL: a `session` header (`id`, `cwd`), then entries with `id`/`parentId`; the current leaf is the last entry, the branch its `parentId` chain (`SessionManager._buildIndex`, `getBranch`). The latest session is the newest file whose header `cwd` matches (`findMostRecentSession`).
+- `.pi/APPEND_SYSTEM.md` appends to the system prompt. Project packages install into `<cwd>/.pi/npm/`.
+
+### pi-subagents (0.73.1, with the `workflow` field from 0.74.0; source in `~/.pi/agent/npm/node_modules/pi-subagents`)
+
+- `subagent({ async: true, mission|missionId, workflow: true | "<script path>" })`; the script uses `runs.run(key, opts)` / `runs.all([...])`, plain JS, top-level await, no nested async functions. 0.74.0 replaced `workflowScript`/`workflowScriptPath` with one `workflow` field: `true` runs the ```` ```js workflow ```` block written in the same reply; a string containing `/` loads that file relative to `cwd` (an absolute path is what the compiler emits; not live-verified); other strings are named workflows. Calls with the old names fail. (Path loading confirmed live in run 4 under 0.73.1 as `workflowScriptPath`; the `workflow` form is covered by the mock only.)
+- A child result is `{ok, state, stopped?, detached?, error?, runId, output, outputReference, structuredOutput}`: no `status`. `runs.run` throws on a failed child; `runs.all` with config objects returns it as `{ok: false}`. The mock (`tests/mock-subagents.mjs`) mirrors both.
+- Items: `key, label, agent, task, cwd, output, outputSchema, acceptance, context, resume`. `acceptance: {level, verify: [{id, command, output?:"json", schema?, timeoutMs?}], preserveStagedIndex, review}`; JSON verify + outputSchema is rejected; `resume` excludes `agent` and gates. Keyed cross-workflow resume: `{workflowRunId, key, latest}`.
+- `preserveStagedIndex`: `git write-tree` in the child's cwd at launch and end, compared; failing to capture (not a repo) fails the child.
+- Command-runner agents (`runner.type: external-cli`): stdin = instructions + task, stdout = output; a non-zero exit fails the child with stderr as its `error`; async only; no schema/gate/resume/fork. `runs.host` commands are only for extension-owned named workflows, not raw workflow scripts.
+- Tool activation (Pi >= 0.86.1): a fresh session has `subagents_enable` active and `subagent` registered but inactive (pi-subagents 0.74: `toolActivation` in its `config.json`, default `auto`, starts models that can't add a tool mid-conversation with `subagent` already active; it doesn't use Pi 0.99's per-tool `exposure` for this, only for its own `model-only` tools). pi-subagents re-applies the recorded selection only on `session_start` and `session_tree`; its `before_agent_start` hook only keeps the loader active, so another extension's `setActiveTools([..., "subagent"])` from a command handler holds (not yet live-verified).
+- Children are spawned with pi's `process.env` (so `.env` loaded by the extension reaches them).
+- Async run record: `<tmp root>/async-subagent-runs/<runId>/status.json` (tmp root: `$PI_SUBAGENTS_TEMP_ROOT`, else `os.tmpdir()/pi-subagents-uid-<uid>`). `state`, `workflow.value` (the script's return value), `totalCost {costUsd, inputTokens, outputTokens}`; a workflow that fails before returning has `error` and `workflow.failureKind`; `pid` is the runner's process. `workflow.scriptDigest` is the sha256 of the script text (matched against `.compiled/<wave>.js` on 0.74.0; `compile_wave.unrecorded_launch` relies on it and fails open). A workflow run's children are in `workflowChildren.children` `[{childId, state, runId, agent}]`; the critic's child run id (what the model records, and what a second pass resumes) is there. `mission.close` takes missionStatus completed | failed | cancelled.
+- In-process RPC for other extensions (`docs/extension-api.md`): emit `subagents:rpc:v1:request` `{version: 1, requestId, method, params}`, the reply on `subagents:rpc:v1:reply:<requestId>`. `spawn` takes the `subagent` tool's params (async only, `workflow` a path); its data's `details` has `runId` and `asyncDir`. Each child and the run's end post a completion notice that wakes the parent model; `quiet: true` silences success only for schedules. Live-verified (runs 2026-10-05-1 and -2).
+- Missions: `<agent dir>/missions/projects/<sha256 of project root>/<mission id>.json`, each with `runs [{runId, …}]` (agent dir: `$PI_CODING_AGENT_DIR`, else `~/.pi/agent`; Pi's `getAgentDir`). A run's status.json does not name its mission.
+- `mcp:` selections in an agent's `tools` (`mcp:server`, `mcp:server/tool`): with pi-mcp-adapter installed they resolve against its config; without it (the owner's setup) and on Pi >= 0.99 they resolve against Pi's built-in MCP and its `mcp.json` (a project's `.pi/mcp.json` only once trusted), whatever exposure the server has (default `codemode`, hidden from the model); the child gets only the selected tools, as direct ones. Waves are async, so servers an extension adds with `pi.registerMcpServer()` work too; a selected tool that doesn't register within 10 s fails the launch. (From pi-subagents 0.74 docs; not live-verified. Matters once a stage agent gets connector tools.)
 
 ## Writing these docs
 

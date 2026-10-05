@@ -221,6 +221,8 @@ The three **children** are the background agents doing the work: `discover`, a r
 > [!NOTE]
 > One thing to keep in mind if you write plans by hand: only files carry over from one wave to the next. If a later stage needs something, an earlier stage has to write it down.
 
+Between waves, the agent's own model does little more than compile the next wave, launch it and record how it went. `/agent-auto` does those steps in code instead, and wakes the model only when a wave needs you or something went wrong. Each wave then shows as two lines in the chat: one when it starts, and one when it ends, with how long it took and what it cost.
+
 ### Every run gets its own folder
 
 Each run lives in its own folder, so one run can never overwrite another's results:
