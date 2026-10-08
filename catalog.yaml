@@ -1,0 +1,7 @@
+# Agents anyone can install by name: `prometheus install <name>` (`prometheus catalog` lists them).
+# To add yours, share it (`prometheus share <slug> <git url>`), then propose a change to this file:
+#   - name: emails-to-excel                         # its slug once installed
+#     url: git@gitlab.example.com:team/emails-to-excel.git
+#     description: Copies a folder of .eml emails into an Excel workbook
+#     owner: someone@example.com
+agents: []

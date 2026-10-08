@@ -46,7 +46,7 @@ from pydantic import (
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 from runs import active_run, last_run
-from utils import PLAN_FILE, load_yaml, parts_in_plan_file, read_plan
+from utils import PLAN_FILE, load_yaml, parts_in_plan_file, read_plan, stage_kind
 
 
 def plan_digest(plan):
@@ -58,7 +58,7 @@ def plan_digest(plan):
 def critic_required(plan):
     """Whether the plan needs the critic: more than 3 stages, or a side effect or judgment (SKILL.md)."""
     stages = [s for s in plan.get("stages") or [] if isinstance(s, dict)]
-    return len(stages) > 3 or any(s.get("kind") in ("side_effect", "judgment") for s in stages)
+    return len(stages) > 3 or any(stage_kind(s) in ("side_effect", "judgment") for s in stages)
 
 
 def check_ready(plan, base=None):
@@ -165,37 +165,72 @@ class StageOut(M):
     schema_: Any = Field(None, alias="schema")
 
 
-class Verify(M):
-    gate: Any = None  # a command string or {command, output: json}; checked in validate()
-    review: str | None = None
-    check: str | None = None
+class Kind(M):
+    """What sort of work a stage is (references/classify.md), and why."""
+    value: Literal["deterministic", "judgment", "decision", "side_effect"] = Field(
+        description="deterministic: a program can do it and check it; judgment: it needs reading; decision: the user "
+                    "chooses; side_effect: it changes something outside the run (the user approves it first)")
+    reason: str | None = Field(None, description="why this kind, in a line (for judgment: why a program can't decide)")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _a_mapping(cls, data):
+        if isinstance(data, str):
+            raise ValueError(f"kind is a mapping: {{value: {data}, reason: <why>}}")  # noqa: TRY004 (pydantic reports a ValueError, not a TypeError)
+        return data
+
+
+class Program(M):
+    """A stage's program, kept in the agent's scripts/ and reused by later runs."""
+    file: Str = Field(description="its file name in the agent's scripts/")
+    args: str | None = Field(None, description="its arguments; with them, runs execute it as a command (no model)")
+
+
+class Map(M):
+    """How a map or map_reduce stage splits its work."""
+    over: str | None = Field(None, description="the input or output it reads whose items are split into batches")
+    glob: str | None = Field(None, description="which files of a folder are its items, e.g. \"*.eml\"")
+    batch: int | None = Field(None, description="items per child")
+
+
+class A2ACall(M):
+    """A stage that calls another agent over A2A (pattern: a2a): the batcher sends it a message and downloads its
+    artifacts into the stage's out path."""
+    url: Str  # the agent's address (its Agent Card is at <url>/.well-known/agent-card.json), usually a ${param}
+    files: dict[str, str] = {}  # the remote agent's path param -> an id this stage reads (a file or folder)
+    params: dict[str, Any] = {}  # the remote agent's text params
+    approve: list[str] = []  # the remote agent's side effects this stage approves (then it is a side effect itself)
+    token: str | None = None  # "${secret param}": sent as Authorization: Bearer
+    timeout_s: int | None = None  # how long to wait for the remote run (default: limits.command_timeout_s, else 600)
 
 
 class Stage(M):
-    key: Key
-    kind: Literal["deterministic", "judgment", "decision", "side_effect"]
-    title: str | None = None
-    kind_reason: str | None = None
-    pattern: Literal["script", "map", "map_reduce", "scout", "worker", "reviewer", "approval"] | None = None
-    agent: str | None = None
-    resumes: str | None = None
-    context: Context | None = None
-    provisional: StrictBool = False
-    resolves_after: str | None = None
-    intent: str | None = None
-    needs: list[str] = []
-    consumes: list[str] = []
-    out: list[StageOut] = []
-    verify: Verify | None = None
-    approval: Literal["none", "required"] = "none"
-    pause_after: StrictBool = False
-    items: str | None = None
-    items_glob: str | None = None
-    batch: int | None = None
-    script: str | None = None  # the stage's program, kept in the agent's scripts/ and reused by later runs
-    run: str | None = None  # the program's arguments: once it exists, runs execute it as a command (no model)
-    model: Str | None = None  # the model its children use (default: models.default, else the subagent's own)
-    reuse: StrictBool = True  # false: always run again, never take an earlier run's result (reuse_earlier)
+    """A unit of work (references/plan-schema.md, "Stages")."""
+    id: Key = Field(description="unique, lower case with dashes: names its children and what runs after it")
+    kind: Kind
+    title: str | None = Field(None, description="a short label")
+    pattern: Literal["script", "map", "map_reduce", "scout", "worker", "reviewer", "approval", "a2a"] | None = Field(
+        None, description="how it runs: script (a program), map / map_reduce (a child per batch), scout, worker, "
+                          "reviewer, approval (asks the user), a2a (calls another agent)")
+    agent: str | None = Field(None, description="the subagent its child runs as")
+    resumes: str | None = Field(None, description="an earlier single-child stage whose child it continues")
+    context: Context | None = Field(None, description="fresh or fork; only when not the subagent's default")
+    provisional: StrictBool = Field(False, description="an outline, filled in at replan after its resolves_after stage")
+    resolves_after: str | None = Field(None, description="provisional: the discovery stage it is filled in after")
+    intent: str | None = Field(None, description="provisional: what it must produce")
+    instructions: str | None = Field(None, description="what a model child must do and how, in full: its brief")
+    after: list[str] = Field([], description="the stages that must finish first")
+    reads: list[str] = Field([], description="input ids, or what stages it runs after write")
+    writes: list[StageOut] = Field([], description="what it writes: a file (with path) or its returned result")
+    done_when: str | None = Field(None, description="how its result is judged done")
+    gate: Any = Field(None, description="a command that checks its output (../gates/<script>), or {command, output: json}")
+    review: str | None = Field(None, description="the subagent that reviews its result (adds an <id>-review child)")
+    pause_after: StrictBool = Field(False, description="the user sees its results before the stages after it run")
+    map: Map | None = Field(None, description="map / map_reduce: what is split, and how")
+    program: Program | None = Field(None, description="its program in scripts/ and the arguments it runs with")
+    model: Str | None = Field(None, description="the model its children use (default: models.default, else the subagent's)")
+    reuse: StrictBool = Field(True, description="false: always run again, never take an earlier run's result")
+    a2a: A2ACall | None = Field(None, description="pattern a2a: the agent it calls")
 
 
 class Unknown(M):
@@ -282,6 +317,14 @@ class Plan(M):
     network: list[Annotated[str, StringConstraints(pattern=r"^\.?([A-Za-z0-9-]+\.)+[A-Za-z]{2,}$")]] = []
 
 
+def plan_json_schema():
+    """plan.yaml's JSON Schema, for editors (the skill's plan.schema.json; tests/test_validator.py checks it is current):
+    the shape the models above check, with a stage's fields closed, as validate() does."""
+    schema = Plan.model_json_schema()
+    schema["$defs"]["Stage"]["additionalProperties"] = False
+    return {"$schema": "https://json-schema.org/draft/2020-12/schema", "title": "prometheus plan.yaml", **schema}
+
+
 LABELS = {"inputs": "input", "outputs": "output", "stages": "stage", "unknowns": "unknown",
           "assumptions": "assumption", "questions": "question", "params": "param"}
 
@@ -296,7 +339,7 @@ def shape_errors(exc, raw):
             if isinstance(item, int):
                 try:
                     entry = raw[loc[0]][item]
-                    name = entry.get("key", entry.get("id")) if isinstance(entry, dict) else None
+                    name = entry.get("id") if isinstance(entry, dict) else None
                 except (KeyError, IndexError, TypeError):
                     name = None
                 head = f"{LABELS[loc[0]]} '{name}'" if name else f"{loc[0]}[{item}]"
@@ -312,29 +355,29 @@ def shape_errors(exc, raw):
 
 def is_run_stage(st):
     """Stages that launch a child. Decisions and approvals are parent pauses."""
-    return st.kind != "decision" and st.pattern != "approval"
+    return st.kind.value != "decision" and st.pattern != "approval"
 
 
 def human_first(st):
     """Stages the parent handles with the user before a wave's script starts."""
-    return st.kind in ("decision", "side_effect") or st.pattern == "approval"
+    return st.kind.value in ("decision", "side_effect") or st.pattern == "approval"
 
 
-def derive_waves(by_key, needs, status, first=1):
-    """Group the stages that are not done into waves, each stage as early as its needs allow.
+def derive_waves(by_key, after, status, first=1):
+    """Group the stages that are not done into waves, each stage as early as `after` allows.
 
     A workflow script cannot pause, so a wave ends wherever the parent must act
-    between two stages. A stage goes in a later wave than a stage it needs when
+    between two stages. A stage goes in a later wave than a stage it runs after when
     - it is a decision, approval or side effect and the needed stage launches a
       child (the parent asks the user before the wave's script starts);
-    - the needed stage is a side effect (its results are reported first) or has
+    - that stage is a side effect (its results are reported first) or has
       `pause_after` (the user reviews it first);
-    - it is provisional and the needed stage is the discovery it `resolves_after`
-      (the parent replans in between; this counts as a need).
+    - it is provisional and that stage is the discovery it `resolves_after`
+      (the parent replans in between; this counts as `after`).
     `status` maps keys to running | done (absent = pending).
     Returns ([{id, stages, ends_with}], {key: wave index}); raises CycleError."""
     active = [k for k in by_key if status.get(k) != "done"]
-    deps = {k: {d for d in needs[k] if d in active} for k in active}
+    deps = {k: {d for d in after[k] if d in active} for k in active}
     for k in active:
         st = by_key[k]
         if st.provisional and st.resolves_after in deps:
@@ -343,7 +386,7 @@ def derive_waves(by_key, needs, status, first=1):
     for k in TopologicalSorter(deps).static_order():
         st = by_key[k]
         level[k] = max((level[d] + int(bool(
-            by_key[d].kind == "side_effect" or by_key[d].pause_after
+            by_key[d].kind.value == "side_effect" or by_key[d].pause_after
             or (human_first(st) and is_run_stage(by_key[d]))
             or (st.provisional and d == st.resolves_after)))
             for d in deps[k]), default=0)
@@ -351,7 +394,7 @@ def derive_waves(by_key, needs, status, first=1):
     for i in range(max(level.values(), default=-1) + 1):
         members = [k for k in active if level[k] == i]  # plan order
         ends_with = "none"
-        if any(by_key[k].kind == "side_effect" for k in members):
+        if any(by_key[k].kind.value == "side_effect" for k in members):
             ends_with = "approval"
         if any(by_key[k].pause_after for k in members):
             ends_with = "review"
@@ -359,6 +402,11 @@ def derive_waves(by_key, needs, status, first=1):
             ends_with = "replan"
         waves.append({"id": f"w{first + i}", "stages": members, "ends_with": ends_with})
     return waves, level
+
+
+def commanded(st):
+    """A stage whose program runs as a command on the batcher (no model): it has a program with args."""
+    return st.program is not None and st.program.args is not None
 
 
 def child_keys(key, pattern):
@@ -526,7 +574,7 @@ class Checker:
         self.script_owner = {}  # stage program -> the stage it belongs to
 
     def check_refs(self, where, text, is_path=False, secret_ok=False):
-        """`secret_ok`: a command the batcher runs (a stage program's `run:` and its gate), the one place a secret reaches."""
+        """`secret_ok`: a command the batcher runs (a stage program's args and its gate), the one place a secret reaches."""
         if isinstance(text, str):
             self.param_refs.extend((where, m.group(1), is_path, m.start() > 0 and text[m.start() - 1] in PATH_CHARS, secret_ok)
                                    for m in PARAM_REF_RE.finditer(text))
@@ -555,19 +603,19 @@ class Checker:
                 self.warn(f"{where}: absolute location; use a ${{param}} so the agent can be moved")
 
     def stage_index(self):
-        """Stages by key, each output's producer, and child keys that would collide."""
+        """Stages by id, each output's producer, and child keys that would collide."""
         self.by_key, self.producer = {}, {}
         for st in self.plan.stages:
-            if st.key in self.by_key:
-                self.err(f"stage '{st.key}': duplicate key"); continue
-            self.by_key[st.key] = st
-            for o in st.out:
+            if st.id in self.by_key:
+                self.err(f"stage '{st.id}': duplicate id"); continue
+            self.by_key[st.id] = st
+            for o in st.writes:
                 if o.id in self.input_ids:
-                    self.err(f"stage '{st.key}': out id '{o.id}' reuses an input id")
+                    self.err(f"stage '{st.id}': writes '{o.id}', an input's id")
                 if o.id in self.producer:
-                    self.err(f"stage '{st.key}': out id '{o.id}' is already produced by stage '{self.producer[o.id]}'")
+                    self.err(f"stage '{st.id}': writes '{o.id}', which stage '{self.producer[o.id]}' already writes")
                 else:
-                    self.producer[o.id] = st.key
+                    self.producer[o.id] = st.id
         self.provisional = {k for k, st in self.by_key.items() if st.provisional}
         for key, st in self.by_key.items():
             reserved = {
@@ -577,26 +625,26 @@ class Checker:
             for other in self.by_key:
                 if reserved and other != key and re.match(reserved, other):
                     self.err(f"stage '{other}' collides with child keys of {st.pattern} stage '{key}' ({child_keys(key, st.pattern)})")
-            if st.verify and st.verify.review and f"{key}-review" in self.by_key:
-                self.err(f"stage '{key}-review' collides with the review child the runner adds for stage '{key}' (verify.review)")
-            if st.run is not None and f"{key}-fix" in self.by_key:
-                self.err(f"stage '{key}-fix' collides with the child that fixes stage '{key}''s program if it fails (run:)")
+            if st.review and f"{key}-review" in self.by_key:
+                self.err(f"stage '{key}-review' collides with the review child the runner adds for stage '{key}' (review)")
+            if commanded(st) and f"{key}-fix" in self.by_key:
+                self.err(f"stage '{key}-fix' collides with the child that fixes stage '{key}''s program if it fails (program.args)")
 
     def graph(self):
-        """needs, each stage's ancestors, whether there is a cycle, and what reviewers cover."""
-        self.needs = {}
+        """after, each stage's ancestors, whether there is a cycle, and what reviewers cover."""
+        self.after = {}
         for key, st in self.by_key.items():
-            for dep in st.needs:
+            for dep in st.after:
                 if dep == key:
-                    self.err(f"stage '{key}': needs itself")
+                    self.err(f"stage '{key}': runs after itself")
                 elif dep not in self.by_key:
-                    self.err(f"stage '{key}': needs unknown stage '{dep}'")
-            self.needs[key] = [d for d in st.needs if d in self.by_key and d != key]
+                    self.err(f"stage '{key}': after unknown stage '{dep}'")
+            self.after[key] = [d for d in st.after if d in self.by_key and d != key]
         self.ancestors, self.cyclic = {}, False
         try:
-            for k in TopologicalSorter(self.needs).static_order():
-                self.ancestors[k] = set(self.needs[k]).union(*(self.ancestors[d] for d in self.needs[k]))
-        except CycleError as exc:  # args[1] runs dependency -> dependent; show "needs" order
+            for k in TopologicalSorter(self.after).static_order():
+                self.ancestors[k] = set(self.after[k]).union(*(self.ancestors[d] for d in self.after[k]))
+        except CycleError as exc:  # args[1] runs dependency -> dependent; show it in run order reversed
             self.cyclic = True
             self.err("dependency cycle: " + " -> ".join(reversed(exc.args[1])))
         self.reviewed = set().union(*(self.ancestors.get(k, set()) for k, st in self.by_key.items() if st.pattern == "reviewer"))
@@ -631,50 +679,87 @@ class Checker:
             self.err(f"{where}: pattern is required")
         if not st.title:
             self.warn(f"{where}: no title")
-        if st.approval == "required":
+        if st.kind.value == "side_effect":
             self.approvals.append(key)
-        if st.kind == "side_effect" and st.approval != "required":
-            self.err(f"{where}: side_effect stages need approval: required, provisional or not")
-        for cid in st.consumes:
+        for cid in st.reads:
             if cid in self.input_ids:
                 continue
             if cid not in self.producer:
-                self.err(f"{where}: consumes unknown id '{cid}'")
+                self.err(f"{where}: reads unknown id '{cid}'")
             elif not self.cyclic and self.producer[cid] not in self.ancestors.get(key, set()):
-                self.err(f"{where}: consumes '{cid}' from stage '{self.producer[cid]}', which it does not need (directly or transitively)")
-        for o in st.out:
+                self.err(f"{where}: reads '{cid}' from stage '{self.producer[cid]}', which it does not run after (directly or transitively)")
+        for o in st.writes:
             if o.path:
-                self.check_refs(f"{where} out '{o.id}'", o.path, is_path=True)
+                self.check_refs(f"{where} writes '{o.id}'", o.path, is_path=True)
                 if literal_absolute(o.path):
-                    self.err(f"{where}: out '{o.id}' path is absolute; use a ${{param}} or a path relative to the agent")
-        if st.script is not None:
-            if not SCRIPT_NAME_RE.match(st.script):
-                self.err(f"{where}: script '{st.script}' must be a file name in the agent's scripts/ (no folders)")
-            if st.kind not in ("deterministic", "side_effect"):
-                self.err(f"{where}: script is for deterministic and side-effect stages; a {st.kind} stage has no program")
+                    self.err(f"{where}: writes '{o.id}' to an absolute path; use a ${{param}} or a path relative to the agent")
+        program, kind = st.program, st.kind.value
+        if program is not None:
+            if not SCRIPT_NAME_RE.match(program.file):
+                self.err(f"{where}: program file '{program.file}' must be a file name in the agent's scripts/ (no folders)")
+            if kind not in ("deterministic", "side_effect"):
+                self.err(f"{where}: a program is for deterministic and side-effect stages; a {kind} stage has none")
             if st.pattern in MULTI_CHILD:
-                self.err(f"{where}: script on a {st.pattern} stage is not supported yet: every batch child would write it")
+                self.err(f"{where}: a program on a {st.pattern} stage is not supported yet: every batch child would write it")
             elif st.pattern != "script":
                 self.err(f"{where}: a stage with a program has pattern: script (not {st.pattern})")
-            if st.script in self.script_owner:
-                self.err(f"{where}: script '{st.script}' is also stage '{self.script_owner[st.script]}'s; give each stage its own")
-            self.script_owner.setdefault(st.script, st.key)
-            if st.run is None and st.pattern == "script":
-                self.warn(f"{where}: give `run:` the program's arguments, so runs execute it as a command, "
+            if program.file in self.script_owner:
+                self.err(f"{where}: program '{program.file}' is also stage '{self.script_owner[program.file]}'s; give each stage its own")
+            self.script_owner.setdefault(program.file, st.id)
+            if program.args is None and st.pattern == "script":
+                self.warn(f"{where}: give the program its `args`, so runs execute it as a command, "
                           "without a model; otherwise a model child runs it every run")
-        elif st.kind == "deterministic" and st.pattern == "script":
-            self.warn(f"{where}: name its program with `script:` (kept in scripts/, reviewed, reused by later runs); "
+            self.check_refs(f"{where} program.args", program.args, secret_ok=True)
+            returned = [o.id for o in st.writes if not o.path]
+            if program.args is not None and returned:
+                self.err(f"{where}: a program run as a command writes files and returns nothing; give writes {returned} a path")
+        elif kind == "deterministic" and st.pattern == "script":
+            self.warn(f"{where}: name its program with `program: {{file, args}}` (kept in scripts/, reviewed, reused by later runs); "
                       "without it every run writes the program again")
-        elif st.kind == "deterministic" and st.pattern in ("worker", "scout", "reviewer"):
-            self.warn(f"{where}: deterministic work in a {st.pattern} child; make it pattern: script with `script:` "
-                      "and `run:`, so the program is kept in scripts/ and later runs execute it without a model")
-        if st.run is not None:
-            self.check_refs(f"{where} run", st.run, secret_ok=True)
-            if st.script is None:
-                self.err(f"{where}: run gives the arguments of the stage's program; name the program with script:")
-            returned = [o.id for o in st.out if not o.path]
-            if returned:
-                self.err(f"{where}: a program run as a command writes files and returns nothing; give out {returned} a path")
+        elif kind == "deterministic" and st.pattern in ("worker", "scout", "reviewer"):
+            self.warn(f"{where}: deterministic work in a {st.pattern} child; make it pattern: script with `program: {{file, args}}`, "
+                      "so the program is kept in scripts/ and later runs execute it without a model")
+        self.stage_a2a(where, st)
+        for field in sorted(set(st.model_extra or {}) - {"status"}):  # status: run_and_waves says where it belongs
+            self.err(f"{where}: unknown field '{field}' (a stage's fields are in .pi/skills/agent/references/plan-schema.md)")
+        if (not st.instructions and kind in ("judgment", "deterministic", "side_effect") and st.pattern not in ("a2a", "approval")
+                and not commanded(st) and st.agent != "batcher"):
+            self.warn(f"{where}: a model child does it: give it `instructions` (what to do and how, in full), not only a title")
+
+    def stage_a2a(self, where, st):
+        """pattern: a2a and its `a2a:` block: another agent called over A2A, on the batcher (no model)."""
+        if st.pattern != "a2a" and st.a2a is None:
+            return
+        if st.a2a is None:
+            return self.err(f"{where}: pattern a2a needs `a2a:` (url, files, params, approve, token): the agent it calls")
+        if st.pattern != "a2a":
+            return self.err(f"{where}: `a2a:` is for a stage with pattern: a2a (not {st.pattern})")
+        call = st.a2a
+        if st.agent not in (None, "batcher"):
+            self.err(f"{where}: an a2a stage runs on batcher (it sends a message and waits: no model), not {st.agent}")
+        if st.program is not None:
+            self.err(f"{where}: an a2a stage has no program: the agent it calls does the work")
+        if st.kind.value == "decision":
+            self.err(f"{where}: an a2a stage is deterministic, judgment or side_effect: the agent it calls can't ask anyone")
+        self.check_refs(f"{where} a2a url", call.url)
+        for name, value in call.params.items():
+            if isinstance(value, str):
+                self.check_refs(f"{where} a2a params.{name}", value)
+        for remote, cid in call.files.items():
+            if cid not in st.reads:
+                self.err(f"{where}: a2a files sends '{cid}' as {remote}, but the stage doesn't read it; add it to reads")
+        if call.token is not None:
+            m = re.fullmatch(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", call.token.strip())
+            spec = self.plan.params.get(m.group(1)) if m else None
+            if spec is None or spec.type != "secret":
+                self.err(f"{where}: a2a token is a secret param, written \"${{name}}\" (type: secret), never a value")
+            else:
+                self.check_refs(f"{where} a2a token", call.token, secret_ok=True)
+        if call.approve and st.kind.value != "side_effect":
+            self.err(f"{where}: it approves the called agent's side effects ({', '.join(call.approve)}): make its kind side_effect, "
+                     "so the run asks before it")
+        if not any(o.path for o in st.writes):
+            self.err(f"{where}: an a2a stage downloads the called agent's outputs: give writes a path (a folder)")
 
     def stage_provisional(self, where, st):
         if not st.intent:
@@ -688,7 +773,7 @@ class Checker:
             self.err(f"{where}: resolves_after '{ra}', which is itself provisional")
         if st.resumes is not None:
             self.err(f"{where}: a provisional stage cannot resume a child; decide that at replan")
-        if st.verify and st.verify.gate:
+        if st.gate:
             self.warn(f"{where}: gate on a provisional stage; it will be re-decided at replan")
 
     def stage_agent(self, where, key, st, run):
@@ -704,7 +789,7 @@ class Checker:
                 self.err(f"{where}: resumes unknown stage '{resumes}'")
             else:
                 if not self.cyclic and resumes not in self.ancestors.get(key, set()):
-                    self.err(f"{where}: resumes '{resumes}' but does not need it")
+                    self.err(f"{where}: resumes '{resumes}' but does not run after it")
                 if resumes in self.provisional:
                     self.err(f"{where}: resumes provisional stage '{resumes}'")
                 if not is_run_stage(target):
@@ -712,13 +797,13 @@ class Checker:
                 if target.pattern in MULTI_CHILD:
                     self.err(f"{where}: resumes '{resumes}', a {target.pattern} stage with many children; resume a single-child stage")
                 if target.agent in self.external:
-                    self.err(f"{where}: resumes '{resumes}', which runs on external runner '{target.agent}'; use a fresh stage that consumes its output instead")
+                    self.err(f"{where}: resumes '{resumes}', which runs on external runner '{target.agent}'; use a fresh stage that reads its output instead")
             if st.context is not None:
                 self.warn(f"{where}: context is ignored on a resumed child")
             if st.model is not None:
                 self.err(f"{where}: a resumed child keeps its model; remove model")
         elif run and not agent:
-            self.err(f"{where}: agent is required for {st.kind} stages")
+            self.err(f"{where}: agent is required for {st.kind.value} stages")
         if agent:
             self.check_agent_ref(where, agent)
         eff_agent = agent or (self.by_key[resumes].agent if resumes in self.by_key else None)
@@ -734,36 +819,34 @@ class Checker:
     def stage_outputs(self, where, key, st, run, eff_agent, is_external):
         """Returned results, and how a judgment stage's outputs are checked; returns the
         returned outputs that have a schema."""
-        returned = [o for o in st.out if not o.path]
+        returned = [o for o in st.writes if not o.path]
         if run and len(returned) > 1:
-            self.err(f"{where}: {len(returned)} out entries without path; a child returns one result, so give the others a path")
+            self.err(f"{where}: {len(returned)} writes without a path; a child returns one result, so give the others a path")
         structured = [o for o in returned if o.schema_]
-        v = st.verify
-        if st.kind == "judgment":
-            if not st.kind_reason:
-                self.warn(f"{where}: judgment stage has no kind_reason; say why a program cannot decide correctness")
-            has_review = bool(v and v.review) or key in self.reviewed
-            for o in st.out:
+        if st.kind.value == "judgment":
+            if not st.kind.reason:
+                self.warn(f"{where}: judgment stage has no kind.reason; say why a program cannot decide correctness")
+            has_review = bool(st.review) or key in self.reviewed
+            for o in st.writes:
                 if o.schema_:
                     continue
                 if str(o.format or "").lower() in DOC_FORMATS:
                     if not has_review and st.pattern != "reviewer":
-                        self.err(f"{where}: document output '{o.id}' has no schema, so it needs verify.review or a downstream reviewer stage")
+                        self.err(f"{where}: document output '{o.id}' has no schema, so it needs review or a downstream reviewer stage")
                 else:
                     self.err(f"{where}: judgment output '{o.id}' needs a schema (or a document format such as md, with a reviewer)")
-            if not v and key not in self.reviewed and st.pattern != "reviewer":
-                self.warn(f"{where}: judgment stage has no verify and no downstream reviewer")
+            if not (st.gate or st.review or st.done_when) and key not in self.reviewed and st.pattern != "reviewer":
+                self.warn(f"{where}: judgment stage has no gate, review or done_when and no downstream reviewer")
         if structured and is_external:
             self.warn(f"{where}: external runner '{eff_agent}' has no outputSchema; the schema will be requested as JSON text and not enforced")
         return structured
 
     def stage_gate(self, where, st, run, structured, eff_agent, is_external):
-        v = st.verify
-        gate = v.gate if v else None
-        if st.kind == "deterministic" and not (v and (v.gate or v.review or v.check)):
-            self.err(f"{where}: deterministic stages need verify with gate, review or check")
-        if v and v.review:
-            self.check_agent_ref(f"{where} verify.review", v.review)
+        gate = st.gate
+        if st.kind.value == "deterministic" and not (st.gate or st.review or st.done_when):
+            self.err(f"{where}: deterministic stages need a gate, review or done_when")
+        if st.review:
+            self.check_agent_ref(f"{where} review", st.review)
         if gate is None:
             return
         typed = isinstance(gate, dict)
@@ -774,10 +857,10 @@ class Checker:
             if gate.get("output") != "json":
                 self.err(f"{where}: typed gate needs output: json (use a plain string for a pass/fail command)")
             if structured:
-                self.err(f"{where}: typed gate cannot be combined with a returned schema (outputSchema); give out '{structured[0].id}' a path, or use a plain string gate")
+                self.err(f"{where}: typed gate cannot be combined with a returned schema (outputSchema); give writes '{structured[0].id}' a path, or use a plain string gate")
         elif not isinstance(gate, str) or not gate.strip():
-            self.err(f"{where}: verify.gate must be a command string or a typed gate mapping")
-        self.check_refs(f"{where} gate", command, secret_ok=st.script is not None and st.run is not None)
+            self.err(f"{where}: gate must be a command string or a typed gate mapping")
+        self.check_refs(f"{where} gate", command, secret_ok=commanded(st) or st.pattern == "a2a")
         if isinstance(command, str):
             self.gate_scripts.extend((where, m, "uv run" in command) for m in GATES_REF_RE.findall(command))
         if literal_absolute(command):
@@ -790,22 +873,23 @@ class Checker:
             self.err(f"{where}: a stage that launches no child cannot have a gate")
 
     def stage_map(self, where, st):
-        pattern, items = st.pattern, st.items
-        if not items:
-            self.err(f"{where}: {pattern} stages need `items`: the consumed input or output whose items are split into batches")
-        elif items not in st.consumes:
-            self.err(f"{where}: items '{items}' must also be listed in consumes")
-        elif items in self.producer and not self.by_key[self.producer[items]].provisional:
-            src = next((o for o in self.by_key[self.producer[items]].out if o.id == items), None)
+        pattern, spec = st.pattern, st.map or Map()
+        over = spec.over
+        if not over:
+            self.err(f"{where}: {pattern} stages need `map.over`: the input or output it reads whose items are split into batches")
+        elif over not in st.reads:
+            self.err(f"{where}: map.over '{over}' must also be listed in reads")
+        elif over in self.producer and not self.by_key[self.producer[over]].provisional:
+            src = next((o for o in self.by_key[self.producer[over]].writes if o.id == over), None)
             if not (src and src.path):
-                self.err(f"{where}: items '{items}' must be a file output (with a path) so it can be split")
-        if st.kind == "deterministic":
+                self.err(f"{where}: map.over '{over}' must be a file output (with a path) so it can be split")
+        if st.kind.value == "deterministic":
             self.warn(f"{where}: deterministic work in a {pattern}; one script stage is usually better")
-        b, max_batch = st.batch, self.plan.limits.max_batch
+        b, max_batch = spec.batch, self.plan.limits.max_batch
         if b is None or b <= 0:
-            self.err(f"{where}: {pattern} stages need a positive integer batch")
+            self.err(f"{where}: {pattern} stages need a positive integer map.batch")
         elif max_batch is not None and b > max_batch:
-            self.err(f"{where}: batch {b} exceeds limits.max_batch {max_batch}")
+            self.err(f"{where}: map.batch {b} exceeds limits.max_batch {max_batch}")
 
     # --- the rest of the plan ---------------------------------------------------------
     def outside_readers(self):
@@ -815,8 +899,8 @@ class Checker:
         outside = {i.id for i in self.plan.inputs if i.kind in ("folder", "file", "url", "app")}
         defined = project_subagents(self.agent_root) if self.agent_root else {}
         for key, st in self.by_key.items():
-            read = [c for c in st.consumes if c in outside]
-            if st.kind != "judgment" or not read or not st.agent or st.agent in self.external:
+            read = [c for c in st.reads if c in outside]
+            if st.kind.value != "judgment" or not read or not st.agent or st.agent in self.external:
                 continue
             tools = agent_tools(defined[st.agent]) if st.agent in defined else None
             has_shell = st.agent in SHELL_BUILTINS if tools is None else (not tools or "bash" in tools)
@@ -831,8 +915,8 @@ class Checker:
         outside = {o.id: o for o in self.plan.outputs if o.kind in ("app", "message")}
         defined = project_subagents(self.agent_root) if self.agent_root else {}
         for key, st in self.by_key.items():
-            targets = [outside[o.id].location for o in st.out or [] if o.id in outside]
-            if st.kind != "side_effect" or not targets or not st.agent:
+            targets = [outside[o.id].location for o in st.writes if o.id in outside]
+            if st.kind.value != "side_effect" or not targets or not st.agent:
                 continue
             where = f"stage '{key}'"
             if st.agent in defined:
@@ -854,7 +938,7 @@ class Checker:
             if out.id not in self.producer:
                 self.err(f"{where}: no stage produces it"); continue
             pkey = self.producer[out.id]
-            if (out.kind in ("app", "message") or out.overwrite) and self.by_key[pkey].kind != "side_effect":
+            if (out.kind in ("app", "message") or out.overwrite) and self.by_key[pkey].kind.value != "side_effect":
                 self.err(f"{where}: {out.kind}{' overwrite' if out.overwrite else ''} output must come from a side_effect stage (produced by '{pkey}')")
 
     def run_and_waves(self):
@@ -882,9 +966,9 @@ class Checker:
             if key in self.provisional:
                 err(f"stage '{key}' is provisional but {sst} in run {run_id}; replan it before it runs")
             allowed = ("done",) if sst == "done" else ("done", "running")
-            for d in self.needs[key]:
+            for d in self.after[key]:
                 if stage_status.get(d, "pending") not in allowed:
-                    err(f"stage '{key}' is {sst} in run {run_id} but needs '{d}', which is {stage_status.get(d, 'pending')}")
+                    err(f"stage '{key}' is {sst} in run {run_id} but runs after '{d}', which is {stage_status.get(d, 'pending')}")
         self.stage_status = stage_status
 
         # wave ids continue from the waves this run has finished
@@ -892,7 +976,7 @@ class Checker:
         self.waves, level = [], {}
         if not self.cyclic:
             try:
-                self.waves, level = derive_waves(by_key, self.needs, stage_status, first)
+                self.waves, level = derive_waves(by_key, self.after, stage_status, first)
             except CycleError as exc:
                 err("resolves_after makes a cycle: " + " -> ".join(reversed(exc.args[1]))
                     + "; a provisional stage comes after the discovery it resolves after")
@@ -902,13 +986,13 @@ class Checker:
         # A child's returned result only exists inside the agent run that
         # produced it; later waves can only read files.
         for key, st in by_key.items():
-            for cid in st.consumes if stage_status.get(key) != "done" else []:
+            for cid in st.reads if stage_status.get(key) != "done" else []:
                 pkey = self.producer.get(cid)
                 if pkey is None or pkey in self.provisional or not is_run_stage(by_key[pkey]):
                     continue
-                o = next((o for o in by_key[pkey].out if o.id == cid), None)
+                o = next((o for o in by_key[pkey].writes if o.id == cid), None)
                 if o and not o.path and (stage_status.get(pkey) == "done" or level.get(pkey, 0) < level.get(key, 0)):
-                    err(f"stage '{key}' consumes '{cid}', a returned result of stage '{pkey}' from an earlier wave; give that output a path so it survives the wave")
+                    err(f"stage '{key}' reads '{cid}', a returned result of stage '{pkey}' from an earlier wave; give that output a path so it survives the wave")
 
         if self.next_wave is not None:
             prov_next = [k for k in self.next_wave["stages"] if k in self.provisional]
@@ -954,7 +1038,7 @@ class Checker:
 
     def critique(self):
         err, plan, c = self.err, self.plan, self.plan.critique
-        self.critic_required = len(self.by_key) > 3 or any(st.kind in ("side_effect", "judgment") for st in self.by_key.values())
+        self.critic_required = len(self.by_key) > 3 or any(st.kind.value in ("side_effect", "judgment") for st in self.by_key.values())
         self.finding_ids = {f.id for f in c.findings} if c else set()
         self.asked_findings = [f.id for f in c.findings if f.disposition == "asked"] if c else []
         self.verdict = c.verdict if c else None
@@ -1028,8 +1112,8 @@ class Checker:
             elif params[ref].type == "secret" and not secret_ok:
                 # no model child gets a secret: they share one sandbox, and a model reading outside content can be
                 # told to send it somewhere
-                err(f"{where}: secret '{ref}' reaches only a command the batcher runs: a stage program's `run:` "
-                    "and its gate; give the stage a script and run:, or reach the service through a connector")
+                err(f"{where}: secret '{ref}' reaches only what the batcher runs: a stage program's args and its gate, "
+                    "or an a2a stage's token; give the stage a program with args, or reach the service through a connector")
             elif embedded and params[ref].type == "path":
                 err(f"{where}: '${{{ref}}}' compiles to an absolute path; start the path with it (`${{{ref}}}/…`, not `../${{{ref}}}`)")
         used = {ref for _, ref, *_ in self.param_refs}

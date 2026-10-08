@@ -25,18 +25,18 @@ agents:
   checked: test
   available: [worker]
 stages:
-  - key: count
+  - id: count
     title: Count the lines
-    kind: deterministic
-    kind_reason: A program can check a count.
+    kind:
+      value: deterministic
+      reason: A program can check a count.
     pattern: script
     agent: worker
-    out:
+    writes:
       - id: counts
         path: counts.txt
-    verify:
-      check: counts.txt holds one number
-      gate: "true"
+    done_when: counts.txt holds one number
+    gate: "true"
 """
 
 
@@ -386,21 +386,21 @@ def test_an_agents_copy_of_the_skill_cannot_scaffold(tmp_path, run_py):
 # --- launches, critiques and reviews ------------------------------------------------
 
 TWO = PLAN + """\
-  - key: count2
+  - id: count2
     title: Count the lines again
-    kind: deterministic
-    kind_reason: A program can check a count.
+    kind:
+      value: deterministic
+      reason: A program can check a count.
     pattern: script
     agent: worker
-    out:
+    writes:
       - id: counts2
         path: counts2.txt
-    verify:
-      check: counts2.txt holds one number
-      gate: "true"
+    done_when: counts2.txt holds one number
+    gate: "true"
 """
-PAUSED = TWO.replace("    agent: worker\n    out:\n      - id: counts\n", "    agent: worker\n    pause_after: true\n    out:\n      - id: counts\n", 1) \
-            .replace("    title: Count the lines again\n", "    title: Count the lines again\n    needs: [count]\n", 1)
+PAUSED = TWO.replace("    agent: worker\n    writes:\n      - id: counts\n", "    agent: worker\n    pause_after: true\n    writes:\n      - id: counts\n", 1) \
+            .replace("    title: Count the lines again\n", "    title: Count the lines again\n    after: [count]\n", 1)
 
 
 def record_launch(root, run_id, returned):
@@ -498,7 +498,7 @@ def test_the_list_gives_each_agent_its_state_and_recent_runs(tmp_path, run_py):
 
 
 MAP = PLAN.replace("""stages:
-  - key: count""", """models:
+  - id: count""", """models:
   default: cheap-model
 inputs:
   - id: lines
@@ -508,22 +508,23 @@ params:
   src:
     description: a text file, one item per line
 stages:
-  - key: tally
+  - id: tally
     title: Tally each line
-    kind: deterministic
-    kind_reason: A program can tally a line.
+    kind:
+      value: deterministic
+      reason: A program can tally a line.
     pattern: map
     agent: worker
-    items: lines
-    batch: 1
-    consumes: [lines]
-    out:
+    map:
+      over: lines
+      batch: 1
+    reads: [lines]
+    writes:
       - id: tallies
         path: tallies.json
-    verify:
-      check: one tally per line
-      gate: "test -s tallies.json"
-  - key: count""")
+    done_when: one tally per line
+    gate: "test -s tallies.json"
+  - id: count""")
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node")
@@ -598,7 +599,7 @@ def test_a_new_agent_can_start_from_another(tmp_path, run_py):
     r = run_py([SKILL / "scripts" / "scaffold_agent.py", "copy", "--root", tmp_path, "--request", "count words", "--from", "source"])
     assert r.data["ok"], r
     plan = (tmp_path / "copy" / "plan.yaml").read_text(encoding="utf-8")
-    assert "status: draft" in plan and "count words" in plan and "key: count" in plan
+    assert "status: draft" in plan and "count words" in plan and "id: count" in plan
     assert (tmp_path / "copy" / "gates" / "check.py").is_file()
     assert 'name = "copy"' in (tmp_path / "copy" / "pyproject.toml").read_text(encoding="utf-8")
 

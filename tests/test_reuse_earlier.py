@@ -12,12 +12,12 @@ cw = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cw)
 
 STAGES = [
-    {"key": "discover", "title": "Inspect the emails", "kind": "judgment", "agent": "scout", "consumes": ["emails"],
-     "out": [{"id": "report", "path": "discovery.md"}], "verify": {"review": "reviewer", "check": "Report the fields."}},
-    {"key": "summarise", "title": "Summarise", "kind": "judgment", "agent": "worker", "needs": ["discover"],
-     "consumes": ["report"], "out": [{"id": "summary", "path": "summary.md"}], "verify": {"check": "One line per field."}},
-    {"key": "send", "title": "Send the summary", "kind": "side_effect", "agent": "worker", "needs": ["summarise"],
-     "consumes": ["summary"], "out": [{"id": "sent", "path": "sent.json"}], "verify": {"check": "Sent once."}},
+    {"id": "discover", "title": "Inspect the emails", "kind": {"value": "judgment"}, "agent": "scout", "reads": ["emails"],
+     "writes": [{"id": "report", "path": "discovery.md"}], "review": "reviewer", "done_when": "Report the fields."},
+    {"id": "summarise", "title": "Summarise", "kind": {"value": "judgment"}, "agent": "worker", "after": ["discover"],
+     "reads": ["report"], "writes": [{"id": "summary", "path": "summary.md"}], "done_when": "One line per field."},
+    {"id": "send", "title": "Send the summary", "kind": {"value": "side_effect"}, "agent": "worker", "after": ["summarise"],
+     "reads": ["summary"], "writes": [{"id": "sent", "path": "sent.json"}], "done_when": "Sent once."},
 ]
 WAVE = {"id": "w1", "stages": ["discover", "summarise", "send"]}
 
@@ -36,10 +36,10 @@ def compile_run(tmp_path, rid):
 def finish(c, rid):
     """What a finished run leaves: its stages done, fingerprints, the wave's result, the outputs."""
     run_dir = c.run_dir
-    (run_dir / "run.yaml").write_text("status: done\nstages:\n" + "".join(f"  {s['key']}: done\n" for s in STAGES))
+    (run_dir / "run.yaml").write_text("status: done\nstages:\n" + "".join(f"  {s['id']}: done\n" for s in STAGES))
     (run_dir / ".compiled").mkdir(exist_ok=True)
     (run_dir / ".compiled" / "w1.inputs.json").write_text(json.dumps(c.fingerprints))
-    children = {s["key"]: {"status": "completed", "runId": f"{rid}-{s['key']}"} for s in STAGES}
+    children = {s["id"]: {"status": "completed", "runId": f"{rid}-{s['id']}"} for s in STAGES}
     (run_dir / ".compiled" / "w1-result.json").write_text(json.dumps({"status": "done", "children": children}))
     (run_dir / "work").mkdir(exist_ok=True)
     for name in ("discovery.md", "summary.md", "sent.json"):
@@ -94,11 +94,11 @@ def test_a_changed_input_runs_the_stage_and_those_after_it(tmp_path):
 
 def test_a_changed_stage_runs_again(tmp_path):
     setup_first_run(tmp_path)
-    STAGES[0]["verify"]["check"] = "Report the fields and their encodings."
+    STAGES[0]["done_when"] = "Report the fields and their encodings."
     try:
         _, again = compile_run(tmp_path, "2026-01-01-2")
     finally:
-        STAGES[0]["verify"]["check"] = "Report the fields."
+        STAGES[0]["done_when"] = "Report the fields."
     assert not any("reuse" in it for it in items(again["spec"]).values())
 
 

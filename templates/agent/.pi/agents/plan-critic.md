@@ -32,14 +32,14 @@ Check, in this order:
      correct? → deterministic
    - Otherwise → judgment
    Flag mechanical work sent to a model and judgment disguised as a script.
-   Read `kind_reason`; flag it when it does not hold.
+   Read `kind.reason`; flag it when it does not hold.
 4. **Split.** Flag deterministic stages whose inputs plausibly have a messy
    tail (scans, free text, mixed senders, human-typed values) but no
    leftovers output, and judgment stages a cheap mechanical filter could
    shrink.
 5. **Hidden side effects.** Writes, overwrites or messages not marked as
    side_effect, including in provisional stages. A new file in the run's
-   folder (a relative `out.path`, or an output at a relative param default
+   folder (a relative `writes` path, or an output at a relative param default
    with `overwrite: false`) is not a side effect.
 6. **Invented detail.** Concrete schemas, batch sizes, sources or counts that
    nothing in the plan supports (no finding, observed assumption or answer).

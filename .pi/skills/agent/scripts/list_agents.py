@@ -8,7 +8,7 @@ state (agent_state's name for where it stands), runs (count),
 last_run {id, status, started_at, finished_at, last_wave}, recent_runs (the last 5, newest
 first: id, status, started_at, finished_at, note, cost_usd: its subagents' cost summed over its launches,
 agent_cost_usd: the agent's own model's, from its sessions, session_digest.agent_costs),
-active_run, next_wave (its id) and next_stages (its stage keys), waiting (what the active run is paused on after its last
+active_run, next_wave (its id) and next_stages (its stage ids), waiting (what the active run is paused on after its last
 wave: approval | review | replan, else null), stages_done/stages_total (of the active run) and stages
 (every plan stage: key, title, status: done | running | null, null when no run is active; children {done, failed, total, items: each child's key, agent, state, run_id}
 while its wave runs, from pi-subagents' record of the launch),
@@ -50,8 +50,8 @@ FAILED_STATES = ("failed", "error", "cancelled", "canceled")
 
 
 def child_progress(run_state, stage_keys):
-    """{stage key: {done, failed, total, items: [{key, agent, state, run_id}]}} for the children the running wave has launched so far, from
-    pi-subagents' status.json for that launch. A child belongs to the longest stage key its own key starts
+    """{stage id: {done, failed, total, items: [{key, agent, state, run_id}]}} for the children the running wave has launched so far, from
+    pi-subagents' status.json for that launch. A child belongs to the longest stage id its own key starts
     with (`<stage>`, `<stage>-review`, `<stage>-3`, `<stage>-fix`). Empty when no wave runs or the record is unreadable."""
     launch = next(iter(reversed([x for x in run_state.get("launches") or [] if isinstance(x, dict)])), None)
     if not launch or launch.get("status") != "running" or not launch.get("subagent_run_id"):
@@ -96,7 +96,7 @@ def summarise(root, slug, current):
     run_dir = dict(runs).get(active)
     run_state = read_run(run_dir) if run_dir else {}
     stage_status = run_state.get("stages") or {}
-    progress = child_progress(run_state, [s.get("key") for s in stages])
+    progress = child_progress(run_state, [s.get("id") for s in stages])
     last = last_run(Path(root) / slug)
     subagents_dir = Path(root) / slug / ".pi" / "agents"
     custom = sorted(p.stem for p in subagents_dir.iterdir() if p.suffix == ".md") if subagents_dir.is_dir() else []
@@ -115,9 +115,9 @@ def summarise(root, slug, current):
         "waiting": waiting_for(run_state, summary.get("next_wave")) if active else None,
         "stages_done": len(summary.get("done") or []),
         "stages_total": len(stages),
-        "stages": [{"key": s.get("key"), "title": s.get("title"), "status": stage_status.get(s.get("key")),
-                    **({"children": progress[s.get("key")]} if s.get("key") in progress else {})} for s in stages],
-        "provisional": [s.get("key") for s in stages if s.get("provisional") is True],
+        "stages": [{"key": s.get("id"), "title": s.get("title"), "status": stage_status.get(s.get("id")),
+                    **({"children": progress[s.get("id")]} if s.get("id") in progress else {})} for s in stages],
+        "provisional": [s.get("id") for s in stages if s.get("provisional") is True],
         "open_questions": [q.get("id") for q in questions if q.get("answer") in (None, "")],
         "last_run": last,
         "recent_runs": recent_runs(Path(root) / slug, runs),

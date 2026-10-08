@@ -6,12 +6,12 @@ model could make it).
 
 | # | Question | If yes |
 |---|---|---|
-| 1 | Does it change anything outside this run: send, post, write to a real system, overwrite, delete? | `side_effect` (`approval: required`) |
+| 1 | Does it change anything outside this run: send, post, write to a real system, overwrite, delete? | `side_effect` (the user approves it before it runs) |
 | 2 | Is it a choice only the user can make: a preference, risk tolerance, threshold, scope? | `decision` (a decision stage or a question; never a child) |
 | 3 | Could ordinary code, given the stage's inputs, decide whether the output is correct? | `deterministic` (program + gate, never item by item) |
 | 4 | Otherwise. | `judgment` (a schema; batched if many items; a gate or reviewer) |
 
-`kind_reason` is one line; for `judgment` it says why a program cannot decide.
+`kind.reason` is one line; for `judgment` it says why a program cannot decide.
 The common mistake is sending mechanical work to a model.
 
 Question 3 means parsing, matching, arithmetic, lookups, format rules; not "a
@@ -26,7 +26,7 @@ Mostly mechanical work with a messy tail (most PDFs have text, some are
 scans) is neither all judgment nor all script. Split it:
 
 1. A `deterministic` script stage handles what it can and writes the rest to
-   a leftovers file (an `out` with `path`, a reason per item).
+   a leftovers file (a `writes` entry with `path`, a reason per item).
 2. A `judgment` stage (`map` if many) reads only the leftovers, with a schema
    matching the script's rows.
 3. Downstream stages consume both.

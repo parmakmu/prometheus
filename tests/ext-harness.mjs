@@ -58,7 +58,8 @@ if (process.env.FAKE_SUBAGENTS_RPC) pi.events.on("subagents:rpc:v1:request", (re
 let out = [];
 const ctx = { cwd, isIdle: () => true, ui: { notify: (m, t) => out.push({ kind: "notify", type: t, text: m }), setStatus: () => {} } };
 
-const mod = await import(entry);
+process.chdir(cwd); // pi runs in the session's folder: an extension loaded from elsewhere finds its root from there
+const mod = await import(path.resolve(entry));
 mod.default(pi);
 for (const h of handlers.session_start ?? []) await h({ type: "session_start", reason: "startup" }, ctx);
 const steps = JSON.parse(fs.readFileSync(stepsFile, "utf8"));

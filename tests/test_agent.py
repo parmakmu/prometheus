@@ -404,7 +404,7 @@ def test_decision_recorded_in_the_runs_work(env):
 def test_side_effect_needs_approval(env):
     r = env.run(["compile_wave.py"])
     assert r.data, r
-    needed = [(x["stage"], bool(x["done_when"]), len(x["consumes"])) for x in r.data["preflight"]["approvals_needed"]]
+    needed = [(x["stage"], bool(x["done_when"]), len(x["reads"])) for x in r.data["preflight"]["approvals_needed"]]
     assert ("drafts", True, 2) in needed
 
 
@@ -445,7 +445,7 @@ def test_every_wave_runs_the_same_runner(env):
 # --- replanning -----------------------------------------------------------------
 
 def test_replan_refuses_a_stage_done_in_the_active_run(env):
-    r = env.run(["plan_edit.py", "replan", "--change", '{"stages":[{"key":"find","kind":"judgment"}]}'])
+    r = env.run(["plan_edit.py", "replan", "--change", '{"stages":[{"id":"find","kind":{"value":"judgment"}}]}'])
     assert "history" in (r.data or {}).get("error", "")
 
 
@@ -455,8 +455,8 @@ def test_replan_refuses_waves(env):
 
 
 def test_replan_refuses_to_weaken_a_side_effect(env):
-    r = env.run(["plan_edit.py", "replan", "--change", '{"stages":[{"key":"drafts","kind":"deterministic"}]}'])
-    assert "must stay kind: side_effect" in (r.data or {}).get("error", "")
+    r = env.run(["plan_edit.py", "replan", "--change", '{"stages":[{"id":"drafts","kind":{"value":"deterministic"}}]}'])
+    assert "its kind must stay side_effect" in (r.data or {}).get("error", "")
 
 
 def test_replan_refuses_to_change_the_goal(env):
@@ -467,7 +467,7 @@ def test_replan_refuses_to_change_the_goal(env):
 def test_replan_of_a_pending_stage_commits(env):
     from ruamel.yaml import YAML
     plan = YAML(typ="safe").load((env.b / "plan.yaml").read_text(encoding="utf-8"))
-    st = next(s for s in plan["stages"] if s["key"] == "approve-drafts")
+    st = next(s for s in plan["stages"] if s["id"] == "approve-drafts")
     st = json.loads(json.dumps(st, default=str))
     st["title"] = "Confirm the drafts (replanned)"
     change = {"stages": [st]}
@@ -560,7 +560,7 @@ def test_second_run_reuses_the_merged_program(env):
 
 
 def test_an_existing_program_runs_as_a_command(env):
-    # no model: batcher runs `uv run <program> <run: args>` and then the gate
+    # no model: batcher runs `uv run <program> <args>` and then the gate
     extract = items(env.b / "runs" / env.rid2 / ".compiled" / "w1.json")["extract"]
     request = json.loads(extract["task"].split("BATCH_TOOL_REQUEST ", 1)[1])
     assert extract["agent"] == "batcher"
@@ -752,7 +752,9 @@ def ext(env, tmp_path_factory):
     (nm / "@types" / "node").symlink_to(ROOT / "node_modules" / "@types" / "node", target_is_directory=True)
     _shutil.copy(ROOT / ".pi" / "extensions" / "prometheus" / "index.ts", tmp / ".ext" / "prometheus.ts")
     _shutil.copy(ROOT / "templates" / "agent" / ".pi" / "extensions" / "agent" / "index.ts", tmp / ".ext" / "agent.ts")
+    _shutil.copy(ROOT / "prometheus" / "frozen_runner.ts", tmp / ".ext" / "frozen_runner.ts")  # type-checked with the others
     _shutil.copy(HERE / "tsconfig.json", tmp / "tsconfig.json")
+    (tmp / "package.json").write_text('{"type": "module"}\n')  # ES modules, as pi loads extensions (import.meta)
     _shutil.copy(HERE / "ext-harness.mjs", tmp / "h.mjs")
     pi_version = json.loads((_pi_pkg / "package.json").read_text(encoding="utf-8"))["version"]
     return types.SimpleNamespace(tmp=tmp, pi_version=pi_version)

@@ -8,6 +8,7 @@ people. A refresh writes the version to `.pi/skills/agent/VERSION` in the agent,
 copy that has the file reports it as it is (an agent's own scripts never compute a new one). Stdlib only.
 """
 import hashlib
+import importlib.metadata
 import subprocess
 import tomllib
 from pathlib import Path
@@ -36,15 +37,27 @@ def git(root: Path, *args: str):
     return r.stdout.strip() if r.returncode == 0 else None
 
 
+def installed_version():
+    """The installed prometheus package's version (`uv tool install`), from its metadata; None if not installed."""
+    try:
+        return importlib.metadata.version("prometheus")
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
 def current(skill: Path = SKILL):
-    """The version of the skill at `skill`: its stamp, else computed from Prometheus's repo; None if neither."""
+    """The version of the skill at `skill`: its stamp, else computed from Prometheus's repo (or the installed package,
+    which keeps the repo's layout under prometheus/ but no pyproject.toml); None if neither."""
     stamp = skill / VERSION_FILE
     if stamp.is_file():
         return stamp.read_text(encoding="utf-8").strip() or None
     root = skill.parents[2]
     try:
         project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8")).get("project", {})
-    except (OSError, ValueError):
+    except OSError:
+        installed = root.name == "prometheus" and (root / "__init__.py").is_file() and installed_version()
+        project = {"name": "prometheus", "version": installed} if installed else {}
+    except ValueError:
         return None
     if project.get("name") != "prometheus" or not project.get("version"):
         return None

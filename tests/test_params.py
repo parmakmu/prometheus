@@ -138,9 +138,9 @@ def test_a_value_with_shell_syntax_stays_one_argument_of_a_gate(env):
 
 
 def test_only_a_programs_command_names_its_secrets_for_the_batcher(env):
-    plan = {"params": SPECS, "stages": [{"key": "send", "title": "Send", "kind": "side_effect", "pattern": "script",
-                                         "agent": "worker", "script": "send.py", "run": "${api_token} ${table}",
-                                         "out": [{"id": "sent", "path": "sent.json"}], "verify": {"gate": "true"}}]}
+    plan = {"params": SPECS, "stages": [{"id": "send", "title": "Send", "kind": {"value": "side_effect"}, "pattern": "script",
+                                         "agent": "worker", "program": {"file": "send.py", "args": "${api_token} ${table}"},
+                                         "writes": [{"id": "sent", "path": "sent.json"}], "gate": "true"}]}
     (env.root / "scripts").mkdir(exist_ok=True)
     (env.root / "scripts" / "send.py").write_text("", encoding="utf-8")
     c = cw.Compiler(env.root, plan, env.v, env.run_dir, {}, set())

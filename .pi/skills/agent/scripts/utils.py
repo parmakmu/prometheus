@@ -134,6 +134,8 @@ PLAN_SECTIONS = (
 )
 BANNER = "# ── "  # a line that starts so is the writer's: dropped when the plan is written again
 PLAN_HEADER = "{banner}Plan for agent \"{slug}\"\n"  # a title: the schema and .plan/ are for the planner, not the reader
+# editors with a YAML language server (VS Code's YAML extension, …) complete and check plan.yaml against the skill's schema
+SCHEMA_LINE = "# yaml-language-server: $schema=.pi/skills/agent/plan.schema.json"
 
 
 def _plan_file_data(path, strict):
@@ -171,16 +173,16 @@ def plan_text(plan, slug):
     """plan.yaml's text: its sections in order, each under a banner, the planning parts left out."""
     known = {k for _, keys in PLAN_SECTIONS for k in keys}
     rest = tuple(k for k in plan if k not in known and k not in PLAN_PARTS)
-    chunks = [PLAN_HEADER.format(banner=BANNER, slug=slug).rstrip("\n")]
+    chunks = [PLAN_HEADER.format(banner=BANNER, slug=slug) + SCHEMA_LINE]
     for title, keys in (*PLAN_SECTIONS, ("Other", rest)):
         entries = []
         for k in (k for k in keys if k in plan):
             buf = io.StringIO()
             rt_yaml().dump(fold_long(CommentedMap([(k, plan[k])])), buf)
             # a banner read back sticks to the value before it: the writer's own lines go, the rest stays
-            body = "\n".join(line for line in buf.getvalue().splitlines() if not line.startswith(BANNER)).strip("\n")
+            body = "\n".join(line for line in buf.getvalue().splitlines() if not line.startswith((BANNER, SCHEMA_LINE))).strip("\n")
             if k == "stages":  # each stage its own paragraph
-                body = re.sub(r"\n+(?=  - key: )", "\n\n", body).replace("stages:\n\n", "stages:\n")
+                body = re.sub(r"\n+(?=  - id: )", "\n\n", body).replace("stages:\n\n", "stages:\n")
             entries.append(body)
         if entries:  # a blank line around anything longer than a line
             text = entries[0]
@@ -188,6 +190,12 @@ def plan_text(plan, slug):
                 text += ("\n" if "\n" not in prev and "\n" not in cur else "\n\n") + cur
             chunks.append((f"{BANNER}{title} " + "─" * (72 - len(title)) + "\n" if title else "") + text)
     return re.sub(r"\n{3,}", "\n\n", "\n\n".join(chunks)) + "\n"
+
+
+def stage_kind(stage):
+    """A stage's kind (deterministic, judgment, decision, side_effect): `kind: {value, reason}` in the plan."""
+    kind = stage.get("kind") if isinstance(stage, dict) else None
+    return kind.get("value") if isinstance(kind, dict) else None
 
 
 def write_plan(agent_dir, plan):

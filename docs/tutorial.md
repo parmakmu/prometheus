@@ -19,14 +19,20 @@ You also need a model configured in Pi, as for any Pi session.
 
 ## 1. Set up prometheus
 
-prometheus is the agent that plans agents. Start it in the folder where you cloned this repository:
+prometheus is the agent that plans agents. Install it as a command, with the address of the prometheus repository (ask whoever set it up), and tell it where your agents go:
 
 ```sh
-uv sync
-pi
+uv tool install git+<prometheus repository>
+prometheus init
 ```
 
-`uv sync` installs the Python packages the scripts use. When Pi starts, it asks whether to trust the folder. **Accept**: the `/agent-*` commands exist only in a trusted folder.
+`init` asks for two folders: the agents folder (`~/agents` unless you choose another) and the planner's own folder (`~/.prometheus`). It saves them in `~/.config/prometheus/config.toml` and then checks that Pi, pi-subagents, Node, uv and a git identity are there, with the fix for anything missing. Now start the planner, from any folder:
+
+```sh
+prometheus
+```
+
+If Pi asks whether to trust the folder, accept.
 
 Check: type `/agent-list`. It answers that there are no agents yet.
 
@@ -120,14 +126,13 @@ Yours may name them differently or add a stage, but the shape is the same: look 
 
 ## 4. Start the agent
 
-prometheus only plans. The agent is a Pi agent of its own, and it does the work. Open a third terminal in the prometheus folder and start it:
+prometheus only plans. The agent is a Pi agent of its own, and it does the work. Open a third terminal and start it:
 
 ```sh
-cd agents/emails-to-excel
-pi
+prometheus emails-to-excel
 ```
 
-Accept the trust prompt: Pi asks once per folder, and this is a new one.
+That starts `pi` in the agent's folder (`cd ~/agents/emails-to-excel && pi` does the same). Accept the trust prompt: Pi asks once per folder, and this is a new one.
 
 Check: `/agent-status` reports that the plan is ready and that no run has started.
 

@@ -12,7 +12,7 @@
  *   agent_check     validate an agent's plan and compile-check its waves
  *   agent_record_critique  record the plan critic's result; the only way a plan becomes ready
  *
- * Changing an agent happens inside it: cd agents/<slug>, pi, /agent-revise.
+ * Changing an agent happens inside it: `prometheus <slug>` (or cd into it and run pi), /agent-revise.
  *
  * The logic lives in the skill's Python scripts (.pi/skills/agent/scripts);
  * this file runs them and formats their JSON.
@@ -22,7 +22,24 @@ import { Type } from "typebox";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const AGENTS = "agents";
+/** Prometheus's root: three folders up from this file (<root>/.pi/extensions/prometheus/index.ts), in a clone
+ * and in the installed package alike, so pi can load it with -e from any folder; for a copy loaded from
+ * elsewhere (the tests), the folder holding the skill from pi's folder upwards. */
+const ROOT = ((): string => {
+  const hasSkill = (dir: string) => fs.existsSync(path.join(dir, ".pi", "skills", "agent", "SKILL.md"));
+  const beside = path.resolve(import.meta.dirname, "..", "..", "..");
+  if (hasSkill(beside)) return beside;
+  for (let dir = process.cwd(); ; dir = path.dirname(dir)) {
+    if (hasSkill(dir)) return dir;
+    if (path.dirname(dir) === dir) return beside;
+  }
+})();
+
+/** The folder that holds the agents: $PROMETHEUS_AGENTS (the `prometheus` command sets it), else agents/ in the root. */
+function agentsDir(): string {
+  const set = process.env.PROMETHEUS_AGENTS;
+  return set ? path.resolve(set.replace(/^~(?=$|\/)/, process.env.HOME ?? "~")) : path.join(ROOT, "agents");
+}
 
 // --- prompts sent to the model ------------------------------------------------
 
@@ -30,8 +47,8 @@ const AGENTS = "agents";
 // a model that can't tell this message from a typed one refused it (it looks the same in the session).
 const NEW_PROMPT = (request: string) => `The user ran \`/agent-new\`: this is the planning request it authorizes, not a
 plain message. Plan a new agent for the request below. Follow
-\`.pi/skills/agent/SKILL.md\` from step 1; agents go under
-\`agents/\`. Use the \`agent_scaffold\` tool to create the agent,
+\`${path.join(ROOT, ".pi", "skills", "agent", "SKILL.md")}\` from step 1; agents go under
+\`${agentsDir()}/\`. Use the \`agent_scaffold\` tool to create the agent,
 \`agent_check\` to validate and compile-check it, and
 \`agent_record_critique\` to record the critic's result, which is what makes
 the plan ready (never set \`status: ready\` yourself). The subagent tool is
@@ -46,17 +63,6 @@ as a draft (with this request), its gates, stage programs, subagents and package
 request, change the rest, and plan only what is new; the critic still reviews the whole plan.`;
 
 // --- helpers --------------------------------------------------------------------
-
-/** Prometheus's root: the folder whose .pi/ holds APPEND_SYSTEM.md, found from `start` upwards. */
-function findRoot(start: string): string | undefined {
-  let dir = path.resolve(start);
-  for (;;) {
-    if (fs.existsSync(path.join(dir, ".pi", "APPEND_SYSTEM.md")) && fs.existsSync(path.join(dir, AGENTS))) return dir;
-    const parent = path.dirname(dir);
-    if (parent === dir) return undefined;
-    dir = parent;
-  }
-}
 
 /** Python for the skill scripts: $PI_AGENT_PYTHON, else the nearest .venv (see pyproject.toml), else python3. */
 function pythonFor(start: string): string {
@@ -123,11 +129,12 @@ function table(rows: string[][]): string {
   return [line(rows[0]), line(rows[0].map(() => "---")), ...rows.slice(1).map(line)].join("\n");
 }
 
-function slugs(root: string, prefix = ""): string[] {
+function slugs(prefix = ""): string[] {
+  const dir = agentsDir();
   try {
     return fs
-      .readdirSync(path.join(root, AGENTS))
-      .filter((d) => d.startsWith(prefix) && fs.existsSync(path.join(root, AGENTS, d, "plan.yaml")))
+      .readdirSync(dir)
+      .filter((d) => d.startsWith(prefix) && fs.existsSync(path.join(dir, d, "plan.yaml")))
       .sort();
   } catch {
     return [];
@@ -135,7 +142,7 @@ function slugs(root: string, prefix = ""): string[] {
 }
 
 async function check(pi: ExtensionAPI, root: string, slug: string, signal?: AbortSignal) {
-  const agent = path.join(root, AGENTS, slug);
+  const agent = path.join(agentsDir(), slug);
   const v = await runScript(pi, root, "validate_plan.py", [path.join(agent, "plan.yaml")], signal);
   const c = await runScript(pi, root, "compile_wave.py", ["--agent", agent, "--check"], signal);
   return {
@@ -152,35 +159,24 @@ async function check(pi: ExtensionAPI, root: string, slug: string, signal?: Abor
 // --- extension --------------------------------------------------------------------
 
 export default function prometheus(pi: ExtensionAPI) {
-  // Completion callbacks get no context, so remember the session's cwd.
-  let sessionCwd = process.cwd();
   // Set by /agent-new, used up by the scaffold it leads to: a plain message never creates an agent.
   let newRequested = false;
   pi.on("session_start", async (_event, ctx) => {
-    sessionCwd = ctx.cwd;
     newRequested = false;
-    const root = findRoot(ctx.cwd);
-    if (!root) return;
+    const root = ROOT;
     const py = pythonFor(root);
     const r = await pi.exec(py, ["-c", "import dotenv, pydantic, pydantic_settings, ruamel.yaml, typer"], { cwd: root, timeout: 10_000 });
     if (r.code !== 0) ctx.ui.notify(`The skill scripts' Python packages are missing for ${py}. Run \`uv sync\` in ${root}, then restart pi.`, "warning");
   });
 
   const completeSlug = (prefix: string) => {
-    const root = findRoot(sessionCwd);
-    const found = root ? slugs(root, prefix) : [];
+    const found = slugs(prefix);
     return found.length ? found.map((s) => ({ value: s, label: s })) : null;
   };
 
   /** Show text in the conversation without starting a model turn. */
   const show = (title: string, body: string) =>
     pi.sendMessage({ customType: "agent", content: `${title}\n\n${body}`, display: true }, { triggerTurn: false });
-
-  const rootOrWarn = (ctx: ExtensionContext) => {
-    const root = findRoot(ctx.cwd);
-    if (!root) ctx.ui.notify("Start pi inside the prometheus folder to use the agent commands.", "error");
-    return root;
-  };
 
   const ask = (ctx: ExtensionContext, text: string) => {
     if (!ctx.isIdle()) {
@@ -191,8 +187,7 @@ export default function prometheus(pi: ExtensionAPI) {
   };
 
   // the scaffold script is reachable only through agent_scaffold, which checks for /agent-new
-  pi.on("tool_call", (event, ctx) => {
-    if (!findRoot(ctx.cwd)) return;
+  pi.on("tool_call", (event) => {
     const command = (event.input as { command?: string }).command ?? "";
     if ((event.toolName === "bash" || event.toolName === "powershell") && /scaffold_agent\.py/.test(command))
       return { block: true, reason: "Create agents with agent_scaffold, and only after the user ran /agent-new." };
@@ -215,7 +210,6 @@ export default function prometheus(pi: ExtensionAPI) {
     description: "Plan a new agent from a request: /agent-new [--from <agent>] <what you want done>",
     getArgumentCompletions: (prefix: string) => (prefix.startsWith("--from ") ? completeSlug(prefix.slice(7)) : null),
     handler: async (args, ctx) => {
-      if (!rootOrWarn(ctx)) return;
       const from = /^--from\s+(\S+)\s*/.exec(args.trim());
       const request = from ? args.trim().slice(from[0].length) : args.trim();
       if (!request) {
@@ -232,8 +226,7 @@ export default function prometheus(pi: ExtensionAPI) {
     description: "List agents and where each one stands: /agent-list [slug]",
     getArgumentCompletions: completeSlug,
     handler: async (args, ctx) => {
-      const root = rootOrWarn(ctx);
-      if (!root) return;
+      const root = ROOT;
       const [slug] = firstWord(args);
       if (slug) {
         const res = await check(pi, root, slug);
@@ -255,7 +248,7 @@ export default function prometheus(pi: ExtensionAPI) {
         );
         return;
       }
-      const res = await runScript(pi, root, "list_agents.py", ["--root", AGENTS]);
+      const res = await runScript(pi, root, "list_agents.py", ["--root", agentsDir()]);
       const list: any[] = Array.isArray(res.data) ? res.data : [];
       if (list.length === 0) {
         show("Agents", "No agents yet. Create one with /agent-new <request>.");
@@ -285,8 +278,7 @@ export default function prometheus(pi: ExtensionAPI) {
     description: "Copy an agent elsewhere: /agent-export <slug> <dest> [--keep-state]",
     getArgumentCompletions: completeSlug,
     handler: async (args, ctx) => {
-      const root = rootOrWarn(ctx);
-      if (!root) return;
+      const root = ROOT;
       const parts = args.trim().split(/\s+/).filter(Boolean);
       const keep = parts.includes("--keep-state");
       const [slug, dest] = parts.filter((p) => p !== "--keep-state");
@@ -294,7 +286,7 @@ export default function prometheus(pi: ExtensionAPI) {
         ctx.ui.notify("Usage: /agent-export <slug> <destination folder> [--keep-state]", "warning");
         return;
       }
-      const res = await runScript(pi, root, "export_agent.py", [path.join(AGENTS, slug), dest, ...(keep ? ["--keep-state"] : [])]);
+      const res = await runScript(pi, root, "export_agent.py", [path.join(agentsDir(), slug), dest, ...(keep ? ["--keep-state"] : [])]);
       const d = res.data ?? {};
       if (!d.ok) {
         show(`Export ${slug} failed`, d.error ?? res.stderr.trim());
@@ -320,18 +312,17 @@ export default function prometheus(pi: ExtensionAPI) {
       return all.length || found.length ? [...all, ...found] : null;
     },
     handler: async (args, ctx) => {
-      const root = rootOrWarn(ctx);
-      if (!root) return;
+      const root = ROOT;
       const [target] = firstWord(args);
       if (!target) {
         ctx.ui.notify("Usage: /agent-refresh <slug | --all>", "warning");
         return;
       }
-      const targets = target === "--all" ? slugs(root) : [target];
+      const targets = target === "--all" ? slugs() : [target];
       const rows = [["slug", "refreshed", "version", "plan valid", "compiles", "first error"]];
       for (const slug of targets) {
         // --all leaves an agent already at this Prometheus's version alone; a named one is always refreshed
-        const res = await runScript(pi, root, "scaffold_agent.py", [slug, "--root", AGENTS, "--refresh", ...(target === "--all" ? ["--if-stale"] : [])]);
+        const res = await runScript(pi, root, "scaffold_agent.py", [slug, "--root", agentsDir(), "--refresh", ...(target === "--all" ? ["--if-stale"] : [])]);
         const c = await check(pi, root, slug);
         const firstErr = c.errors[0] ?? Object.values(c.compile_errors as Record<string, string[]>).flat()[0] ?? "";
         rows.push([slug, res.data?.skipped ? "skipped (current)" : String(res.data?.ok ?? false), String(res.data?.prometheus_version ?? ""), String(c.valid), String(c.compiles), firstErr.slice(0, 80)]);
@@ -346,7 +337,7 @@ export default function prometheus(pi: ExtensionAPI) {
       name: "agent_scaffold",
       label: "Create agent",
       description:
-        "Create a new agent at agents/<slug>/ with the plan skeleton, agents, commands and a copy of the planning skill. Only after the user ran /agent-new.",
+        "Create a new agent, <slug>/ in the agents folder, with the plan skeleton, agents, commands and a copy of the planning skill. Only after the user ran /agent-new.",
       promptSnippet: "Create an agent",
       promptGuidelines: ["Use agent_scaffold to create an agent instead of running scaffold_agent.py yourself."],
       parameters: Type.Object({
@@ -355,13 +346,12 @@ export default function prometheus(pi: ExtensionAPI) {
         from: Type.Optional(Type.String({ description: "only when /agent-new named one with --from: the agent to start from" })),
       }),
       async execute(_id, params, signal, _onUpdate, ctx) {
-        const root = findRoot(ctx.cwd);
-        if (!root) throw new Error("not inside the prometheus folder");
+        const root = ROOT;
         if (!newRequested)
           throw new Error(
             "agents are created only through /agent-new. Do not plan this request; answer it normally, and if it is multi-step work, tell the user they can run `/agent-new <request>`.",
           );
-        const res = await runScript(pi, root, "scaffold_agent.py", [params.slug, "--root", AGENTS, "--request", params.request, ...(params.from ? ["--from", params.from] : [])], signal);
+        const res = await runScript(pi, root, "scaffold_agent.py", [params.slug, "--root", agentsDir(), "--request", params.request, ...(params.from ? ["--from", params.from] : [])], signal);
         if (res.data === undefined) throw new Error(`scaffold_agent.py failed: ${(res.stderr || res.stdout).trim().slice(0, 2000)}`);
         if (res.data.ok) newRequested = false;
         return { content: [{ type: "text" as const, text: JSON.stringify(res.data) }], details: res.data };
@@ -374,15 +364,14 @@ export default function prometheus(pi: ExtensionAPI) {
       name: "agent_check",
       label: "Check agent",
       description:
-        "Validate agents/<slug>/plan.yaml and compile-check every concrete pending wave. Returns errors, warnings and a summary.",
+        "Validate an agent's plan.yaml and compile-check every concrete pending wave. Returns errors, warnings and a summary.",
       promptSnippet: "Validate and compile-check an agent plan",
       promptGuidelines: [
         "Use agent_check after every change to an agent plan, instead of running validate_plan.py or compile_wave.py yourself.",
       ],
       parameters: Type.Object({ slug: Type.String({ description: "the agent's slug" }) }),
       async execute(_id, params, signal, _onUpdate, ctx) {
-        const root = findRoot(ctx.cwd);
-        if (!root) throw new Error("not inside the prometheus folder");
+        const root = ROOT;
         const res = await check(pi, root, params.slug, signal);
         return { content: [{ type: "text" as const, text: JSON.stringify(res) }], details: res };
       },
@@ -394,7 +383,7 @@ export default function prometheus(pi: ExtensionAPI) {
       name: "agent_record_critique",
       label: "Record critique",
       description:
-        "Record the plan-critic's result for agents/<slug>/plan.yaml, with your disposition of every finding. It checks that the critic run completed (pi-subagents' records) and ties the result to the plan as it is now, so edit first, record last; then marks the plan ready if it validates (needs_answers while questions are open). The only way a plan becomes ready: a plan edited afterwards is not ready until recorded again.",
+        "Record the plan-critic's result for an agent's plan.yaml, with your disposition of every finding. It checks that the critic run completed (pi-subagents' records) and ties the result to the plan as it is now, so edit first, record last; then marks the plan ready if it validates (needs_answers while questions are open). The only way a plan becomes ready: a plan edited afterwards is not ready until recorded again.",
       promptSnippet: "Record the plan critic's result; it marks the plan ready",
       promptGuidelines: [
         "Never write a plan's critique or set its status to ready yourself: record the critic with agent_record_critique, after your last edit (and again after writing answers into the plan).",
@@ -407,11 +396,10 @@ export default function prometheus(pi: ExtensionAPI) {
         findings: Type.Array(Type.Any(), { description: "{id, severity, category, target, claim, disposition: accepted|rejected|asked, note}" }),
       }),
       async execute(_id, params, signal, _onUpdate, ctx) {
-        const root = findRoot(ctx.cwd);
-        if (!root) throw new Error("not inside the prometheus folder");
+        const root = ROOT;
         if (!/^[a-z0-9][a-z0-9-]*$/.test(params.slug)) throw new Error("bad slug");
         const { slug, ...result } = params;
-        const res = await runScript(pi, root, "plan_edit.py", ["critique", "--result", JSON.stringify(result)], signal, path.join(root, AGENTS, slug));
+        const res = await runScript(pi, root, "plan_edit.py", ["critique", "--result", JSON.stringify(result)], signal, path.join(agentsDir(), slug));
         if (res.data === undefined) throw new Error(`plan_edit.py critique failed: ${(res.stderr || res.stdout).trim().slice(0, 2000)}`);
         return { content: [{ type: "text" as const, text: JSON.stringify(res.data) }], details: res.data };
       },
@@ -423,7 +411,7 @@ export default function prometheus(pi: ExtensionAPI) {
       name: "agent_add_package",
       label: "Add package",
       description:
-        "Add Python packages to agents/<slug>/pyproject.toml (uv add). The user is shown the packages and your reason and must approve first: say plainly why the agent needs them, in terms of what they do for the user's work.",
+        "Add Python packages to an agent's pyproject.toml (uv add). The user is shown the packages and your reason and must approve first: say plainly why the agent needs them, in terms of what they do for the user's work.",
       promptSnippet: "Add a Python package to an agent, after the user approves it",
       promptGuidelines: ["To add a Python package to an agent use agent_add_package with the reason; never uv add or pip install. If the user declines, work without it or ask what to do instead."],
       parameters: Type.Object({
@@ -432,14 +420,13 @@ export default function prometheus(pi: ExtensionAPI) {
         reason: Type.String({ description: "why the agent needs them, in a sentence the user can judge" }),
       }),
       async execute(_id, params, signal, _onUpdate, ctx) {
-        const root = findRoot(ctx.cwd);
-        if (!root) throw new Error("not inside the prometheus folder");
+        const root = ROOT;
         if (!/^[a-z0-9][a-z0-9-]*$/.test(params.slug)) throw new Error("bad slug");
         if (!ctx.hasUI) throw new Error("adding a package needs the user's approval and no one can be asked here: do not add it");
         if (!params.packages.length || !params.reason.trim()) throw new Error("name the packages and say why they are needed");
         const yes = await ctx.ui.confirm("Add a Python package?", `${params.packages.join(", ")} (agent ${params.slug})\n\nWhy: ${params.reason.trim()}`);
         if (!yes) return { content: [{ type: "text" as const, text: "The user declined. Do not add it: work without it, or ask the user what to do instead." }], details: { declined: true } };
-        const res = await runScript(pi, root, "add_package.py", [...params.packages, "--reason", params.reason, "--agent", path.join(root, AGENTS, params.slug)], signal);
+        const res = await runScript(pi, root, "add_package.py", [...params.packages, "--reason", params.reason, "--agent", path.join(agentsDir(), params.slug)], signal);
         if (res.data === undefined) throw new Error(`add_package.py failed: ${(res.stderr || res.stdout).trim().slice(0, 2000)}`);
         return { content: [{ type: "text" as const, text: JSON.stringify(res.data) }], details: res.data };
       },

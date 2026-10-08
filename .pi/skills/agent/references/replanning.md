@@ -18,8 +18,8 @@ if a kind may change.
    (`<skill>/references/agent-profiles.md`).
 2. One `agent_replan` call: `findings` for the resolved unknowns, and
    each provisional stage whose `resolves_after` is done, in full and
-   without `provisional` / `resolves_after` (`pattern`, `agent`, `out`,
-   `batch` and `items` for maps, `verify`); for a user's change, the changed
+   without `provisional` / `resolves_after` (`pattern`, `agent`, `writes`,
+   `map` for maps, `gate` / `review` / `done_when`); for a user's change, the changed
    stages and a `note`. It bumps the revision, sets `draft` and commits; fix
    what its validation reports with another call.
 3. Run the critic on the changed stages (`<skill>/references/critic-contract.md`)

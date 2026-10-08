@@ -1,6 +1,6 @@
 # Commands and tools
 
-**Commands** start with `/`, and you type them in Pi. prometheus's commands run in the prometheus folder; the others run in an agent's folder.
+**Commands** start with `/`, and you type them in Pi. prometheus's commands run in the planner (`prometheus`); the others run in an agent (`prometheus <slug>`). The [`prometheus` command](#the-prometheus-command) itself runs in your shell.
 
 | Command | Runs in | Does |
 |---|---|---|
@@ -22,6 +22,33 @@ Commands are prefixed `agent-` because Pi has built-in `/new` and `/export`.
 
 Inside an agent, each entry names the [states](state-machine.md) it is accepted in. In any other state it is refused, with a message that says why; the refusals are in [Troubleshooting](troubleshooting.md).
 
+## The prometheus command
+
+Installed with `uv tool install git+<prometheus repository>`; `uv tool upgrade prometheus` updates it.
+
+| Command | Does |
+|---|---|
+| `prometheus [pi options]` | starts the planner: `pi` in the planner's folder with prometheus's extension, skill and role; options such as `--resume` go to `pi` |
+| `prometheus <slug> [pi options]` | starts that agent: `pi` in `<slug>/` in the agents folder |
+| `prometheus init [--agents <folder>] [--home <folder>] [--yes]` | chooses the agents folder and the planner's folder and saves them; asks only in a terminal, and never with `--yes` |
+| `prometheus doctor` | checks Pi, pi-subagents, Node, uv, a git identity and the agents folder; exits 1 if something is missing |
+| `prometheus release <slug> [--breaking] [--yes]` | shows whether the agent's current commit on main can run as code (no one deciding anything), its params, outputs, side effects and model stages, and what changed since the last release; then tags it `v<major>.<minor>`, asking first unless `--yes`. A change that can break callers needs `--breaking`, which raises the major version |
+
+| `prometheus run <slug>[@v1 or @v1.2] [-p name=value]… [-a stage]… [--json]` | runs a release with no model deciding anything: `-p` sets a param (not a secret: those come from the environment), `-a` approves a side effect up front. A side effect not approved, or a decision, stops the run there: in a terminal it shows what the stage would write and asks, otherwise it exits saying what to approve. Prints each stage as it goes and the outputs at the end; `--json` prints events and the result as JSON lines. Exits 0 when the run completed |
+| `prometheus list` | the agents and where each stands |
+| `prometheus check <slug>` | checks the agent's `plan.yaml` (after editing it by hand): its errors and warnings, and the waves it would run; exits 1 if it isn't valid |
+| `prometheus install <git url, folder or catalog name> [--as <slug>] [--yes]` | clones the agent, refreshes it from your prometheus (so its extension, skill copy and template files are your own trusted copies), then shows its own code (gates, programs, subagent profiles), packages and lessons, and keeps it only if you say so (`--yes`: without asking) |
+| `prometheus pull <slug> [--yes]` | shows the upstream's new commits and which of the agent's own files they change, then moves `main` to them and refreshes again. Refused when `main` has local commits other than refreshes |
+| `prometheus share <slug> <git url> [--yes]` | refuses files that look like secrets (keys, tokens, a `.env` in git), shows what goes out (own code, packages, lessons from its runs), then pushes `main` and its releases. On GitLab, a new project can be created by this push, if your instance allows it |
+| `prometheus propose <slug>` | pushes the checked-out change branch (from `/agent-revise` or `/agent-improve`, ready to merge) to the upstream; on GitLab it opens a merge request into `main` |
+| `prometheus catalog` | the agents listed by name in prometheus's `catalog.yaml` (`PROMETHEUS_CATALOG` names another file) |
+| `prometheus prune <slug> [--keep N] [--dry-run]` | deletes the files of old finished runs (work, inputs, outputs, pi-subagents' records and missions), in the agent and in each of its releases in the cache, keeping the newest N (default 10); their history stays |
+| `prometheus refresh <slug \| --all>` | `/agent-refresh` without starting Pi |
+| `prometheus upgrade` | updates prometheus itself (`uv tool upgrade prometheus`) |
+| `prometheus serve <slug>[@v] [--host] [--port] [--token] [--max-runs] [--max-upload-mb]` | serves one release over HTTP: `GET /` (the agent), `POST /runs` (a form generated from its interface: a file per path param, several for a folder, text fields, `approve` per side effect; `?wait=true` answers once it stops), `GET /runs/<id>` (a run that waits for an answer is `input_required`, with what it needs), `POST /runs/<id>/answer` (`{"approve": [...], "decisions": {...}}`), `/runs/<id>/events` (server-sent events), `/runs/<id>/outputs/<o>`, `DELETE /runs/<id>`, `/health`, `/docs`. It also speaks [A2A](https://a2a-protocol.org) 1.0 (HTTP+JSON binding) on the same runs: the Agent Card at `/.well-known/agent-card.json`, `POST /message:send` and `/message:stream`, `/tasks…`. One agent per process. A token (`--token` or `PROMETHEUS_SERVE_TOKEN`) is required off loopback; `--public-url` is the address callers use, behind a proxy; `--keep N` prunes finished runs beyond the newest N after each run |
+
+Each folder comes from, in order: the flag, the environment (`PROMETHEUS_AGENTS`, `PROMETHEUS_HOME`), `~/.config/prometheus/config.toml`, and the defaults `~/agents` and `~/.prometheus`. No agent can be named like one of the command's own words (`init`, `doctor`, `list`, `install`, `run` and a few more kept for later).
+
 ## prometheus commands
 
 ### /agent-new
@@ -36,7 +63,7 @@ With `--from`, the new agent starts from another one: its plan as a draft for th
 
 **Runs in:** prometheus
 
-Creates `agents/<slug>/`, then plans: it drafts the plan, checks it, has the plan critic review it, and asks only the questions whose answers change the plan. It never asks for param values (they belong to the machine; `/agent-run` asks for them) and never does the requested work.
+Creates `<slug>/` in the agents folder, then plans: it drafts the plan, checks it, has the plan critic review it, and asks only the questions whose answers change the plan. It never asks for param values (they belong to the machine; `/agent-run` asks for them) and never does the requested work.
 
 This is the only way to create an agent. A request typed as a plain message gets an answer, or a suggestion to use `/agent-new`, never a new agent. Each `/agent-new` creates one agent.
 

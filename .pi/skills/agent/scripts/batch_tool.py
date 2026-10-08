@@ -34,8 +34,17 @@ run    {"op":"run","command":CMD,"gate":CMD?,"gate_json":BOOL?,"timeout":S?,"sec
        agent's .env; the environment wins): only they are added, only to
        these commands. Pi's environment holds no secrets, so no model sees one.
 
+a2a    {"op":"a2a","url":URL,"files":{PARAM:PATH},"params":{...},"approve":[STAGE],"token":"${ENV}"?,"out":DIR,
+        "timeout":S?,"gate":CMD?,"secrets":[ENV]?,"env_file":PATH?}
+       Calls another agent over A2A (1.0, HTTP+JSON): reads its Agent Card at <url>/.well-known/agent-card.json, sends
+       one message (a file part per file of each PATH, named by PARAM in its metadata; a data part with params and
+       approve), polls the task until it ends, and downloads each artifact into DIR. Prints {"task", "state",
+       "artifacts": [PATH]}; then the gate. A task that ends otherwise fails with its message; one that waits for an
+       answer fails with what it asks (nobody can answer inside a wave: approve its side effects in the plan).
+
 Can also be run directly: batch_tool.py '<json request>'.
 """
+import base64
 import csv
 import fnmatch
 import io
@@ -43,6 +52,11 @@ import json
 import os
 import subprocess
 import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
 from pathlib import Path
 
 MARKER = "BATCH_TOOL_REQUEST "
@@ -220,6 +234,109 @@ def run(req):
     return result
 
 
+A2A_END = {"TASK_STATE_COMPLETED", "TASK_STATE_FAILED", "TASK_STATE_CANCELED", "TASK_STATE_REJECTED",
+           "TASK_STATE_INPUT_REQUIRED", "TASK_STATE_AUTH_REQUIRED"}
+
+
+def http(method, url, token=None, body=None, timeout=60):
+    """(status, bytes) of an HTTP request; A2A errors fail with their message."""
+    headers = {"A2A-Version": "1.0", "Accept": "application/a2a+json, application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    data = None
+    if body is not None:
+        data, headers["Content-Type"] = json.dumps(body).encode(), "application/a2a+json"
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, data=data, headers=headers, method=method), timeout=timeout) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as exc:
+        text = exc.read().decode(errors="replace")
+        try:
+            message = json.loads(text)["error"]["message"]
+        except (ValueError, KeyError, TypeError):
+            message = tail(text, 500)
+        fail(f"{method} {url}: HTTP {exc.code}: {message}")
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        fail(f"{method} {url}: {exc}")
+
+
+def origin(url):
+    parts = urllib.parse.urlsplit(url)
+    return parts.scheme, parts.netloc.lower()
+
+
+def a2a(req):
+    url = (req.get("url") or "").rstrip("/")
+    if not url.startswith(("http://", "https://")):
+        fail(f"a2a needs the agent's http(s) address, not {url!r}")
+    token = None
+    if req.get("token"):  # "${ENV}": from the environment, with the secrets this request names (main adds them to ENV)
+        token = req["token"]
+        for name, value in (ENV or os.environ).items():
+            token = token.replace("${" + name + "}", value)
+        if "${" in token:
+            fail(f"a2a: the token's variable {req['token']} is not set (the agent's .env or the environment)")
+    card_url = url if url.endswith("/agent-card.json") else f"{url}/.well-known/agent-card.json"
+    card = json.loads(http("GET", card_url, token)[1])
+    endpoint = next((i["url"].rstrip("/") for i in card.get("supportedInterfaces") or [] if i.get("protocolBinding") == "HTTP+JSON"), None)
+    if not endpoint:
+        fail(f"the agent at {url} offers no HTTP+JSON interface (its card lists {[i.get('protocolBinding') for i in card.get('supportedInterfaces') or []]})")
+
+    def ours(link, what):
+        """A URL the agent gave, followed (with the token) only on its own address: never elsewhere."""
+        if origin(link) != origin(url):
+            fail(f"the agent at {url} gave {what} on another address ({link}): not followed, so the token and the "
+                 "files go nowhere else (its public url must be the address the plan names)")
+        return link
+    endpoint = ours(endpoint, "its endpoint")
+    parts = []
+    for param, path in (req.get("files") or {}).items():
+        source = Path(path)
+        files = sorted(p for p in source.rglob("*") if p.is_file()) if source.is_dir() else [source]
+        if not files or not all(f.is_file() for f in files):
+            fail(f"a2a: nothing to send as {param}: {path} is missing or empty")
+        parts += [{"raw": base64.b64encode(f.read_bytes()).decode(), "filename": f.name, "metadata": {"param": param}} for f in files]
+    parts.append({"data": {"params": req.get("params") or {}, "approve": req.get("approve") or []}})
+    message = {"messageId": str(uuid.uuid4()), "role": "ROLE_USER", "parts": parts}
+    timeout = req.get("timeout") or 600
+    task = json.loads(http("POST", f"{endpoint}/message:send", token,
+                           {"message": message, "configuration": {"returnImmediately": True}})[1]).get("task") or {}
+    deadline = time.monotonic() + timeout
+    while (task.get("status") or {}).get("state") not in A2A_END:
+        if time.monotonic() > deadline:
+            fail(f"the agent at {url} did not finish task {task.get('id')} within {timeout} s (limits.command_timeout_s)")
+        time.sleep(2)
+        task = json.loads(http("GET", f"{endpoint}/tasks/{task['id']}", token)[1])
+    state = task["status"]["state"]
+    said = " ".join(p.get("text", "") for p in ((task["status"].get("message") or {}).get("parts") or []) if p.get("text"))
+    if state == "TASK_STATE_INPUT_REQUIRED":
+        fail(f"the agent at {url} asks before it goes on (task {task['id']}): {said or 'no question given'}; nobody can answer "
+             "inside a wave: approve its side effects in the stage's a2a.approve")
+    if state != "TASK_STATE_COMPLETED":
+        fail(f"the agent at {url} ended task {task['id']} as {state.removeprefix('TASK_STATE_').lower()}: {said or 'no reason given'}")
+    out = Path(req.get("out") or ".")
+    out.mkdir(parents=True, exist_ok=True)
+    written = []
+    for artifact in task.get("artifacts") or []:
+        for n, part in enumerate(artifact.get("parts") or []):
+            fallback = f"{Path(str(artifact.get('artifactId') or 'artifact')).name or 'artifact'}-{n}"
+            name = Path(str(part.get("filename") or "")).name
+            name = fallback if name in ("", ".", "..") else name
+            if "url" in part:
+                data = http("GET", ours(part["url"], "an artifact"), token, timeout=timeout)[1]
+            elif "raw" in part:
+                data = base64.b64decode(part["raw"])
+            elif "data" in part:
+                data, name = json.dumps(part["data"], indent=1).encode(), f"{Path(name).stem}.json"
+            else:
+                data, name = (part.get("text") or "").encode(), f"{Path(name).stem}.txt"
+            if str(out / name) in written:  # two parts named alike: neither lost
+                name = f"{Path(name).stem}-{n}{Path(name).suffix}"
+            (out / name).write_bytes(data)
+            written.append(str(out / name))
+    return {"task": task["id"], "state": state, "artifacts": written}
+
+
 def main(argv):
     try:
         req = read_request(argv)
@@ -238,6 +355,10 @@ def main(argv):
             result["gate"] = g
     elif op == "run":
         result = run(req)
+    elif op == "a2a":
+        result = a2a(req)
+        if (g := gate(req, req.get("timeout") or 600)) is not None:
+            result["gate"] = g
     else:
         fail(f"unknown op {op!r}")
     print(json.dumps(result))

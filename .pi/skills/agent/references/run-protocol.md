@@ -128,7 +128,7 @@ Everything happens before launch, in one question-tool call.
   ask, record with `agent_record_decision`.
 - **Approvals**: for each side-effect stage, describe exactly what will
   happen (what, where, how many, from which inputs) from its
-  `approvals_needed` entry, then ask with options such as `Approve <key>` /
+  `approvals_needed` entry, then ask with options such as `Approve <stage>` /
   `Don't run it`. Only an option naming the stage is an approval.
 
 Then `agent_compile` with `approve: [<keys>]`. If the user declines, the
@@ -163,7 +163,7 @@ pass `status` and `result` from the completion notice.
 
 - `done` — gates and reviews have checked the outputs: report from the
   summary. Read an output only when the user must see it (`review`) or a
-  `verify.check` has no gate or review, and then only counts or a few lines.
+  `done_when` has no gate or review, and then only counts or a few lines.
   Record external outcomes (drafts, pages) with `mission.update` receipts.
   Then by `ends_with`: `review` — summarise with paths, wait for the user's
   go (the next compile asks for it: `review_needed`, then `reviewed: true`); `replan` — **Replanning**, then continue; `approval` — report what the

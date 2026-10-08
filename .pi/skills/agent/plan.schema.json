@@ -1,0 +1,1264 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "title": "Plan",
+ "$defs": {
+  "A2ACall": {
+   "additionalProperties": true,
+   "description": "A stage that calls another agent over A2A (pattern: a2a): the batcher sends it a message and downloads its\nartifacts into the stage's out path.",
+   "properties": {
+    "url": {
+     "minLength": 1,
+     "title": "Url",
+     "type": "string"
+    },
+    "files": {
+     "additionalProperties": {
+      "type": "string"
+     },
+     "default": {},
+     "title": "Files",
+     "type": "object"
+    },
+    "params": {
+     "additionalProperties": true,
+     "default": {},
+     "title": "Params",
+     "type": "object"
+    },
+    "approve": {
+     "default": [],
+     "items": {
+      "type": "string"
+     },
+     "title": "Approve",
+     "type": "array"
+    },
+    "token": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Token"
+    },
+    "timeout_s": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Timeout S"
+    }
+   },
+   "required": [
+    "url"
+   ],
+   "title": "A2ACall",
+   "type": "object"
+  },
+  "AgentEntry": {
+   "additionalProperties": true,
+   "properties": {
+    "name": {
+     "minLength": 1,
+     "title": "Name",
+     "type": "string"
+    },
+    "source": {
+     "default": "builtin",
+     "enum": [
+      "builtin",
+      "package",
+      "project",
+      "user"
+     ],
+     "title": "Source",
+     "type": "string"
+    },
+    "runner": {
+     "anyOf": [
+      {
+       "enum": [
+        "native",
+        "external-cli"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Runner"
+    },
+    "context": {
+     "anyOf": [
+      {
+       "enum": [
+        "fresh",
+        "fork"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Context"
+    }
+   },
+   "required": [
+    "name"
+   ],
+   "title": "AgentEntry",
+   "type": "object"
+  },
+  "Agents": {
+   "additionalProperties": true,
+   "properties": {
+    "available": {
+     "default": [],
+     "items": {
+      "$ref": "#/$defs/AgentEntry"
+     },
+     "title": "Available",
+     "type": "array"
+    }
+   },
+   "title": "Agents",
+   "type": "object"
+  },
+  "Assumption": {
+   "additionalProperties": true,
+   "properties": {
+    "id": {
+     "minLength": 1,
+     "title": "Id",
+     "type": "string"
+    },
+    "text": {
+     "minLength": 1,
+     "title": "Text",
+     "type": "string"
+    },
+    "source": {
+     "anyOf": [
+      {
+       "enum": [
+        "observed",
+        "default",
+        "answer"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Source"
+    },
+    "confirm": {
+     "default": false,
+     "title": "Confirm",
+     "type": "boolean"
+    }
+   },
+   "required": [
+    "id",
+    "text"
+   ],
+   "title": "Assumption",
+   "type": "object"
+  },
+  "Critique": {
+   "additionalProperties": true,
+   "properties": {
+    "agent": {
+     "minLength": 1,
+     "title": "Agent",
+     "type": "string"
+    },
+    "run_id": {
+     "minLength": 1,
+     "title": "Run Id",
+     "type": "string"
+    },
+    "verdict": {
+     "enum": [
+      "pass",
+      "revise",
+      "ask_user"
+     ],
+     "title": "Verdict",
+     "type": "string"
+    },
+    "passes": {
+     "default": 1,
+     "maximum": 2,
+     "minimum": 1,
+     "title": "Passes",
+     "type": "integer"
+    },
+    "revision": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Revision"
+    },
+    "plan_digest": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Plan Digest"
+    },
+    "findings": {
+     "default": [],
+     "items": {
+      "$ref": "#/$defs/Finding"
+     },
+     "title": "Findings",
+     "type": "array"
+    }
+   },
+   "required": [
+    "agent",
+    "run_id",
+    "verdict"
+   ],
+   "title": "Critique",
+   "type": "object"
+  },
+  "Finding": {
+   "additionalProperties": true,
+   "properties": {
+    "id": {
+     "minLength": 1,
+     "title": "Id",
+     "type": "string"
+    },
+    "severity": {
+     "enum": [
+      "blocking",
+      "major",
+      "minor"
+     ],
+     "title": "Severity",
+     "type": "string"
+    },
+    "claim": {
+     "minLength": 1,
+     "title": "Claim",
+     "type": "string"
+    },
+    "disposition": {
+     "enum": [
+      "accepted",
+      "rejected",
+      "asked"
+     ],
+     "title": "Disposition",
+     "type": "string"
+    },
+    "note": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Note"
+    }
+   },
+   "required": [
+    "id",
+    "severity",
+    "claim",
+    "disposition"
+   ],
+   "title": "Finding",
+   "type": "object"
+  },
+  "Input": {
+   "additionalProperties": true,
+   "properties": {
+    "id": {
+     "minLength": 1,
+     "title": "Id",
+     "type": "string"
+    },
+    "kind": {
+     "enum": [
+      "folder",
+      "file",
+      "app",
+      "url",
+      "text"
+     ],
+     "title": "Kind",
+     "type": "string"
+    },
+    "location": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Location"
+    },
+    "access": {
+     "default": "read",
+     "enum": [
+      "read",
+      "read_write"
+     ],
+     "title": "Access",
+     "type": "string"
+    }
+   },
+   "required": [
+    "id",
+    "kind"
+   ],
+   "title": "Input",
+   "type": "object"
+  },
+  "Kind": {
+   "additionalProperties": true,
+   "description": "What sort of work a stage is (references/classify.md), and why.",
+   "properties": {
+    "value": {
+     "description": "deterministic: a program can do it and check it; judgment: it needs reading; decision: the user chooses; side_effect: it changes something outside the run (the user approves it first)",
+     "enum": [
+      "deterministic",
+      "judgment",
+      "decision",
+      "side_effect"
+     ],
+     "title": "Value",
+     "type": "string"
+    },
+    "reason": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "why this kind, in a line (for judgment: why a program can't decide)",
+     "title": "Reason"
+    }
+   },
+   "required": [
+    "value"
+   ],
+   "title": "Kind",
+   "type": "object"
+  },
+  "Limits": {
+   "additionalProperties": true,
+   "properties": {
+    "max_parallel": {
+     "anyOf": [
+      {
+       "minimum": 0,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Max Parallel"
+    },
+    "max_retries": {
+     "anyOf": [
+      {
+       "minimum": 0,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Max Retries"
+    },
+    "max_batch": {
+     "anyOf": [
+      {
+       "minimum": 0,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Max Batch"
+    },
+    "command_timeout_s": {
+     "anyOf": [
+      {
+       "exclusiveMinimum": 0,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Command Timeout S"
+    },
+    "max_cost_usd": {
+     "anyOf": [
+      {
+       "exclusiveMinimum": 0,
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Max Cost Usd"
+    }
+   },
+   "title": "Limits",
+   "type": "object"
+  },
+  "Map": {
+   "additionalProperties": true,
+   "description": "How a map or map_reduce stage splits its work.",
+   "properties": {
+    "over": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "the input or output it reads whose items are split into batches",
+     "title": "Over"
+    },
+    "glob": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "which files of a folder are its items, e.g. \"*.eml\"",
+     "title": "Glob"
+    },
+    "batch": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "items per child",
+     "title": "Batch"
+    }
+   },
+   "title": "Map",
+   "type": "object"
+  },
+  "Models": {
+   "additionalProperties": true,
+   "description": "Models the children use, by role; a stage's `model` wins over `default`. Cheap ones for reviews pay off most.",
+   "properties": {
+    "default": {
+     "anyOf": [
+      {
+       "minLength": 1,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Default"
+    },
+    "review": {
+     "anyOf": [
+      {
+       "minLength": 1,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Review"
+    }
+   },
+   "title": "Models",
+   "type": "object"
+  },
+  "Output": {
+   "additionalProperties": true,
+   "properties": {
+    "id": {
+     "minLength": 1,
+     "title": "Id",
+     "type": "string"
+    },
+    "kind": {
+     "enum": [
+      "file",
+      "app",
+      "message"
+     ],
+     "title": "Kind",
+     "type": "string"
+    },
+    "location": {
+     "minLength": 1,
+     "title": "Location",
+     "type": "string"
+    },
+    "overwrite": {
+     "default": false,
+     "title": "Overwrite",
+     "type": "boolean"
+    }
+   },
+   "required": [
+    "id",
+    "kind",
+    "location"
+   ],
+   "title": "Output",
+   "type": "object"
+  },
+  "Param": {
+   "additionalProperties": true,
+   "properties": {
+    "description": {
+     "minLength": 1,
+     "title": "Description",
+     "type": "string"
+    },
+    "type": {
+     "default": "path",
+     "enum": [
+      "path",
+      "text",
+      "secret"
+     ],
+     "title": "Type",
+     "type": "string"
+    },
+    "env": {
+     "anyOf": [
+      {
+       "minLength": 1,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Env"
+    },
+    "default": {
+     "default": null,
+     "title": "Default"
+    },
+    "required": {
+     "default": true,
+     "title": "Required",
+     "type": "boolean"
+    }
+   },
+   "required": [
+    "description"
+   ],
+   "title": "Param",
+   "type": "object"
+  },
+  "Program": {
+   "additionalProperties": true,
+   "description": "A stage's program, kept in the agent's scripts/ and reused by later runs.",
+   "properties": {
+    "file": {
+     "description": "its file name in the agent's scripts/",
+     "minLength": 1,
+     "title": "File",
+     "type": "string"
+    },
+    "args": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "its arguments; with them, runs execute it as a command (no model)",
+     "title": "Args"
+    }
+   },
+   "required": [
+    "file"
+   ],
+   "title": "Program",
+   "type": "object"
+  },
+  "Question": {
+   "additionalProperties": true,
+   "properties": {
+    "id": {
+     "minLength": 1,
+     "title": "Id",
+     "type": "string"
+    },
+    "question": {
+     "minLength": 1,
+     "title": "Question",
+     "type": "string"
+    },
+    "why": {
+     "minLength": 1,
+     "title": "Why",
+     "type": "string"
+    },
+    "default": {
+     "title": "Default"
+    },
+    "options": {
+     "items": {},
+     "minItems": 2,
+     "title": "Options",
+     "type": "array"
+    },
+    "blocks": {
+     "items": {
+      "type": "string"
+     },
+     "minItems": 1,
+     "title": "Blocks",
+     "type": "array"
+    },
+    "from_finding": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "From Finding"
+    },
+    "answer": {
+     "default": null,
+     "title": "Answer"
+    }
+   },
+   "required": [
+    "id",
+    "question",
+    "why",
+    "default",
+    "options",
+    "blocks"
+   ],
+   "title": "Question",
+   "type": "object"
+  },
+  "Stage": {
+   "additionalProperties": false,
+   "description": "A unit of work (references/plan-schema.md, \"Stages\").",
+   "properties": {
+    "id": {
+     "description": "unique, lower case with dashes: names its children and what runs after it",
+     "pattern": "^[a-z][a-z0-9-]*$",
+     "title": "Id",
+     "type": "string"
+    },
+    "kind": {
+     "$ref": "#/$defs/Kind"
+    },
+    "title": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "a short label",
+     "title": "Title"
+    },
+    "pattern": {
+     "anyOf": [
+      {
+       "enum": [
+        "script",
+        "map",
+        "map_reduce",
+        "scout",
+        "worker",
+        "reviewer",
+        "approval",
+        "a2a"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "how it runs: script (a program), map / map_reduce (a child per batch), scout, worker, reviewer, approval (asks the user), a2a (calls another agent)",
+     "title": "Pattern"
+    },
+    "agent": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "the subagent its child runs as",
+     "title": "Agent"
+    },
+    "resumes": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "an earlier single-child stage whose child it continues",
+     "title": "Resumes"
+    },
+    "context": {
+     "anyOf": [
+      {
+       "enum": [
+        "fresh",
+        "fork"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "fresh or fork; only when not the subagent's default",
+     "title": "Context"
+    },
+    "provisional": {
+     "default": false,
+     "description": "an outline, filled in at replan after its resolves_after stage",
+     "title": "Provisional",
+     "type": "boolean"
+    },
+    "resolves_after": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "provisional: the discovery stage it is filled in after",
+     "title": "Resolves After"
+    },
+    "intent": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "provisional: what it must produce",
+     "title": "Intent"
+    },
+    "instructions": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "what a model child must do and how, in full: its brief",
+     "title": "Instructions"
+    },
+    "after": {
+     "default": [],
+     "description": "the stages that must finish first",
+     "items": {
+      "type": "string"
+     },
+     "title": "After",
+     "type": "array"
+    },
+    "reads": {
+     "default": [],
+     "description": "input ids, or what stages it runs after write",
+     "items": {
+      "type": "string"
+     },
+     "title": "Reads",
+     "type": "array"
+    },
+    "writes": {
+     "default": [],
+     "description": "what it writes: a file (with path) or its returned result",
+     "items": {
+      "$ref": "#/$defs/StageOut"
+     },
+     "title": "Writes",
+     "type": "array"
+    },
+    "done_when": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "how its result is judged done",
+     "title": "Done When"
+    },
+    "gate": {
+     "default": null,
+     "description": "a command that checks its output (../gates/<script>), or {command, output: json}",
+     "title": "Gate"
+    },
+    "review": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "the subagent that reviews its result (adds an <id>-review child)",
+     "title": "Review"
+    },
+    "pause_after": {
+     "default": false,
+     "description": "the user sees its results before the stages after it run",
+     "title": "Pause After",
+     "type": "boolean"
+    },
+    "map": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/Map"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "map / map_reduce: what is split, and how"
+    },
+    "program": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/Program"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "its program in scripts/ and the arguments it runs with"
+    },
+    "model": {
+     "anyOf": [
+      {
+       "minLength": 1,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "the model its children use (default: models.default, else the subagent's)",
+     "title": "Model"
+    },
+    "reuse": {
+     "default": true,
+     "description": "false: always run again, never take an earlier run's result",
+     "title": "Reuse",
+     "type": "boolean"
+    },
+    "a2a": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/A2ACall"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "pattern a2a: the agent it calls"
+    }
+   },
+   "required": [
+    "id",
+    "kind"
+   ],
+   "title": "Stage",
+   "type": "object"
+  },
+  "StageOut": {
+   "additionalProperties": true,
+   "properties": {
+    "id": {
+     "minLength": 1,
+     "title": "Id",
+     "type": "string"
+    },
+    "path": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Path"
+    },
+    "format": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Format"
+    },
+    "schema": {
+     "default": null,
+     "title": "Schema"
+    }
+   },
+   "required": [
+    "id"
+   ],
+   "title": "StageOut",
+   "type": "object"
+  },
+  "Unknown": {
+   "additionalProperties": true,
+   "properties": {
+    "id": {
+     "minLength": 1,
+     "title": "Id",
+     "type": "string"
+    },
+    "text": {
+     "minLength": 1,
+     "title": "Text",
+     "type": "string"
+    },
+    "resolve_by": {
+     "enum": [
+      "planner",
+      "probe",
+      "user",
+      "discovery"
+     ],
+     "title": "Resolve By",
+     "type": "string"
+    },
+    "finding": {
+     "default": null,
+     "title": "Finding"
+    },
+    "run_id": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Run Id"
+    },
+    "question": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Question"
+    },
+    "stage": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Stage"
+    },
+    "affects": {
+     "default": [],
+     "items": {
+      "type": "string"
+     },
+     "title": "Affects",
+     "type": "array"
+    }
+   },
+   "required": [
+    "id",
+    "text",
+    "resolve_by"
+   ],
+   "title": "Unknown",
+   "type": "object"
+  }
+ },
+ "additionalProperties": true,
+ "properties": {
+  "version": {
+   "const": 1,
+   "title": "Version",
+   "type": "integer"
+  },
+  "status": {
+   "enum": [
+    "draft",
+    "needs_answers",
+    "ready"
+   ],
+   "title": "Status",
+   "type": "string"
+  },
+  "revision": {
+   "default": 1,
+   "minimum": 1,
+   "title": "Revision",
+   "type": "integer"
+  },
+  "request": {
+   "minLength": 1,
+   "title": "Request",
+   "type": "string"
+  },
+  "goal": {
+   "minLength": 1,
+   "title": "Goal",
+   "type": "string"
+  },
+  "done_when": {
+   "items": {
+    "minLength": 1,
+    "type": "string"
+   },
+   "minItems": 1,
+   "title": "Done When",
+   "type": "array"
+  },
+  "params": {
+   "default": {},
+   "patternProperties": {
+    "^[A-Za-z_][A-Za-z0-9_]*$": {
+     "$ref": "#/$defs/Param"
+    }
+   },
+   "title": "Params",
+   "type": "object"
+  },
+  "inputs": {
+   "default": [],
+   "items": {
+    "$ref": "#/$defs/Input"
+   },
+   "title": "Inputs",
+   "type": "array"
+  },
+  "outputs": {
+   "default": [],
+   "items": {
+    "$ref": "#/$defs/Output"
+   },
+   "title": "Outputs",
+   "type": "array"
+  },
+  "agents": {
+   "anyOf": [
+    {
+     "$ref": "#/$defs/Agents"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null
+  },
+  "unknowns": {
+   "default": [],
+   "items": {
+    "$ref": "#/$defs/Unknown"
+   },
+   "title": "Unknowns",
+   "type": "array"
+  },
+  "stages": {
+   "items": {
+    "$ref": "#/$defs/Stage"
+   },
+   "minItems": 1,
+   "title": "Stages",
+   "type": "array"
+  },
+  "assumptions": {
+   "default": [],
+   "items": {
+    "$ref": "#/$defs/Assumption"
+   },
+   "title": "Assumptions",
+   "type": "array"
+  },
+  "questions": {
+   "default": [],
+   "items": {
+    "$ref": "#/$defs/Question"
+   },
+   "title": "Questions",
+   "type": "array"
+  },
+  "critique": {
+   "anyOf": [
+    {
+     "$ref": "#/$defs/Critique"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null
+  },
+  "limits": {
+   "$ref": "#/$defs/Limits",
+   "default": {
+    "max_parallel": null,
+    "max_retries": null,
+    "max_batch": null,
+    "command_timeout_s": null,
+    "max_cost_usd": null
+   }
+  },
+  "models": {
+   "$ref": "#/$defs/Models",
+   "default": {
+    "default": null,
+    "review": null
+   }
+  },
+  "network": {
+   "default": [],
+   "items": {
+    "pattern": "^\\.?([A-Za-z0-9-]+\\.)+[A-Za-z]{2,}$",
+    "type": "string"
+   },
+   "title": "Network",
+   "type": "array"
+  }
+ },
+ "required": [
+  "version",
+  "status",
+  "request",
+  "goal",
+  "done_when",
+  "stages"
+ ],
+ "type": "object"
+}

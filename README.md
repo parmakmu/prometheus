@@ -5,12 +5,13 @@ Some jobs keep coming back: the monthly folder of emails to copy into a spreadsh
 Programs take care of the mechanical parts, models handle the parts that need judgment, and nothing with real consequences happens until you've said yes.
 
 ```text
-cd prometheus
-pi                     # trust the folder when asked
+uv tool install git+<prometheus repository>
+prometheus init        # where your agents go: ~/agents unless you choose another folder
+prometheus             # the planner
 /agent-new I want to read the emails in a folder and save them in an Excel file
 ```
 
-prometheus plans the job, asks you only the questions whose answers would change the plan, and writes the agent to `agents/<slug>/`. It never does the work itself. When the job comes round, you start the agent in its own folder and type `/agent-run`.
+prometheus plans the job, asks you only the questions whose answers would change the plan, and writes the agent to `<slug>/` in your agents folder. It never does the work itself. When the job comes round, you start the agent with `prometheus <slug>` and type `/agent-run`.
 
 Prefer a browser? `npm install`, `npm run ui:server` and `npm run ui:web` start a web app with the same agents: chat, files, the agents' state and results, and a terminal. It also serves a team, each person with their own sandboxed copy. See [`ui/README.md`](ui/README.md).
 
@@ -49,4 +50,4 @@ To be fair, an agent is more than many jobs need. If you'll only do the job once
 
 ## Requirements
 
-Pi 0.99.2 with pi-subagents, Python 3.14 with uv, and git. The [tutorial](docs/tutorial.md#before-you-begin) shows how to check and install them.
+Pi 1.0.1 or later with pi-subagents 0.75.0 or later, Node, uv (which brings Python 3.14), and git. `prometheus doctor` checks them; the [tutorial](docs/tutorial.md#before-you-begin) shows how to install them.

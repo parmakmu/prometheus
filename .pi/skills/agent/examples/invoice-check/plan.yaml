@@ -60,35 +60,38 @@ outputs:
 
 # ── How it works ────────────────────────────────────────────────────────────
 stages:
-  - key: find
+  - id: find
     title: Classify which emails carry supplier invoices
-    kind: judgment
-    kind_reason: forwarded and inline invoices defeat sender or attachment rules
+    kind:
+      value: judgment
+      reason: forwarded and inline invoices defeat sender or attachment rules
     pattern: map
     agent: reader               # reads the emails: no shell, so text in them can't run commands
-    consumes: [mail]
-    items: mail
-    items_glob: "*.eml"
-    batch: 50
-    out:
+    reads: [mail]
+    map:
+      over: mail
+      glob: "*.eml"
+      batch: 50
+    writes:
       - id: invoice_index
         path: invoice-index.json
         format: json
         schema: {file: string, is_invoice: boolean, supplier: string, attachment: string}
-    verify:
-      check: every file in the folder is classified exactly once
+    done_when: every file in the folder is classified exactly once
 
-  - key: extract
+  - id: extract
     title: Pull invoice number, PO number, date and amount from text-layer PDFs
-    kind: deterministic
-    kind_reason: fixed fields in machine-generated PDFs; checkable by recount
+    kind:
+      value: deterministic
+      reason: fixed fields in machine-generated PDFs; checkable by recount
     pattern: script
     agent: worker
-    script: extract_invoice_lines.py
-    run: "${mail_dir} invoice-index.json invoice-lines.csv unparsed.json"
-    needs: [find]
-    consumes: [mail, invoice_index]
-    out:
+    program:
+      file: extract_invoice_lines.py
+      args: "${mail_dir} invoice-index.json invoice-lines.csv unparsed.json"
+    after: [find]
+    reads: [mail, invoice_index]
+    writes:
       - id: invoice_lines
         path: invoice-lines.csv
         format: csv
@@ -96,85 +99,88 @@ stages:
         path: unparsed.json
         format: json
         notes: invoices the parser could not read, with a reason each
-    verify:
-      gate:
-        command: python3 ../gates/check_lines.py invoice-lines.csv unparsed.json invoice-index.json
-        output: json
-      check: parsed rows plus unparsed entries equal the invoice count
+    gate:
+      command: python3 ../gates/check_lines.py invoice-lines.csv unparsed.json invoice-index.json
+      output: json
+    done_when: parsed rows plus unparsed entries equal the invoice count
 
-  - key: extract-rest
+  - id: extract-rest
     title: Read the invoices the parser could not
-    kind: judgment
-    kind_reason: scans and odd layouts need reading, not parsing
+    kind:
+      value: judgment
+      reason: scans and odd layouts need reading, not parsing
     pattern: map
     agent: reader
-    needs: [extract]
-    consumes: [mail, unparsed]
-    items: unparsed
-    batch: 10
-    out:
+    after: [extract]
+    reads: [mail, unparsed]
+    map:
+      over: unparsed
+      batch: 10
+    writes:
       - id: rest_lines
         path: rest-lines.json
         format: json
         schema: {invoice_no: string, po_number: string, date: string, amount: number, supplier: string, confidence: string}
 
-  - key: compare
+  - id: compare
     title: Join invoices to budget and PO amounts, compute status
-    kind: deterministic
-    kind_reason: exact join on PO number and arithmetic against the budget sheet
+    kind:
+      value: deterministic
+      reason: exact join on PO number and arithmetic against the budget sheet
     pattern: script
     agent: worker
-    script: compare_to_budget.py
-    run: "${budget_file} invoice-lines.csv rest-lines.json ${report_dir}/Q3-invoice-variance.xlsx"
-    needs: [extract-rest]
-    consumes: [invoice_lines, rest_lines, budget]
-    out:
+    program:
+      file: compare_to_budget.py
+      args: "${budget_file} invoice-lines.csv rest-lines.json ${report_dir}/Q3-invoice-variance.xlsx"
+    after: [extract-rest]
+    reads: [invoice_lines, rest_lines, budget]
+    writes:
       - id: variance_report
         path: ${report_dir}/Q3-invoice-variance.xlsx
         format: xlsx
-    verify:
-      gate: python3 ../gates/check_report.py ${report_dir}/Q3-invoice-variance.xlsx
-      check: row count equals invoice count; status in {ok, over_budget, po_mismatch, no_po}
+    gate: python3 ../gates/check_report.py ${report_dir}/Q3-invoice-variance.xlsx
+    done_when: row count equals invoice count; status in {ok, over_budget, po_mismatch, no_po}
 
-  - key: review
+  - id: review
     title: Spot-check mismatches, over-budget rows and low-confidence reads
-    kind: judgment
-    kind_reason: whether a flagged row is a real discrepancy needs reading the invoice
+    kind:
+      value: judgment
+      reason: whether a flagged row is a real discrepancy needs reading the invoice
     pattern: reviewer
     agent: reviewer
-    needs: [compare]
-    consumes: [variance_report, invoice_lines, rest_lines]
-    out:
+    after: [compare]
+    reads: [variance_report, invoice_lines, rest_lines]
+    writes:
       - id: review_notes
         path: review.json
         format: json
         schema: {blocking: boolean, findings: [string]}
 
-  - key: approve-drafts
+  - id: approve-drafts
     title: User reviews the report and approves drafting
-    kind: decision
-    kind_reason: whether to contact suppliers is the user's call
+    kind:
+      value: decision
+      reason: whether to contact suppliers is the user's call
     pattern: approval
-    needs: [review]
-    consumes: [variance_report, review_notes]
-    out:
+    after: [review]
+    reads: [variance_report, review_notes]
+    writes:
       - id: draft_approval
         format: text
 
-  - key: drafts
+  - id: drafts
     title: Draft one reply per po_mismatch invoice in Gmail
-    kind: side_effect
-    kind_reason: creates drafts in the user's Gmail account
+    kind:
+      value: side_effect
+      reason: creates drafts in the user's Gmail account
     pattern: worker
     agent: worker
-    needs: [approve-drafts]
-    consumes: [variance_report, draft_approval]
-    approval: required
-    out:
+    after: [approve-drafts]
+    reads: [variance_report, draft_approval]
+    writes:
       - id: reply_drafts
         format: email
-    verify:
-      check: draft count equals number of po_mismatch rows; none sent
+    done_when: draft count equals number of po_mismatch rows; none sent
 
 # ── Assumptions ─────────────────────────────────────────────────────────────
 assumptions:

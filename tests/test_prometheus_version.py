@@ -1,4 +1,5 @@
 """prometheus_version.py names which Prometheus an agent's skill copy came from; refresh stamps and uses it."""
+import shutil
 import subprocess
 import sys
 
@@ -37,6 +38,18 @@ def test_a_clean_tree_is_version_plus_commit_and_each_content_has_its_own_hash(t
     assert pv.current(skill) != first  # other content, other label
     (skill / "scripts" / "a.py").write_text("two\n")
     assert pv.current(skill) == first  # the same content, the same label
+
+
+def test_an_installed_copy_without_git_is_its_version_with_the_same_hash(tmp_path, monkeypatch):
+    """`uv tool install` puts the repo's files under prometheus/ in site-packages, beside __init__.py, with no .git
+    and no pyproject.toml: the version comes from the package's metadata."""
+    skill, _ = fake_prometheus(tmp_path)
+    installed = tmp_path / "site-packages" / "prometheus"
+    shutil.copytree(skill.parents[2], installed, ignore=shutil.ignore_patterns(".git", "pyproject.toml"))
+    (installed / "__init__.py").write_text("")
+    monkeypatch.setattr(pv, "installed_version", lambda: "1.2.3")
+    label, digest = pv.current(installed / ".pi" / "skills" / "agent").split(" ")
+    assert label == "1.2.3" and digest == pv.current(skill).split(" ")[1]
 
 
 def test_a_commit_outside_the_skill_and_templates_keeps_the_version(tmp_path):

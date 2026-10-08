@@ -35,7 +35,7 @@ scripts write the same way.
 | `critique` | see rules | in `.plan/critique.yaml`, written by `agent_record_critique`: the critic's result and each finding's disposition |
 | `limits` | no | `max_parallel`, `max_retries`, `max_batch`; `command_timeout_s` (a program or gate run as a command, default 600); `max_cost_usd` (the run's children may spend this much, then the user is asked) |
 | `network` | no | hosts the stages call (APIs, sites), e.g. `[api.github.com, .example.com]` (a leading `.` covers subdomains). In the web app with Podman, only hosts the user allowed are reachable; these are offered to them to allow |
-| `models` | no | `default`, `review`: the models children use (a stage's `model` wins over `default`; `review` is for `<key>-review` children). Omitted: each subagent's own |
+| `models` | no | `default`, `review`: the models children use (a stage's `model` wins over `default`; `review` is for `<id>-review` children). Omitted: each subagent's own |
 
 ## Params and paths
 
@@ -66,13 +66,13 @@ params:
 | `text` | a table, URL, id | the value |
 | `secret` | a key or token | `${ENV_NAME}`, expanded by the child's shell; never written down |
 
-Use `${name}` in input and output `location`, `out.path`, `run` and gate
-commands. A secret only a tool reads from the environment need not be
-referenced; declaring it makes the run check it is set. Relative `out.path`
-values resolve in `runs/<id>/work/`, the children's `cwd`.
+Use `${name}` in input and output `location`, `writes` paths, a program's
+`args` and gate commands. A secret only a tool reads from the environment need not be
+referenced; declaring it makes the run check it is set. Relative `writes`
+paths resolve in `runs/<id>/work/`, the children's `cwd`.
 
 - **rule** every `${name}` is a declared param.
-- **rule** `out.path` is never a literal absolute path (`/…`, `~…`, `C:\…`).
+- **rule** a `writes` path is never a literal absolute path (`/…`, `~…`, `C:\…`).
 - **rule** a path param starts its path (`${out_dir}/x.xlsx`, never
   `../${out_dir}/x.xlsx`): it compiles to an absolute path.
 - *warning* a literal absolute path in a `location` or gate command.
@@ -124,7 +124,7 @@ agents:
       context: fresh               # the profile's defaultContext
 ```
 
-- **rule** every stage `agent`, `verify.review` and `critique.agent` is
+- **rule** every stage `agent` and `review`, and `critique.agent`, is
   available.
 - **rule** no stage uses a `source: user` agent: copy its file into
   `.pi/agents/` and make it `source: project`.
@@ -163,51 +163,57 @@ In `.plan/unknowns.yaml`, under `unknowns:`:
 ## Stages
 
 ```yaml
-- key: extract                 # ^[a-z][a-z0-9-]*$, unique
-  title: Parse invoice lines
-  kind: deterministic          # deterministic | judgment | decision | side_effect
-  kind_reason: fixed fields, checkable by recount
-  pattern: script              # script | map | map_reduce | scout | worker | reviewer | approval
+- id: extract                  # ^[a-z][a-z0-9-]*$, unique
+  title: Parse invoice lines   # a short label
+  kind:
+    value: deterministic       # deterministic | judgment | decision | side_effect
+    reason: fixed fields, checkable by recount
+  pattern: script              # script | map | map_reduce | scout | worker | reviewer | approval | a2a
   agent: worker                # omit for decision/approval and resumed stages
-  script: extract_lines.py     # its program in scripts/
-  run: "${mail_dir} lines.csv" # the program's arguments
-  needs: [find]                # stages that must finish first
-  consumes: [invoices]         # input ids or out ids of needed stages
-  out:
+  program:
+    file: extract_lines.py     # its program in scripts/
+    args: "${mail_dir} lines.csv"
+  after: [find]                # stages that must finish first
+  reads: [invoices]            # input ids, or what stages it runs after write
+  writes:
     - id: lines
       path: lines.csv          # a file the child writes; without path: its returned result
       format: csv
       schema: {date: string, supplier: string, amount: number}
-  batch: 25                    # map / map_reduce
-  items: invoices              # map / map_reduce: the input or file output to split
-  items_glob: "*.eml"          # optional, for folder items
-  verify:
-    gate: uv run ../gates/check.py lines.csv                    # pass/fail command
-    # gate: {command: …, output: json, schema?, timeout_ms?}    # typed gate
-    review: reviewer           # adds a <key>-review child
-    check: every invoice id appears once
-  approval: none               # none | required
-  pause_after: false           # the user sees its results before stages that need it
+  map:                         # map / map_reduce only
+    over: invoices             # the input or file output it reads, split into batches
+    glob: "*.eml"              # optional, for a folder's files
+    batch: 25
+  gate: uv run ../gates/check.py lines.csv                    # pass/fail command
+  # gate: {command: …, output: json, schema?, timeout_ms?}    # typed gate
+  review: reviewer             # adds an <id>-review child
+  done_when: every invoice id appears once
+  pause_after: false           # the user sees its results before the stages after it
   context: fork                # only when not the agent's default
   resumes: null                # an earlier single-child stage to continue
   model: null                  # its children's model (default: models.default, else the subagent's)
   reuse: true                  # false: never take an earlier run's result for the same inputs
-  notes: free text
+  instructions: >-             # what the child must do, in full: it reaches the child's task after the title
+    One sentence per email: who wrote it, what it is about, any action it asks for.
 ```
+
+A `side_effect` stage always asks before it runs: the user approves it (in a
+released run, the caller), so there is nothing to set for that.
 
 A provisional stage is an outline filled in at replan:
 
 ```yaml
-- key: analyse
+- id: analyse
   provisional: true
   resolves_after: discover
-  kind: judgment
-  kind_reason: comparing positioning needs reading, not rules
+  kind:
+    value: judgment
+    reason: comparing positioning needs reading, not rules
   title: Compare competitor positioning
   intent: one comparison table across the competitors discovery finds
-  needs: [discover]
-  consumes: [competitor_list]
-  out:
+  after: [discover]
+  reads: [competitor_list]
+  writes:
     - id: comparison           # ids may be declared now; paths and schemas later
 ```
 
@@ -221,19 +227,19 @@ approve it, so give the reason), never in the script itself. `uv run` syncs that
 a `# /// script` block, and one run with `python3`. A typed gate's JSON
 becomes the child's structured output, so it excludes a returned `schema`.
 
-**Stage programs.** `script: <file>` names a deterministic (or mechanical
-side-effect) stage's program in `scripts/`; `run:` gives its arguments,
-called as `uv run scripts/<file> <run>` from `work/`, params resolved and
-shell-quoted. The first run's child writes it (usage in its docstring); the
-run's review shows it; later runs execute it as a command with no model, and
-a `<key>-fix` child repairs it only if it or the gate fails.
+**Stage programs.** `program.file` names a deterministic (or mechanical
+side-effect) stage's program in `scripts/`; `program.args` gives its
+arguments, called as `uv run scripts/<file> <args>` from `work/`, params
+resolved and shell-quoted. The first run's child writes it (usage in its
+docstring); the run's review shows it; later runs execute it as a command
+with no model, and an `<id>-fix` child repairs it only if it or the gate fails.
 
 **Compiling.** Each wave is one `subagent` call; stages run in layers by
-`needs`, all in `runs/<id>/work/`. A map stage's `batcher` (a
-command runner) splits `items` into batches, one child per batch writes
-`<key>/<n>.<ext>`, then a merge (`map`) or a `<key>-reduce` child
-(`map_reduce`). Child keys: `<key>`; maps `<key>-split`, `<key>-<n>`,
-`<key>-merge` / `<key>-reduce`; `verify.review` adds `<key>-review`.
+`after`, all in `runs/<id>/work/`. A map stage's `batcher` (a
+command runner) splits `map.over` into batches, one child per batch writes
+`<id>/<n>.<ext>`, then a merge (`map`) or an `<id>-reduce` child
+(`map_reduce`). Child keys: `<id>`; maps `<id>-split`, `<id>-<n>`,
+`<id>-merge` / `<id>-reduce`; `review` adds `<id>-review`.
 A map's gate checks the merged output (run by the batcher after the merge)
 or the reduce child's. A relaunch keeps the batches that completed.
 Decision and approval stages launch no child. A returned result exists only
@@ -243,49 +249,87 @@ rejects gates on it.
 
 Rules for all stages:
 
-- **rule** `key` does not collide with another stage's child keys; no stage
-  is called `<key>-fix`.
-- **rule** `kind` is required; `pattern` too, unless provisional.
-- **rule** `needs` names existing stages, with no cycles.
-- **rule** every `consumes` id is an input or an `out` of a stage this one
-  transitively `needs`.
-- **rule** `out` ids are unique and never reuse an input id.
-- **rule** `side_effect` stages have `approval: required`, provisional or not.
+- **rule** a stage has only the fields above (an unknown one, often a
+  misspelling, is an error).
+- **rule** `id` does not collide with another stage's child keys; no stage
+  is called `<id>-fix`.
+- **rule** `kind` is a mapping with `value`; `pattern` is required unless
+  provisional.
+- **rule** `after` names existing stages, with no cycles.
+- **rule** every `reads` id is an input or something written by a stage this
+  one runs after, directly or transitively.
+- **rule** `writes` ids are unique and never reuse an input id.
 - **rule** provisional stages have `intent` and `resolves_after` naming a
   concrete stage not after them, and no `resumes`. They skip the detail
   rules below.
 
 Rules for concrete stages:
 
-- **rule** at most one `out` without `path` for a stage that launches a child.
+- **rule** at most one `writes` entry without `path` for a stage that
+  launches a child.
 - **rule** `judgment` outputs have a `schema`; a document output (`md`,
-  `txt`, `docx`, `html`, `pdf`) may omit it if the stage has `verify.review`
+  `txt`, `docx`, `html`, `pdf`) may omit it if the stage has `review`
   or a downstream `reviewer`.
-- **rule** `deterministic` stages have a `verify`.
-- **rule** `script` is a file name, on a deterministic or side-effect stage
-  with `pattern: script`, not shared; `run` needs `script`, and then every
-  `out` has a `path`. *warning* a deterministic stage without `script:`,
-  or in a `worker`/`scout`/`reviewer` child: its program would be rewritten
-  in `work/` every run.
+- **rule** `deterministic` stages have a `gate`, `review` or `done_when`.
+- *warning* a stage a model child does has no `instructions`: `title` is a short
+  label, `done_when` says when it is done, and `instructions` say what to do
+  and how (length, language, what to include or leave out).
+- **rule** `program.file` is a file name, on a deterministic or side-effect
+  stage with `pattern: script`, not shared; with `program.args`, every
+  `writes` entry has a `path`. *warning* a deterministic stage without
+  `program`, or in a `worker`/`scout`/`reviewer` child: its program would be
+  rewritten in `work/` every run.
 - **rule** a typed gate has `command` and `output: json`, and no returned
   `schema`.
-- **rule** `map` / `map_reduce` have `batch` (1 … `limits.max_batch`) and
-  `items` naming a consumed input or file output.
-- **rule** no stage consumes a returned result from an earlier wave.
+- **rule** `map` / `map_reduce` have `map.batch` (1 … `limits.max_batch`) and
+  `map.over` naming an input or file output the stage `reads`.
+- **rule** no stage reads a returned result from an earlier wave.
 - **rule** child-launching stages have an `agent` unless they `resumes`;
-  `resumes` names a needed, concrete, single-child native stage, and the
-  resuming stage has no `agent` or `gate`.
+  `resumes` names a concrete, single-child native stage it runs after, and
+  the resuming stage has no `agent` or `gate`.
 - **rule** external-runner stages do not use `context: fork`.
-- **rule** a secret param appears only in a program stage's `run:` and its
-  gate (the batcher runs those; no model child gets a secret).
-- *warning* a judgment stage that consumes an input folder, file, url or app
+- **rule** a secret param appears only in a program's `args` and the stage's
+  gate, or an a2a stage's `token` (the batcher runs those; no model child
+  gets a secret).
+- **rule** `pattern: a2a` calls another agent over A2A (prometheus-built or
+  not) instead of doing the work: the batcher sends one message and waits, no
+  model. It has an `a2a:` block and no `program`; it is deterministic,
+  judgment (the called agent judges) or side_effect, never a decision; its
+  `writes` has a path (a folder: the called agent's outputs land there);
+  `files` maps the called agent's file params to ids the stage `reads`;
+  `token` is `"${secret param}"`; `approve` names the called agent's side
+  effects it lets run, and then the stage is a `side_effect` itself, so the
+  run asks before it. A called agent that stops to ask something fails the
+  stage: approve its side effects in the plan.
+
+  ```yaml
+  - id: summarise
+    kind:
+      value: side_effect
+      reason: the summariser agent writes a workbook
+    pattern: a2a
+    agent: batcher
+    reads: [emails]
+    a2a:
+      url: ${summariser_url}          # a text param: <url>/.well-known/agent-card.json is its card
+      files: {email_folder: emails}   # the called agent's param -> what this stage reads
+      params: {language: en}
+      approve: [build-workbook]
+      token: ${summariser_token}      # a secret param
+    writes:
+      - id: summary
+        path: summary
+    done_when: summary/ holds the workbook
+  ```
+- *warning* a judgment stage that reads an input folder, file, url or app
   as an agent with a shell: use `reader`.
 - **rule** a resumed stage has no `model` (it keeps the earlier child's).
   *warning* `model` on an external runner (it runs no model).
 - *warning* `context` equal to the agent's default; a returned `schema` or a
   gate on an external runner; deterministic work in a map; a judgment stage
-  without `kind_reason`, or without `verify` and a downstream `reviewer`; a
-  deterministic script stage without `script`; `script` without `run`.
+  without `kind.reason`, or without a `gate`, `review` or `done_when` and a
+  downstream `reviewer`; a deterministic script stage without `program`; a
+  `program` without `args`.
 - In an agent, a gate script missing from `gates/` is a warning while
   drafting and an error once `ready`.
 
@@ -293,11 +337,11 @@ Rules for concrete stages:
 
 A workflow script cannot pause, so a wave is the stretch of stages between
 two points where the parent acts. Each pending stage goes in the earliest
-wave its `needs` allow, and starts a later wave when:
+wave its `after` allows, and starts a later wave when:
 
-- it is a `decision`, `approval` pattern or `side_effect` and a stage it needs
-  launches a child (a decision may share a wave with the side effect needing it);
-- a stage it needs is a `side_effect` or has `pause_after: true`;
+- it is a `decision`, `approval` pattern or `side_effect` and a stage it runs
+  after launches a child (a decision may share a wave with the side effect after it);
+- a stage it runs after is a `side_effect` or has `pause_after: true`;
 - it is provisional and its `resolves_after` stage has not run.
 
 `ends_with` (what the parent does after the wave): `replan` (a provisional
@@ -305,8 +349,8 @@ stage resolves after it) > `review` (a `pause_after` stage) > `approval` (it
 had side effects: report them) > `none`.
 
 - **rule** no `waves` field and no stage `status` (status belongs to the run).
-- **rule** in the active run, a `done` stage needs only `done` stages, a
-  `running` one only `done` or `running` ones; provisional stages are never
+- **rule** in the active run, a `done` stage runs after only `done` stages, a
+  `running` one after only `done` or `running` ones; provisional stages are never
   running or done.
 - **rule** with `status: ready`, the next wave has no provisional stages.
 

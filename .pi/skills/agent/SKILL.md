@@ -1,6 +1,6 @@
 ---
 name: agent
-description: Plan an agent (agents/<slug>/) from a request, on /agent-new only.
+description: Plan an agent (<slug>/ in the agents folder) from a request, on /agent-new only.
 disable-model-invocation: true
 ---
 
@@ -19,7 +19,7 @@ edits, never by rewriting the file.
 ## Protocol
 
 1. **Create the agent** with `agent_scaffold` (slug `^[a-z0-9-]+$`,
-   the request verbatim). The plan is `agents/<slug>/plan.yaml`, what it
+   the request verbatim). The plan is `<slug>/plan.yaml` in the agents folder, what it
    does, for people to read; how it was planned goes beside it in `.plan/`:
    `unknowns.yaml`, `questions.yaml` and `agents.yaml`, each under its own
    key (`questions:` …), and `critique.yaml`, which only
@@ -61,8 +61,10 @@ edits, never by rewriting the file.
    detail): never guess detail to satisfy the validator. Everything outside
    the agent is a typed param (plan-schema "Params"). `pause_after: true`
    only if the user must see a result before work builds on it and no
-   decision or side effect already pauses there. Keep `status: draft` until
-   step 8.
+   decision or side effect already pauses there. A stage a model child does
+   gets `instructions`: what to do and how, in full (it is the child's brief;
+   `title` is only a label, `done_when` only says when it is done). Keep
+   `status: draft` until step 8.
 
 5. **Classify every stage** (`references/classify.md`), provisional ones too.
    Use builtin agents where they fit; when a stage needs a narrower tool set,
@@ -108,7 +110,7 @@ edits, never by rewriting the file.
      where it will stop for them (to approve something, or to settle details once it has seen
      their data); what `/agent-run` will ask for, described ("the folder your emails are
      in", not `mail_dir`); assumptions worth a glance; a rejected blocking finding, as what it
-     means for them; and `cd agents/<slug> && pi`, then `/agent-run`. No waves, stage
+     means for them; and `prometheus <slug>` (or `pi` in its folder), then `/agent-run`. No waves, stage
      kinds, provisional, critic or validation talk.
 
 9. **On a change of mind**, bump `revision`, keep answers that still apply,
@@ -142,16 +144,16 @@ inside the agent (`references/replanning.md`, `references/changing.md`).
 
 ## A good plan
 
-- Deterministic work is a `script` stage: a program (`script:`), its
-  arguments (`run:`, the program's interface, decided now) and a gate.
+- Deterministic work is a `script` stage: a program (`program.file`), its
+  arguments (`program.args`, the program's interface, decided now) and a gate.
   A messy tail goes to a leftovers file and a small judgment stage.
 - Judgment work over many items is a `map` / `map_reduce` with a schema.
-- Anything a later wave reads is a file (`out` with `path`).
+- Anything a later wave reads is a file (a `writes` entry with `path`).
 - A judgment stage that reads outside content (emails, documents, pages)
   runs as `reader` (no shell): text in that content can't run commands.
 - List in `network:` every host a stage calls (an API, a site): the web
   app lets an agent reach only hosts the user allowed, and offers these.
-- A secret is used only in a stage program's `run:` and its gate. A stage
+- A secret is used only in a stage program's `args` and its gate. A stage
   that calls a service with a token is a program, or uses a connector.
 - Cost: programs as commands cost nothing per run; a `reviewer` on every
   stage doubles its children. Review where a wrong output would spread.

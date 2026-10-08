@@ -1,6 +1,6 @@
 {
   "subagents": {
-    "projectRootResolution": "nearest"
+    "projectRootResolution": "git-root"
   },
   "sessionDir": ".pi/sessions"
 }

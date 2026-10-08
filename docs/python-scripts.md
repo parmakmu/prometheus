@@ -14,9 +14,13 @@ This page is for contributors. It has one entry per script in [`.pi/skills/agent
 
 ## Validate and compile
 
-**`validate_plan.py`** loads `plan.yaml` and checks it: shape and types with pydantic, then the cross-reference rules (one `Checker` method per group), dependencies, portability and params. It derives the waves from the stages and the run's progress, and returns a summary with open questions, missing params and secrets, approvals and the next wave. It never runs a stage.
+**`validate_plan.py`** loads `plan.yaml` and checks it: shape and types with pydantic, then the cross-reference rules (one `Checker` method per group), dependencies, portability and params. It derives the waves from the stages and the run's progress, and returns a summary with open questions, missing params and secrets, approvals and the next wave. It never runs a stage. Its models also give `plan.schema.json` (`plan_json_schema()`), which editors use to check `plan.yaml` as you type.
 
-**`compile_wave.py`** turns the active run's next wave into the exact pi-subagents call. The compiled script is the wave as JSON data followed by `wave_runner.js` unchanged, saved to `runs/<id>/.compiled/<wave>.js`; the call names that path. When something is missing first (a param, a decision, an approval, a review, a plan fix), it returns a `preflight` instead. `--check` compile-checks the concrete pending waves during planning, without a run. A compile only prepares the call: the model launches it.
+**`compile_wave.py`** turns the active run's next wave into the exact pi-subagents call. The compiled script is the wave as JSON data followed by `wave_runner.js` unchanged, saved to `runs/<id>/.compiled/<wave>.js`; the call names that path. When something is missing first (a param, a decision, an approval, a review, a plan fix), it returns a `preflight` instead. `--check` compile-checks the concrete pending waves during planning, without a run. A compile only prepares the call: the model launches it. `--frozen <folder>` compiles a released agent's next wave in that folder, with the caller's `--params` and `--approve`, the stages its `state.json` records as done, and no active run, commit or `.env`. A plan in which nothing asks the caller anything is one wave (`all`); otherwise the waves are derived as in an agent's own run, and a decision or an unapproved side effect comes back in `preflight`, for the caller to answer before that wave. A released run reuses the release's earlier runs as an agent's run reuses its own: an unchanged judgment on unchanged inputs is not made again.
+
+**`batch_tool.py`**'s `a2a` op runs an a2a stage: it reads the called agent's Agent Card, sends one A2A message (a file part per consumed file, a data part with params and approvals), polls the task to its end and downloads the artifacts into the stage's out folder; a task that asks something, fails or is canceled fails the stage with its message.
+
+**`release.py`** makes releases: tags `v<major>.<minor>` on main for a plan that code can run with no model deciding anything (ready, no provisional stage, every program written, every wave compiling as a released run compiles it; a decision or a side effect is asked of the caller then). `check` reports that, the interface callers depend on (params, outputs, side effects) and the changes since the last release; `tag` tags it, refusing a change that can break callers (a param removed, retyped or newly required, an output changed, a side effect added) without `--breaking`, which raises the major version; `list` reads the releases back from their tags' messages.
 
 ## Track and edit a run
 
@@ -28,7 +32,7 @@ This page is for contributors. It has one entry per script in [`.pi/skills/agent
 
 **`agent_git.py`** does every git operation: creating the repository, committing the plan and the files runs write (`runs/` itself is not versioned), opening `run/`, `revise/` and `improve/` branches, and merging (as one squashed commit), keeping or discarding them.
 
-**`run_history.py`** reads the agent's runs side by side (`show`: per run its cost, per stage how it went) and prunes old ones (`prune`: the `work/` folders of finished runs beyond the newest N, and pi-subagents' records of their launches; `run.yaml` and `.compiled/` stay).
+**`run_history.py`** reads the agent's runs side by side (`show`: per run its cost, per stage how it went) and prunes old ones (`prune`: the `work/` folders of finished runs beyond the newest N, pi-subagents' records of their launches, and its mission files once none of their launches is kept; `run.yaml` and `.compiled/` stay). On a release's folder it prunes its runs the same way, with their `inputs/` and `outputs/` (`state.json` and `events.jsonl` stay); a run that waits for an answer is kept.
 
 **`session_digest.py`** reads the agent's conversations from its own `.pi/sessions` (else Pi's old per-path folder) and condenses what is new since the last `/agent-improve` into evidence: user messages, failed tool results, repeated calls, cost, failed or relaunched waves, and the lessons already in `improvements.yaml`. It reads at most the newest 5 sessions and 3 runs, and skips improve and revise sessions themselves. It changes nothing.
 
@@ -38,7 +42,7 @@ This page is for contributors. It has one entry per script in [`.pi/skills/agent
 
 **`agent_params.py`** is the param logic the other scripts import. It loads values from the environment, `.env` or the plan's default; resolves `path`, `text` and `secret` params; masks secrets for `run.yaml`; and writes `.env`, refusing secrets. It is a module, not a command.
 
-**`batch_tool.py`** is run by the `batcher` command runner, so no model is needed for mechanical steps. It splits a map stage's input into batches and merges their outputs, and it runs a stage program with its `run:` arguments, then its gate. On failure it exits with the reason, which the wave hands to the stage's `<key>-fix` child. Standard library only, since the batcher runs it with plain `python3`.
+**`batch_tool.py`** is run by the `batcher` command runner, so no model is needed for mechanical steps. It splits a map stage's input into batches and merges their outputs, and it runs a stage program with its `args`, then its gate. On failure it exits with the reason, which the wave hands to the stage's `<id>-fix` child. Standard library only, since the batcher runs it with plain `python3`.
 
 ## Shared helpers
 

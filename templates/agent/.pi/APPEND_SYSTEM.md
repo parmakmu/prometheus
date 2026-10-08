@@ -15,7 +15,7 @@ created this agent).
 - You orchestrate; children do the stage work. Do not do a stage's work
   yourself, and do not switch to another way of running a stage when the
   subagent path fails, unless the user says so.
-- Never perform or approve a side effect (`approval: required`) without the
+- Never perform or approve a side effect (`kind: side_effect`) without the
   user's explicit approval for that stage in this session.
 - Change `plan.yaml` only as the run protocol allows (unknown findings
   and replanning). Run state lives in `runs/<id>/run.yaml` and changes only

@@ -52,89 +52,92 @@ outputs:
 
 # ── How it works ────────────────────────────────────────────────────────────
 stages:
-  - key: discover
+  - id: discover
     title: Find the main competitors and their positioning sources
-    kind: judgment
-    kind_reason: which companies count as main competitors is a judgment of market overlap
+    kind:
+      value: judgment
+      reason: which companies count as main competitors is a judgment of market overlap
     pattern: worker
     agent: researcher
-    consumes: [brief]
-    out:
+    reads: [brief]
+    writes:
       - id: competitor_list
         path: competitors.json
         format: json
         schema: {name: string, url: string, why_competitor: string, positioning_sources: [string]}
-    verify:
-      review: evidence-auditor
-      check: 4-8 competitors, each with at least two public positioning sources
+    review: evidence-auditor
+    done_when: 4-8 competitors, each with at least two public positioning sources
 
-  - key: confirm-list
+  - id: confirm-list
     title: User confirms which competitors to cover
-    kind: decision
-    kind_reason: the scope of the memo is the user's call
+    kind:
+      value: decision
+      reason: the scope of the memo is the user's call
     pattern: approval
-    needs: [discover]
-    consumes: [competitor_list]
-    out:
+    after: [discover]
+    reads: [competitor_list]
+    writes:
       - id: confirmed_list
         path: decisions/confirmed-competitors.json
         format: json
 
-  - key: analyse
+  - id: analyse
     provisional: true
     resolves_after: discover
     title: Profile each confirmed competitor's positioning
-    kind: judgment
-    kind_reason: reading messaging, audience and proof points needs judgment
+    kind:
+      value: judgment
+      reason: reading messaging, audience and proof points needs judgment
     intent: >-
       one positioning profile per confirmed competitor (claim, audience, pricing
       model, proof points), each with sources
-    needs: [confirm-list]
-    consumes: [confirmed_list, competitor_list]
-    out:
+    after: [confirm-list]
+    reads: [confirmed_list, competitor_list]
+    writes:
       - id: profiles
 
-  - key: memo
+  - id: memo
     title: Draft the positioning memo
-    kind: judgment
-    kind_reason: comparing positions and recommending ours is argument, not computation
+    kind:
+      value: judgment
+      reason: comparing positions and recommending ours is argument, not computation
     pattern: worker
     agent: reader
-    needs: [analyse]
-    consumes: [profiles, brief]
-    out:
+    after: [analyse]
+    reads: [profiles, brief]
+    writes:
       - id: memo_draft
         path: memo.md
         format: md
 
-  - key: review-memo
+  - id: review-memo
     title: Check the memo's claims against the profiles and sources
-    kind: judgment
-    kind_reason: whether a claim is supported needs reading the sources
+    kind:
+      value: judgment
+      reason: whether a claim is supported needs reading the sources
     pattern: reviewer
     agent: reviewer
-    needs: [memo]
-    consumes: [memo_draft, profiles]
-    out:
+    after: [memo]
+    reads: [memo_draft, profiles]
+    writes:
       - id: memo_review
         path: memo-review.json
         format: json
         schema: {blocking: boolean, unsupported_claims: [string], notes: [string]}
 
-  - key: publish
+  - id: publish
     title: Create the memo as a new child page in Notion
-    kind: side_effect
-    kind_reason: writes to the user's Notion workspace
+    kind:
+      value: side_effect
+      reason: writes to the user's Notion workspace
     pattern: worker
     agent: worker
-    needs: [review-memo]
-    consumes: [memo_draft, memo_review]
-    approval: required
-    out:
+    after: [review-memo]
+    reads: [memo_draft, memo_review]
+    writes:
       - id: notion_memo
         format: notion page
-    verify:
-      check: a new page exists under the parent with the memo's title; no other page changed
+    done_when: a new page exists under the parent with the memo's title; no other page changed
 
 # ── Assumptions ─────────────────────────────────────────────────────────────
 assumptions:

@@ -20,14 +20,19 @@ Before compiling, it commits pending changes to the agent's plan
 the only change it makes to the agent. Git is required.
 
 Waves are not written in the plan: validate_plan.derive_waves groups the stages
-that are not done, each as early as its needs allow, and starts a new wave
+that are not done, each as early as its `after` allows, and starts a new wave
 wherever the parent must act (a decision or approval, a side effect's report,
 a user review, a replan).
 
 --agent  agent root (default: current directory)
---approve   side-effect stage keys the user approved for this launch
+--approve   side-effect stage ids the user approved for this launch
 --out       also write the result JSON to FILE
 --check     planning check: compile every concrete pending wave (no run needed)
+--frozen    a released agent's run (release.py), in this folder, with --params and --approve from
+            the caller and no active run, commit or .env: the next wave after the stages its
+            state.json records as done, or the whole plan as one (`all`) when nothing in it asks
+            anyone; a decision or an unapproved side effect is in "preflight", for the caller
+            to answer; {"ok": true, "done": true} when no stage is left
 
 Prints one JSON object. When the wave can launch:
 
@@ -60,7 +65,7 @@ import agent_git
 import agent_params
 import typer
 from ruamel.yaml.error import YAMLError
-from runs import RUNS, active_run, list_runs, read_run
+from runs import RUNS, active_run, list_released_runs, list_runs, stages_done
 from utils import (
     emit,
     pi_agent_dir,
@@ -68,6 +73,7 @@ from utils import (
     read_plan,
     refuse,
     report_state,
+    stage_kind,
     subagent_records,
 )
 from validate_plan import agent_tools, check_ready, project_subagents, validate
@@ -153,11 +159,11 @@ class Compiler:
         self.timeout = (plan.get("limits") or {}).get("command_timeout_s")
         # the run's own ceiling (raised with --budget when the user says go on), else the plan's
         self.budget = (run_state.get("max_cost_usd") if isinstance(run_state, dict) else None) or (plan.get("limits") or {}).get("max_cost_usd")
-        self.stages = {s["key"]: s for s in plan.get("stages") or [] if isinstance(s, dict) and s.get("key")}
+        self.stages = {s["id"]: s for s in plan.get("stages") or [] if isinstance(s, dict) and s.get("id")}
         self.inputs = {i["id"]: i for i in plan.get("inputs") or [] if isinstance(i, dict) and i.get("id")}
         self.producer = {}
         for key, st in self.stages.items():
-            for o in st.get("out") or []:
+            for o in st.get("writes") or []:
                 if isinstance(o, dict) and o.get("id"):
                     self.producer[o["id"]] = (key, o)
         agents = (plan.get("agents") or {}).get("available") or []
@@ -199,14 +205,14 @@ class Compiler:
 
     def decision_path(self, key):
         st = self.stages[key]
-        for o in st.get("out") or []:
+        for o in st.get("writes") or []:
             if isinstance(o, dict) and o.get("path"):
                 return self.out_path(o)
         return str(self.work / "decisions" / f"{key}.json")
 
     # --- task text -------------------------------------------------------------
     def input_line(self, cid, in_wave_results):
-        """(text, key) describing one consumed id; key names a stage earlier in this wave whose
+        """(text, key) describing one id a stage reads; key names a stage earlier in this wave whose
         returned result follows the text, else None."""
         if cid in self.inputs:
             inp = self.inputs[cid]
@@ -216,7 +222,7 @@ class Compiler:
             return f"- {cid} ({inp.get('kind')}{fmt}): {loc}{note}", None
         pkey, o = self.producer[cid]
         pst = self.stages[pkey]
-        if pst.get("kind") == "decision" or pst.get("pattern") == "approval":
+        if stage_kind(pst) == "decision" or pst.get("pattern") == "approval":
             return f"- {cid}: the user's decision, in {self.decision_path(pkey)}", None
         path = self.out_path(o)
         if path:
@@ -224,21 +230,21 @@ class Compiler:
             return f"- {cid} (from stage {pkey}{fmt}): {path}", None
         if pkey in in_wave_results:
             return f"- {cid} (result of stage {pkey}): ", pkey
-        self.errors.append(f"stage consumes '{cid}', a returned result of stage '{pkey}' from an earlier wave; give that output a path")
+        self.errors.append(f"stage reads '{cid}', a returned result of stage '{pkey}' from an earlier wave; give that output a path")
         return f"- {cid}: (unavailable)", None
 
     def used_next_by(self, key):
-        """Lines naming the stages that consume `key`'s outputs, with what they must achieve.
+        """Lines naming the stages that read `key`'s outputs, with what they must achieve.
         The producer and its reviewer both get them, so they judge the output by the same
         standard: a report told only "list the available fields" once left out the one field
         (Cc) a later stage extracts, and its reviewer, reading the plan, blocked it."""
-        outs = {o["id"] for o in self.stages[key].get("out") or [] if isinstance(o, dict) and o.get("id")}
+        outs = {o["id"] for o in self.stages[key].get("writes") or [] if isinstance(o, dict) and o.get("id")}
         lines = []
         for ckey, cst in self.stages.items():
-            used = [c for c in cst.get("consumes") or [] if c in outs]
+            used = [c for c in cst.get("reads") or [] if c in outs]
             if ckey == key or not used:
                 continue
-            check = (cst.get("verify") or {}).get("check")
+            check = cst.get("done_when")
             lines.append(f"- {ckey} ({cst.get('title', ckey)}) reads {', '.join(used)}"
                          + (f"; it is done when: {check}" if check else "") + "\n")
         return lines
@@ -256,20 +262,20 @@ class Compiler:
                 parts.append({"text": s})
 
         lit(f"Agent \"{slug}\", stage \"{key}\": {st.get('title', key)}.\n")
-        for field in ("intent", "notes"):
+        for field in ("instructions", "intent"):
             if st.get(field):
                 lit(f"{st[field]}\n")
-        consumes = st.get("consumes") or []
-        if consumes:
+        reads = st.get("reads") or []
+        if reads:
             lit("\nInputs:\n")
-            for cid in consumes:
+            for cid in reads:
                 text, result = self.input_line(cid, in_wave)
                 lit(text)
                 if result:
                     parts.append({"result": result})
                     self.spliced.add(result)
                 lit("\n")
-        writes = [o for o in st.get("out") or [] if isinstance(o, dict) and o.get("path")]
+        writes = [o for o in st.get("writes") or [] if isinstance(o, dict) and o.get("path")]
         if writes:
             lit("\nWrite:\n")
             for o in writes:
@@ -282,7 +288,7 @@ class Compiler:
             lit("\nUsed next by (make the outputs complete for what these stages need):\n" + "".join(used_next))
         for line in extra_lines:
             lit(line) if isinstance(line, str) else parts.append(line)
-        kind = st.get("kind")
+        kind = stage_kind(st)
         script = self.script_path(st)
         command = self.program_command(st)
         run_as = f" as `{command}` (from {self.work})" if command else " (its docstring says how)"
@@ -304,9 +310,8 @@ class Compiler:
         if kind == "side_effect":
             lit("\nThis stage changes something outside the agent. The user approved it before launch. "
                 "Do exactly what is described, nothing more, and report what you did (ids, links, counts).\n")
-        v = st.get("verify") or {}
-        if v.get("check"):
-            lit(f"\nDone when: {v['check']}\n")
+        if st.get("done_when"):
+            lit(f"\nDone when: {st['done_when']}\n")
         lit("\nRules: use only the listed inputs; write only the listed outputs" + (" and the program" if script else "")
             + "; do not contact other agents "
             "or spawn subagents. If you cannot continue without a decision, use contact_supervisor with reason "
@@ -339,13 +344,13 @@ class Compiler:
         if st.get("context"):
             c["context"] = st["context"]
         agent = st.get("agent")
-        returned = [o for o in st.get("out") or [] if isinstance(o, dict) and not o.get("path") and o.get("schema")]
+        returned = [o for o in st.get("writes") or [] if isinstance(o, dict) and not o.get("path") and o.get("schema")]
         if returned:
             if agent in self.external:
                 self.notes.append(f"{key}: external runner; schema requested as JSON text only")
             else:
                 c["outputSchema"] = expand_schema(returned[0]["schema"])
-        acceptance = None if resumes else self.acceptance(key, agent, (st.get("verify") or {}).get("gate"))
+        acceptance = None if resumes else self.acceptance(key, agent, st.get("gate"))
         if acceptance:
             c["acceptance"] = acceptance
         return c
@@ -362,14 +367,16 @@ class Compiler:
 
     def script_path(self, st):
         """The stage's program in the agent's scripts/ (kept across runs), or None."""
-        return str(self.agent_dir / "scripts" / st["script"]) if st.get("script") else None
+        program = st.get("program") or {}
+        return str(self.agent_dir / "scripts" / program["file"]) if program.get("file") else None
 
     def program_command(self, st):
-        """The shell command that runs the stage's program with its `run:` arguments, or None."""
-        if not st.get("script") or st.get("run") is None:
+        """The shell command that runs the stage's program with its args, or None."""
+        program = st.get("program") or {}
+        if not program.get("file") or program.get("args") is None:
             return None
         self.uses_uv = True
-        return f"uv run {shlex.quote(self.script_path(st))} {self.resolve_command(st['run'])}".strip()
+        return f"uv run {shlex.quote(self.script_path(st))} {self.resolve_command(program['args'])}".strip()
 
     def resolve_command(self, text):
         """resolve_text for a shell command: values are quoted (a path may have spaces); a secret
@@ -384,7 +391,7 @@ class Compiler:
         return PARAM_RE.sub(sub, str(text))
 
     def command_item(self, key, st, in_wave, output):
-        """A stage whose program exists and has `run:`: batcher runs the program and its
+        """A stage whose program exists and has args: batcher runs the program and its
         gate (no model). `fix` is the child the runner launches only if that fails: it is shown the
         failure, repairs the program and runs it again, checked by the usual acceptance gate."""
         command = self.program_command(st)
@@ -402,9 +409,33 @@ class Compiler:
         return {"key": key, "label": st.get("title", key), "agent": BATCHER, "cwd": str(self.work),
                 "task": "BATCH_TOOL_REQUEST " + json.dumps(req), "fix": fix}
 
+    def consumed_path(self, cid):
+        """Where an id a stage reads is: an input's location, or the path of the stage output that produces it."""
+        if cid in self.inputs:
+            return self.resolve_text(str(self.inputs[cid].get("location") or ""))
+        if cid in self.producer:
+            return self.out_path(self.producer[cid][1])
+        return None
+
+    def a2a_item(self, key, st, output):
+        """A stage that calls another agent over A2A: batcher sends the message (the files it reads, the params, the
+        side effects approved), waits for the task to end and downloads its artifacts into the stage's writes path."""
+        call = st.get("a2a") or {}
+        req = {"op": "a2a", "url": self.resolve_text(str(call.get("url") or "")), "out": output,
+               "files": {remote: self.consumed_path(cid) for remote, cid in (call.get("files") or {}).items()},
+               "params": {k: self.resolve_text(v) if isinstance(v, str) else v for k, v in (call.get("params") or {}).items()},
+               "approve": list(call.get("approve") or []), **self.batcher_gate(st)}
+        if call.get("token"):
+            req["token"] = self.resolve_text(str(call["token"]))  # "${ENV}": batch_tool reads it from its environment
+        if timeout := call.get("timeout_s") or self.timeout:
+            req["timeout"] = timeout
+        req.update(self.secrets_for(req))
+        return {"key": key, "label": st.get("title", key), "agent": BATCHER, "cwd": str(self.work),
+                "task": "BATCH_TOOL_REQUEST " + json.dumps(req)}
+
     def batcher_gate(self, st):
         """{gate, gate_json} for batch_tool, which runs the stage's gate itself (no acceptance on a command runner)."""
-        gate = (st.get("verify") or {}).get("gate")
+        gate = st.get("gate")
         if gate is None:
             return {}
         typed = isinstance(gate, dict)
@@ -415,14 +446,14 @@ class Compiler:
         just those to that command's environment, read from .env then. Pi's own environment holds none, so no model
         child sees one (validate_plan allows secrets only here)."""
         secret_envs = {agent_params.env_name(n, s) for n, s in self.params.items() if agent_params.kind(s) == "secret"}
-        named = sorted(set(re.findall(r"\$\{(\w+)\}", f"{req.get('command') or ''} {req.get('gate') or ''}")) & secret_envs)
+        named = sorted(set(re.findall(r"\$\{(\w+)\}", f"{req.get('command') or ''} {req.get('gate') or ''} {req.get('token') or ''}")) & secret_envs)
         return {"secrets": named, "env_file": str(self.agent_dir / agent_params.ENV_FILE)} if named else {}
 
     def gate_command(self, command):
         """The gate with params resolved and ../gates/ pointing at the agent's gates/."""
         if "uv run" in command:
             self.uses_uv = True
-        # values quoted, as in run: (a value with `;` would otherwise run as a command); secrets stay "${ENV}"
+        # values quoted, as in a program's args (a value with `;` would otherwise run as a command); secrets stay "${ENV}"
         return GATES_RE.sub(lambda m: str(self.agent_dir / "gates") + "/", self.resolve_command(command))
 
     def acceptance(self, key, agent, gate):
@@ -456,7 +487,8 @@ class Compiler:
         """A map / map_reduce stage: split by the command runner, a child per batch, then
         merge (command runner) or reduce (a child)."""
         pattern = st.get("pattern")
-        items_id = st.get("items")
+        spec = st.get("map") or {}
+        items_id = spec.get("over")
         if items_id in self.inputs:
             source = self.resolve_text(self.inputs[items_id].get("location", ""))
         else:
@@ -464,11 +496,11 @@ class Compiler:
         if not source:
             self.errors.append(f"stage '{key}': cannot resolve the items source '{items_id}'")
             source = ""
-        final = next((o for o in st.get("out") or [] if isinstance(o, dict) and o.get("path")), None)
+        final = next((o for o in st.get("writes") or [] if isinstance(o, dict) and o.get("path")), None)
         final_path = self.out_path(final) if final else str(self.work / key / "result.json")
-        split_req = {"op": "split", "source": source, "batch": st.get("batch"), "outdir": str(self.work / "batches" / key)}
-        if st.get("items_glob"):
-            split_req["glob"] = st["items_glob"]
+        split_req = {"op": "split", "source": source, "batch": spec.get("batch"), "outdir": str(self.work / "batches" / key)}
+        if spec.get("glob"):
+            split_req["glob"] = spec["glob"]
         m = {"key": key, "pattern": pattern, "title": st.get("title", key), "agent": st.get("agent"),
              "cwd": str(self.work), "outdir": str(self.work / key), "ext": Path(final_path).suffix or ".json",
              "final": final_path,
@@ -481,7 +513,7 @@ class Compiler:
             m["context"] = st["context"]
         if model := self.model(st):
             m["model"] = model
-        gate = (st.get("verify") or {}).get("gate")
+        gate = st.get("gate")
         if pattern == "map_reduce":
             m["reduce_task"] = self.task(key, st, in_wave)
             if acceptance := self.acceptance(key, st.get("agent"), gate):
@@ -493,8 +525,8 @@ class Compiler:
 
     def review_step(self, key, st):
         """A fresh reviewer of a stage's output; a blocking finding stops the wave."""
-        outs = [self.out_path(o) for o in st.get("out") or [] if isinstance(o, dict) and o.get("path")]
-        check = (st.get("verify") or {}).get("check") or "the output is complete and correct for the stage's purpose"
+        outs = [self.out_path(o) for o in st.get("writes") or [] if isinstance(o, dict) and o.get("path")]
+        check = st.get("done_when") or "the output is complete and correct for the stage's purpose"
         used_next = self.used_next_by(key)
         task = (f"Review the output of agent stage \"{key}\" ({st.get('title', key)}). Read-only: do not edit anything.\n"
                 f"Outputs: {', '.join(outs) if outs else 'the stage result below'}\n"
@@ -505,7 +537,7 @@ class Compiler:
                   "properties": {"blocking": {"type": "boolean"}, "findings": {"type": "array", "items": {"type": "string"}}}}
         if not outs:
             self.spliced.add(key)  # the reviewer reads the returned result
-        review = {"key": f"{key}-review", "agent": (st.get("verify") or {}).get("review"), "label": f"Review: {key}",
+        review = {"key": f"{key}-review", "agent": st.get("review"), "label": f"Review: {key}",
                   "cwd": str(self.work), "context": "fresh",
                   "task": task if outs else [{"text": task + "\n"}, {"result": key}], "outputSchema": schema}
         if model := self.model({"agent": review["agent"]}, "review"):
@@ -515,20 +547,20 @@ class Compiler:
     # --- wave ------------------------------------------------------------------------
     def fingerprint(self, key, item, review, in_wave):
         """What a model stage's output depends on, hashed: its child and review items (this run's
-        folder masked), the contents of what it consumes, its subagent's file, program and gates.
-        None when that can't be known: it consumes an app or url, a returned result, or the output of
+        folder masked), the contents of what it reads, its subagent's file, program and gates.
+        None when that can't be known: it reads an app or url, a returned result, or the output of
         a stage in this wave that has no fingerprint (a program, a map)."""
         text = canonical([item, review]).replace(str(self.run_dir), "<run>")
         # an input's place is masked: its contents are hashed below, so the same files moved elsewhere (run
         # 2026-10-05-1: scratch/emails to uploads/emails) still reuse
-        for cid in self.stages[key].get("consumes") or []:
+        for cid in self.stages[key].get("reads") or []:
             inp = self.inputs.get(cid) or {}
             if inp.get("kind") in ("file", "folder") and inp.get("location"):
                 where = self.resolve_text(inp["location"])
                 for form in {where, str(Path(where).expanduser())}:
                     text = text.replace(form, f"<input {cid}>")
         h = hashlib.sha256(text.encode())
-        for cid in self.stages[key].get("consumes") or []:
+        for cid in self.stages[key].get("reads") or []:
             if cid in self.inputs:
                 inp = self.inputs[cid]
                 if inp.get("kind") == "text":
@@ -538,7 +570,7 @@ class Compiler:
                 path = Path(self.resolve_text(inp["location"])).expanduser()
             else:
                 pkey, o = self.producer[cid]
-                decision = self.stages[pkey].get("kind") == "decision" or self.stages[pkey].get("pattern") == "approval"
+                decision = stage_kind(self.stages[pkey]) == "decision" or self.stages[pkey].get("pattern") == "approval"
                 if pkey in in_wave:
                     # its output doesn't exist yet: it is what that stage makes from its own fingerprint,
                     # in the run it comes from (this one, or the one it is reused from)
@@ -555,7 +587,7 @@ class Compiler:
         # the subagent's file, and what picks a builtin's model and prompt: the agent's settings, pi-subagents' version
         files = [self.agent_dir / ".pi" / "agents" / f"{st.get('agent')}.md", Path(self.script_path(st) or ""),
                  self.agent_dir / ".pi" / "settings.json", *subagents_package(self.agent_dir)]
-        files += [self.agent_dir / "gates" / g for g in re.findall(r"\.\./gates/(\S+)", canonical(st.get("verify")))]
+        files += [self.agent_dir / "gates" / g for g in re.findall(r"\.\./gates/(\S+)", canonical(st.get("gate")))]
         for f in files:
             if f.is_file():
                 digest_tree(f, h)
@@ -567,9 +599,9 @@ class Compiler:
         its outputs from that run's work/. Not for a subagent with connector tools, which may act on or
         read what no file shows. Returns that run's id, or None."""
         st = self.stages[key]
-        outs = [self.out_path(o) for o in st.get("out") or [] if isinstance(o, dict)]
+        outs = [self.out_path(o) for o in st.get("writes") or [] if isinstance(o, dict)]
         tools = agent_tools(project_subagents(self.agent_dir).get(st.get("agent")) or {})
-        if (st.get("kind") not in ("judgment", "deterministic") or st.get("approval") == "required" or st.get("resumes")
+        if (stage_kind(st) not in ("judgment", "deterministic") or st.get("resumes")
                 or st.get("reuse") is False
                 or not outs or not all(o and Path(o).is_relative_to(self.work) for o in outs)
                 or any(t.startswith("mcp:") for t in tools)):  # a connector: outside state no file shows
@@ -578,8 +610,9 @@ class Compiler:
         if not fp:
             return None
         self.fingerprints[key] = fp
-        for rid, d in reversed(list_runs(self.agent_dir)):
-            if rid == self.run_id or (read_run(d).get("stages") or {}).get(key) != "done":
+        # an agent's runs, or a release's (prometheus/frozen.py): the same judgment, made once across calls too
+        for rid, d in reversed(list_runs(self.agent_dir) + list_released_runs(self.agent_dir)):
+            if rid == self.run_id or key not in stages_done(d):
                 continue
             for inputs in (d / ".compiled").glob("*.inputs.json"):
                 done = ((read_json(inputs.with_name(inputs.name.replace(".inputs.json", "-result.json"))) or {})
@@ -594,7 +627,7 @@ class Compiler:
     def reuse_finished(self, wid, steps):
         """Mark the layer children that completed in the wave's last (failed or blocked) launch with
         `reuse`, so a relaunch runs only the rest; returns their keys. A child is reused only when its
-        item is unchanged since that launch (.compiled/<wave>.wave.json), every stage it needs in this
+        item is unchanged since that launch (.compiled/<wave>.wave.json), every stage it runs after in this
         wave is reused too (else its input may change), and, when a later child splices in its result,
         it has a structured output (a child's text output is not kept between launches). A map stage
         whose spec is unchanged and whose input stages are reused keeps the batches that completed (their
@@ -616,7 +649,7 @@ class Compiler:
                 key = m["key"]
                 done = {k: v for k, v in children.items() if re.fullmatch(rf"{re.escape(key)}-\d+", k)
                         and v.get("status") == "completed" and Path(m["outdir"], k[len(key) + 1:] + m["ext"]).is_file()}
-                if (previous_maps.get(key) != canonical(m) or set((self.stages.get(key) or {}).get("needs") or []) & rerun
+                if (previous_maps.get(key) != canonical(m) or set((self.stages.get(key) or {}).get("after") or []) & rerun
                         or not done):
                     rerun.add(key)
                     continue
@@ -634,7 +667,7 @@ class Compiler:
                 if "reuse" in it:
                     continue  # reused from an earlier run
                 if (previous.get(key) == canonical(it) and done.get("status") == "completed"
-                        and not set((self.stages.get(key) or {}).get("needs") or []) & rerun
+                        and not set((self.stages.get(key) or {}).get("after") or []) & rerun
                         and (key not in self.spliced or done.get("structuredOutput") is not None)):
                     it["reuse"] = {k: done.get(k) for k in ("runId", "outputReference", "structuredOutput")}
                     reused.append(key)
@@ -645,7 +678,7 @@ class Compiler:
     def compile(self, wave, reuse=False):
         """`reuse`: let unchanged model stages take an earlier run's outputs (reuse_earlier); only for a launch."""
         members = [s for s in wave.get("stages") or [] if s in self.stages]
-        decisions = [s for s in members if self.stages[s].get("kind") == "decision" or self.stages[s].get("pattern") == "approval"]
+        decisions = [s for s in members if stage_kind(self.stages[s]) == "decision" or self.stages[s].get("pattern") == "approval"]
         runnable = [s for s in members if s not in decisions]
         preflight = {"decisions_needed": [], "approvals_needed": [], "missing_params": [], "missing_secrets": [], "budget": None}
         spent = round(sum(r.get("cost_usd") or 0 for r in self.launches), 4)
@@ -659,24 +692,23 @@ class Compiler:
                 st = self.stages[d]
                 preflight["decisions_needed"].append({
                     "stage": d, "title": st.get("title"), "write_answer_to": path,
-                    "show_user": [self.input_line(c, set())[0] for c in st.get("consumes") or []],
+                    "show_user": [self.input_line(c, set())[0] for c in st.get("reads") or []],
                 })
         for s in runnable:
             st = self.stages[s]
-            needs_approval = st.get("kind") == "side_effect" or st.get("approval") == "required"
-            if needs_approval and s not in self.approvals:
+            if stage_kind(st) == "side_effect" and s not in self.approvals:
                 # what the user approves, so the parent need not read the plan to describe it
                 preflight["approvals_needed"].append({
-                    "stage": s, "title": st.get("title"), "why": st.get("kind_reason"),
-                    "consumes": [self.input_line(c, set())[0] for c in st.get("consumes") or []],
-                    "writes": [self.out_path(o) for o in st.get("out") or [] if isinstance(o, dict) and o.get("path")],
-                    "done_when": (st.get("verify") or {}).get("check"),
-                    "program": self.script_path(st) if st.get("script") else None,
+                    "stage": s, "title": st.get("title"), "why": (st.get("kind") or {}).get("reason"),
+                    "reads": [self.input_line(c, set())[0] for c in st.get("reads") or []],
+                    "writes": [self.out_path(o) for o in st.get("writes") or [] if isinstance(o, dict) and o.get("path")],
+                    "done_when": st.get("done_when"),
+                    "program": self.script_path(st),
                 })
 
-        # layers of runnable stages by in-wave needs
+        # layers of runnable stages by in-wave `after`
         layers = []
-        order = TopologicalSorter({s: [d for d in self.stages[s].get("needs") or [] if d in runnable] for s in runnable})
+        order = TopologicalSorter({s: [d for d in self.stages[s].get("after") or [] if d in runnable] for s in runnable})
         try:
             order.prepare()
             while order.is_active():
@@ -694,14 +726,16 @@ class Compiler:
         for layer in layers:
             singles = [s for s in layer if self.stages[s].get("pattern") not in ("map", "map_reduce")]
             maps = [s for s in layer if s not in singles]
-            reviews = {s: self.review_step(s, self.stages[s]) for s in layer if (self.stages[s].get("verify") or {}).get("review")}
+            reviews = {s: self.review_step(s, self.stages[s]) for s in layer if self.stages[s].get("review")}
             if singles:
                 items = []
                 for s in singles:
                     st = self.stages[s]
-                    first_path = next((self.out_path(o) for o in st.get("out") or [] if isinstance(o, dict) and o.get("path")), None)
+                    first_path = next((self.out_path(o) for o in st.get("writes") or [] if isinstance(o, dict) and o.get("path")), None)
                     program = self.script_path(st)
-                    if self.program_command(st) and Path(program).is_file() and not st.get("resumes"):
+                    if st.get("pattern") == "a2a":
+                        items.append(self.a2a_item(s, st, first_path))
+                    elif self.program_command(st) and Path(program).is_file() and not st.get("resumes"):
                         items.append(self.command_item(s, st, in_wave_done, first_path))
                     else:
                         items.append(self.item(s, st, in_wave_done, self.task(s, st, in_wave_done), output=first_path))
@@ -753,7 +787,7 @@ class Compiler:
         """Copy each reused stage's outputs from the earlier run's work/ into this run's."""
         for key, rid in self.reused_from.items():
             src = self.run_dir.parent / rid / "work"
-            for o in self.stages[key].get("out") or []:
+            for o in self.stages[key].get("writes") or []:
                 rel = Path(self.out_path(o)).relative_to(self.work)
                 (self.work / rel).parent.mkdir(parents=True, exist_ok=True)
                 if (src / rel).is_dir():
@@ -762,20 +796,101 @@ class Compiler:
                     shutil.copy2(src / rel, self.work / rel)
 
 
+FROZEN_WAVE = "all"
+
+
+def frozen_values(agent_dir, specs, given):
+    """Param values for a frozen run: the caller's (not secrets), else the environment, else the plan's default.
+    A released checkout has no .env (it is not in git); problems: undeclared or secret names given."""
+    if problems := agent_params.problems_with(specs, given):
+        return None, problems
+    values = agent_params.load(agent_dir, specs)
+    values.update({n: str(v) for n, v in given.items() if v is not None})
+    return values, []
+
+
+def asks_someone(st, approvals):
+    """Whether a stage needs an answer from the caller first: a decision, or a side effect not approved."""
+    return (stage_kind(st) == "decision" or st.get("pattern") == "approval"
+            or (stage_kind(st) == "side_effect" and st.get("id") not in approvals))
+
+
+def compile_frozen(agent_dir, plan, run_dir, values, approvals, state=None, reuse=False):
+    """The next wave of a released agent's run, run by code with no model deciding anything.
+
+    `state` (the run's state.json) names the stages done and the waves launched. A first wave of a plan in which
+    nothing asks the caller anything is the whole plan (`all`): the runner orders every stage by `after` and stops
+    at the first failure, in one launch. Otherwise the waves are derived as in an agent's own run, so a decision or an
+    unapproved side effect starts a wave whose compile returns a preflight: the caller answers, and the run goes on.
+    `reuse`: model stages take an earlier run's result when nothing changed (reuse_earlier, across the release's
+    runs); the result then carries the compiler as "_compiler", for write_frozen to save fingerprints and copy outputs.
+    Returns compile()'s result, or {"ok": True, "done": True} when no stage is left."""
+    state = state or {}
+    done, launches = set(state.get("done") or []), state.get("launches") or []
+    stages = [s for s in plan.get("stages") or [] if isinstance(s, dict) and s.get("id")]
+    if not done and not launches and not any(asks_someone(s, approvals) for s in stages):
+        wave = {"id": FROZEN_WAVE, "stages": [s["id"] for s in stages], "ends_with": "none"}
+        compiler = Compiler(agent_dir, plan, values, run_dir, {}, approvals)
+        return {**compiler.compile(wave, reuse=reuse), **({"_compiler": compiler} if reuse else {})}
+    run_state = {"id": Path(run_dir).name, "stages": {k: "done" for k in done},
+                 "launches": [{"status": "done", "cost_usd": r.get("cost_usd")} for r in launches]}
+    _errors, _warnings, summary = validate(plan, None, None, agent_dir, run_state)
+    waves = summary.get("waves") or []
+    if not waves:
+        return {"ok": True, "done": True}
+    compiler = Compiler(agent_dir, plan, values, run_dir, run_state, approvals)
+    return {**compiler.compile(waves[0], reuse=reuse), **({"_compiler": compiler} if reuse else {})}
+
+
+def write_frozen(run_dir, result):
+    """Save a launchable frozen compile in the run folder (<wave>.js, the call in <wave>.json, the wave as data in
+    <wave>.wave.json); the call then names the script by path."""
+    compiled = Path(run_dir) / ".compiled"
+    compiled.mkdir(parents=True, exist_ok=True)
+    wave = result["wave"]
+    if compiler := result.pop("_compiler", None):  # the fingerprints later runs reuse by, and the outputs reused now
+        (compiled / f"{wave}.inputs.json").write_text(canonical(compiler.fingerprints), encoding="utf-8")
+        compiler.copy_reused()
+    script = compiled / f"{wave}.js"
+    script.write_text(result["call"].pop("workflowScript"), encoding="utf-8")
+    result["call"]["workflow"] = str(script.resolve())
+    (compiled / f"{wave}.wave.json").write_text(canonical(result.pop("spec")), encoding="utf-8")
+    (compiled / f"{wave}.json").write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+    return result
+
+
 def main(
     agent_dir: Annotated[str, typer.Option("--agent", help="agent root")] = ".",
-    approve: Annotated[str, typer.Option(help="side-effect stage keys the user approved, comma-separated")] = "",
+    approve: Annotated[str, typer.Option(help="side-effect stage ids the user approved, comma-separated")] = "",
     budget: Annotated[float | None, typer.Option(help="raise the run's cost ceiling (USD) to this, after the user said to go on")] = None,
     reviewed: Annotated[bool, typer.Option("--reviewed", help="the user has seen the last wave's outputs and said to go on (it ended with review)")] = False,
     out: Annotated[str | None, typer.Option(help="also write the result JSON to this file")] = None,
     no_commit: Annotated[bool, typer.Option("--no-commit", help="report only (e.g. for a status view): do not commit the plan")] = False,
     check: Annotated[bool, typer.Option("--check", help="planning check: compile every concrete pending wave, ignore status and preflight, report errors only")] = False,
+    frozen: Annotated[str | None, typer.Option(help="a released agent's run folder: compile the whole plan as one wave there")] = None,
+    params_json: Annotated[str, typer.Option("--params", help="with --frozen: the caller's param values, a JSON object (no secrets)")] = "{}",
 ):
     """Compile the next wave into a pi-subagents call."""
     agent_dir = Path(agent_dir).resolve()
     plan_path = agent_dir / "plan.yaml"
     if not plan_path.is_file():
         refuse(f"{agent_dir} is not an agent", 2)
+    if frozen:
+        plan = read_plan(agent_dir, strict=True) or {}
+        try:
+            given = json.loads(params_json)
+        except ValueError as exc:
+            refuse(f"--params is not JSON: {exc}", 2)
+        values, problems = frozen_values(agent_dir, plan.get("params") or {}, given if isinstance(given, dict) else {})
+        if problems:
+            refuse("; ".join(problems), 2)
+        state = read_json(Path(frozen) / "state.json") or {}
+        result = compile_frozen(agent_dir, plan, Path(frozen).resolve(), values, {a.strip() for a in approve.split(",") if a.strip()},
+                                state if isinstance(state, dict) else {}, reuse=True)
+        launchable = result.get("ok") and not result.get("done")
+        if not launchable:
+            result.pop("_compiler", None)
+        emit(write_frozen(frozen, result) if launchable else result, 0 if result.get("ok") else 1)
     report_state(agent_dir)
     try:
         plan = read_plan(agent_dir, strict=True) or {}

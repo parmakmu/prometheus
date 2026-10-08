@@ -117,11 +117,14 @@ When prometheus classifies a stage, it asks these questions in that order and st
 This is where the savings come from. A deterministic stage is simply a program and the arguments to run it with:
 
 ```yaml
-- key: read-emails
-  kind: deterministic
+- id: read-emails
+  kind:
+    value: deterministic
+    reason: the fields are in fixed headers
   pattern: script
-  script: read_emails.py
-  run: "${email_folder} discovery.md email-rows.json unparsed-emails.json"
+  program:
+    file: read_emails.py
+    args: "${email_folder} discovery.md email-rows.json unparsed-emails.json"
 ```
 
 The first time the agent runs, a model writes `read_emails.py`. You review it along with everything else the run produced, and from then on the agent just runs it, which takes about a tenth of a second. Here's one row of what it extracted from the tutorial's sample emails:
@@ -314,7 +317,7 @@ Two other things affect what a run costs, if you're designing your own plans. Th
 
 | Word | Means |
 |---|---|
-| **agent** | what prometheus builds: a folder `agents/<slug>/` that is a Pi agent of its own, with a plan, its programs and gates |
+| **agent** | what prometheus builds: a folder `<slug>/` in the agents folder (`~/agents`, or `PROMETHEUS_AGENTS`) that is a Pi agent of its own, with a plan, its programs and gates |
 | **plan** | `plan.yaml`: the job, what counts as done, and the stages |
 | **stage** | one step of the work, such as "extract the fields from every email" |
 | **kind** | whether a stage is a side effect, a decision, deterministic or judgment |

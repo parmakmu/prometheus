@@ -33,7 +33,7 @@ The plan refers to a param as `${email_folder}` in input and output locations, i
 | `text` | a table name, URL, account id, anything that is not a path | the value, exactly as given |
 | `secret` | keys, tokens, passwords | `"${ENV_NAME}"`, which the shell of a stage program or its gate expands; the value itself is never written anywhere |
 
-A secret can be used only in a stage program's `run:` arguments and that stage's gate: the commands the batcher runs, which no model can steer. No model child ever gets one. That's deliberate: every child of a run shares one sandbox and one environment, and a child reading an email can be told by that email to send what it finds somewhere. A stage that needs a token to call a service therefore does it with a program, or through a connector.
+A secret can be used only in a stage program's `args` and that stage's gate: the commands the batcher runs, which no model can steer. No model child ever gets one. That's deliberate: every child of a run shares one sandbox and one environment, and a child reading an email can be told by that email to send what it finds somewhere. A stage that needs a token to call a service therefore does it with a program, or through a connector.
 
 A `secret` that only a connector reads (its token, say) goes in the environment you start pi from, or in the connector's own configuration: `.env` isn't loaded into pi's environment. Declaring it in the plan still makes the run check that it's set before launching.
 
@@ -83,8 +83,8 @@ Neither export mode copies `.env`: values are per machine and may hold secrets. 
 - A param's variable is a valid environment variable name, and not one the system or a tool already uses (`PATH`, `HOME`, `USER`, anything starting `PI_`, …). Otherwise a param called `user` would silently read `$USER`.
 - Two params can't read the same variable.
 - A secret has no `default`, and can't be part of a path (a stage's output path, or a file or folder location).
-- A secret appears only in a stage program's `run:` or that stage's gate.
-- Every value in a gate command is shell-quoted, as in `run:`, so a value can't add a command.
+- A secret appears only in a stage program's `args` or that stage's gate.
+- Every value in a gate command is shell-quoted, as in a program's `args`, so a value can't add a command.
 - A literal absolute path in a stage's output path is an error: use a param or a path relative to the run.
 
 ## For contributors

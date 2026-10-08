@@ -10,6 +10,7 @@
 Relative param values (an `outputs` default, say) resolve against runs/<id>/. At most one run is
 active; /agent-run continues it.
 """
+import json
 import re
 from pathlib import Path
 from typing import NamedTuple
@@ -45,6 +46,25 @@ def list_runs(agent_dir):
     names = [p.name for p in base.iterdir() if (p / "run.yaml").is_file()] if base.is_dir() else []
     key = lambda n: (m.group(1), int(m.group(2))) if (m := RUN_ID_RE.match(n)) else (n, 0)
     return [(n, base / n) for n in sorted(names, key=key)]
+
+
+def list_released_runs(agent_dir):
+    """[(id, dir)] of a release's runs (prometheus/frozen.py: state.json, no run.yaml), oldest first: by when each
+    started (its call.json, written once), since two ids from the same second sort by their random suffix."""
+    base = Path(agent_dir) / RUNS
+    found = [p for p in base.iterdir() if (p / "state.json").is_file() and not (p / "run.yaml").exists()] if base.is_dir() else []
+    started = lambda p: (p / "call.json").stat().st_mtime_ns if (p / "call.json").exists() else 0
+    return [(p.name, p) for p in sorted(found, key=lambda p: (started(p), p.name))]
+
+
+def stages_done(run_dir):
+    """The stages a run finished: an agent's run (run.yaml) or a release's (state.json)."""
+    if state := read_run(run_dir):
+        return {k for k, v in (state.get("stages") or {}).items() if v == "done"}
+    try:
+        return set(json.loads((Path(run_dir) / "state.json").read_text(encoding="utf-8")).get("done") or [])
+    except (OSError, ValueError):
+        return set()
 
 
 def read_run(run_dir):

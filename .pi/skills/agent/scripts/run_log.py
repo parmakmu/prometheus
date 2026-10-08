@@ -41,6 +41,7 @@ from utils import (
     read_plan,
     refuse,
     report_state,
+    stage_kind,
     subagents_runs_root,
 )
 from validate_plan import check_ready, validate
@@ -123,7 +124,7 @@ def commit(message, run):
 def new(
     note: Annotated[str | None, typer.Option(help="what this run is for")] = None,
     params: Annotated[str | None, typer.Option(help="{name: value} for this run only, over .env (not secrets)")] = None,
-    approve: Annotated[str, typer.Option(help="side-effect stage keys approved for the whole run, comma-separated")] = "",
+    approve: Annotated[str, typer.Option(help="side-effect stage ids approved for the whole run, comma-separated")] = "",
     max_cost_usd: Annotated[float | None, typer.Option(help="this run's cost ceiling (USD), instead of the plan's")] = None,
 ):
     """Start a run. --params, --approve and --max-cost-usd: what a caller (the web app's API) gives up front."""
@@ -137,7 +138,7 @@ def new(
     if problems := agent_params.problems_with(plan.get("params"), given):
         refuse("; ".join(problems))
     approved = [a.strip() for a in approve.split(",") if a.strip()]
-    if unknown := [a for a in approved if a not in {s.get("key") for s in plan.get("stages") or [] if isinstance(s, dict)}]:
+    if unknown := [a for a in approved if a not in {s.get("id") for s in plan.get("stages") or [] if isinstance(s, dict)}]:
         refuse(f"--approve names no stage: {', '.join(unknown)}")
     if run is not None:
         refuse(f"run {run.id} is active: continue it, or stop it first (agent_stop_run)")
@@ -194,7 +195,7 @@ def start(
     wave: Annotated[str, typer.Option()],
     subagent_run_id: Annotated[str, typer.Option(help="the id the subagent launch returned")],
     mission_id: Annotated[str | None, typer.Option()] = None,
-    approved: Annotated[str, typer.Option(help="approved side-effect stage keys, comma-separated")] = "",
+    approved: Annotated[str, typer.Option(help="approved side-effect stage ids, comma-separated")] = "",
     decisions: Annotated[str, typer.Option(help="decision answers as JSON")] = "{}",
 ):
     """Record a wave launch."""
@@ -295,7 +296,7 @@ def finish(
     set_status(state, entry.get("stages") or [], wave_status)
     run.save()
     git_note = commit(f"run {run.id}, wave {wave}: files the wave wrote", run)  # while the run is still active
-    keys = [s.get("key") for s in plan.get("stages") or []]
+    keys = [s.get("id") for s in plan.get("stages") or []]
     done = bool(keys) and all(state["stages"].get(k) == "done" for k in keys)
     if done:
         state.update({"status": "done", "finished_at": now()})
@@ -332,10 +333,10 @@ def decision(
     plan, run = open_agent()
     if run.wave_running:
         refuse(f"a wave of run {run.id} is running: record decisions for the next wave after agent_log_finish")
-    st = next((s for s in plan.get("stages") or [] if isinstance(s, dict) and s.get("key") == stage), None)
+    st = next((s for s in plan.get("stages") or [] if isinstance(s, dict) and s.get("id") == stage), None)
     if st is None:
         refuse(f"no stage {stage}")
-    if st.get("kind") != "decision" and st.get("pattern") != "approval":
+    if stage_kind(st) != "decision" and st.get("pattern") != "approval":
         refuse(f"stage {stage} is not a decision stage")
     try:
         value = json.loads(answer)

@@ -16,7 +16,45 @@ The `/agent-*` commands don't appear in Pi.
 
 **Cause.** Pi loads a project's extension only once you trust the folder, and prometheus and each agent are separate projects.
 
-**Fix.** Start `pi` in the prometheus folder or the agent's folder and accept the trust prompt. Each agent needs trusting on its own, including a copy made with `/agent-export`.
+**Fix.** Start the planner with `prometheus` and an agent with `prometheus <slug>` (or `pi` in its folder), and accept the trust prompt. Each agent needs trusting on its own, including a copy made with `/agent-export`.
+
+### prometheus is not set up
+
+```text
+prometheus is not set up: run `prometheus init` (or set PROMETHEUS_AGENTS)
+```
+
+**Cause.** `prometheus` was started with no terminal to ask in (a script, a devpod's setup command) before `prometheus init` ever ran, and `PROMETHEUS_AGENTS` isn't set.
+
+**Fix.** Run `prometheus init --yes` (add `--agents <folder>` for another folder than `~/agents`), or set `PROMETHEUS_AGENTS`.
+
+### No agent with that name
+
+```text
+no agent '<slug>' in <folder>: `prometheus` starts the planner, /agent-list lists the agents
+```
+
+**Cause.** `prometheus <word>` opens the agent `<word>` in the agents folder, and there is none: a typo, another agents folder (check `PROMETHEUS_AGENTS`), or a command the version you have doesn't know yet.
+
+**Fix.** Run `prometheus` and `/agent-list` for the names, or `prometheus --help` for the commands.
+
+### A slug that is a command
+
+```text
+'<slug>' is a prometheus command (`prometheus <slug>`), so it can't name an agent; pick another slug
+```
+
+**Cause.** `prometheus <slug>` opens an agent, so an agent called `init`, `list` or another of the command's words could never be opened. Planning asked `agent_scaffold` for such a slug.
+
+**Fix.** Nothing to do: the planner picks another slug. Existing agents with such a name still refresh.
+
+### pi is not installed
+
+```text
+pi is not installed: see `prometheus doctor`
+```
+
+**Fix.** Install Pi (`npm install -g @earendil-works/pi-coding-agent`); `prometheus doctor` lists anything else missing.
 
 ### Python package missing
 
@@ -24,9 +62,9 @@ The `/agent-*` commands don't appear in Pi.
 Python package '<name>' is missing … ask the user to run `uv sync`
 ```
 
-**Cause.** The scripts' Python packages aren't installed for the Python the extension found, which is `$PI_AGENT_PYTHON` if set, else the nearest `.venv`. An agent creates its own `.venv` with `uv sync` when it first starts, so inside an agent the message means that step failed, usually because uv isn't installed or you were offline.
+**Cause.** The scripts' Python packages aren't installed for the Python the extension found, which is `$PI_AGENT_PYTHON` if set (the `prometheus` command sets it to its own Python for the planner), else the nearest `.venv`. An agent creates its own `.venv` with `uv sync` when it first starts, so inside an agent the message means that step failed, usually because uv isn't installed or you were offline.
 
-**Fix.** Run `uv sync` in the prometheus folder, or in the agent's folder for an exported agent; install uv or get online first if that was the problem. Then restart `pi`. The agent never installs packages itself.
+**Fix.** For the planner, reinstall it (`uv tool install --reinstall git+<prometheus repository>`), or run `uv sync` in a clone; for an agent, run `uv sync` in its folder; install uv or get online first if that was the problem. Then restart `pi`. The agent never installs packages itself.
 
 ### git is required
 
@@ -248,6 +286,17 @@ The agent was blocked from editing `plan.yaml`, or from running a shell command 
 
 **Fix.** To read the plan, the agent uses its read tool, or `git diff main...<branch>` without naming the file; it usually recovers by itself. To change the plan during a run, ask the agent and it replans with its tools. Between runs, use `/agent-revise`.
 
+### A plan edited by hand doesn't check
+
+```text
+stage '<id>': unknown field '<field>' (a stage's fields are in .pi/skills/agent/references/plan-schema.md)
+stage '<id>': kind: Value error, kind is a mapping: {value: <kind>, reason: <why>}
+```
+
+**Cause.** `plan.yaml` has a stage field the plan doesn't know, often a misspelling, or a `kind` written as one word.
+
+**Fix.** Use the stage fields in `references/plan-schema.md` (in the agent's `.pi/skills/agent/`): `id`, `title`, `kind: {value, reason}`, `after`, `reads`, `writes`, `instructions`, `done_when`, `gate`, `review`, `program: {file, args}`, `map: {over, glob, batch}` and the others listed there. Then `prometheus check <slug>`; an editor with a YAML language server marks these as you type ([How to edit a plan by hand](how-to.md#how-to-edit-a-plan-by-hand)).
+
 ### Locked in a replan
 
 ```text
@@ -388,6 +437,168 @@ destination is inside the agent
 
 **Fix.** Pick another destination, or pass a different name.
 
+### A release is refused
+
+```text
+can't release: <reasons>
+```
+
+**Cause.** A release runs with no model to decide anything, so `prometheus release` refuses a plan that would need one: a provisional stage (its run would replan), a stage program not written yet (a released run never writes code), uncommitted changes, an active run or another branch checked out, or a plan that isn't ready. (Decisions and side effects are fine: a released run asks its caller there.)
+
+**Fix.** Each reason says what to do: run the agent until its plan is settled and its programs are written and merged, or commit and go back to `main`. Then run `prometheus release <slug>` again.
+
+### A release can break callers
+
+```text
+this release can break callers (<changes>): release it with --breaking, so the major version goes up and pinned callers keep the old one
+```
+
+**Cause.** Since the last release a param was removed, retyped or made required, an output changed or went away, or a side effect was added that callers must now approve.
+
+**Fix.** If that's intended, run `prometheus release <slug> --breaking`: the version becomes `v<major+1>.0`, and callers pinned to the old major keep the old release. Otherwise undo the change with `/agent-revise`.
+
+### A release can't run
+
+```text
+<agent> <version> can't run: missing params: <names>; missing secrets (environment variables): <names>
+```
+
+**Cause.** Nothing has started: a required param needs a value with the call, and a secret is read from the environment of the process running it.
+
+**Fix.** Add `-p name=value` (`params={...}` in Python, a form field or file over HTTP) for each missing param, and set the environment variables named, then call again.
+
+### A run waits for an answer
+
+The run's state is `input_required` (A2A: `TASK_STATE_INPUT_REQUIRED`), and it lists what it needs.
+
+**Cause.** It reached a side effect the call didn't approve, or a decision. Nothing of that stage has run.
+
+**Fix.** Answer it: in a terminal `prometheus run` asks; in Python `run.answer(approve=[...], decisions={...})`; over HTTP `POST /runs/<id>/answer`; over A2A a message with the task's `taskId` and a data part `{"approve": [...], "decisions": {...}}`. Cancel the run to decline. To never stop there, approve the side effect up front.
+
+### A called agent stopped to ask
+
+```text
+the agent at <url> asks before it goes on (task <id>): <what it asks>; nobody can answer inside a wave: approve its side effects in the stage's a2a.approve
+```
+
+**Cause.** An a2a stage called another agent, which reached a side effect the stage didn't approve (or a decision), and waits. A wave can't answer it.
+
+**Fix.** With `/agent-revise`, add the side effects it names to the stage's `a2a.approve` (the stage is a side effect, so your run asks you first), or ask the called agent's owner to turn the decision into a param.
+
+### A called agent's link goes elsewhere
+
+```text
+the agent at <url> gave its endpoint on another address (<link>): not followed, so the token and the files go nowhere else
+```
+
+**Cause.** An `a2a` stage follows only links on the address its plan names: the called agent's card, or one of its outputs, points at another host. Usually that agent is behind a proxy and doesn't know its public address.
+
+**Fix.** Have its owner serve it with `--public-url <the address you call>`, or give the stage's `a2a.url` the address its card names.
+
+### A called agent failed
+
+```text
+the agent at <url> ended task <id> as failed: <its message>
+<method> <url>: HTTP <code>: <message>
+```
+
+**Fix.** Read the called agent's message: a missing param (add it to `a2a.params` or `a2a.files`), a wrong or missing token (HTTP 401: check the secret param's variable), an address that doesn't answer, or a run that failed on its side (ask its owner, with the task id).
+
+### Not waiting for an answer
+
+```text
+run <id> is <state>, not waiting for an answer
+```
+
+**Fix.** Nothing to answer: the run is going, or has ended. Read its state first.
+
+### No release
+
+```text
+the agent has no release yet: `prometheus release <slug>` makes one
+no release <version>; releases: <versions>
+```
+
+**Fix.** Release the agent with `prometheus release <slug>`, or ask for one of the versions listed (`@v1` is the newest 1.x).
+
+### A run stopped with its server
+
+```text
+the process running it stopped before it ended: start it again
+```
+
+**Cause.** The process driving a released run (`prometheus serve`, `prometheus run` or your code) stopped mid-run, for example a server restart. Its waves don't resume on their own.
+
+**Fix.** Start the run again. Model stages that finished on the same inputs are reused, so little is paid twice.
+
+### A released run failed
+
+```text
+stage <key> failed: see <run folder> and pi-subagents' record <folder>
+```
+
+**Cause.** A stage's program or gate failed, and its `fix` child (a model, which can repair a program but not change the release) couldn't make it pass. The run stopped there: stages after it didn't run.
+
+**Fix.** Look at the run folder's `work/` and pi-subagents' record for the error. If the input was the problem, call again with a corrected one. If the program was, run the agent interactively on that input (`prometheus <slug>`, `/agent-run`), review and merge the fix, and release again.
+
+### Sharing refused: it may contain secrets
+
+```text
+not shared, it may contain secrets: <file>: looks like an API key or token; …
+not shared, it may contain secrets: <file>: looks like an API key or token, in commit <commit>; …
+```
+
+**Cause.** A tracked file holds something that looks like a key, a token or a private key, or a `.env` file is in git. Pushing it would publish it, and git keeps it in the history even after you delete it.
+
+**Fix.** Move the value into a secret param (the plan names it, `.env` or the environment holds it), remove it from the history if it was ever committed, and rotate the key if it was ever pushed anywhere. Then share again.
+
+### Install refused
+
+```text
+<folder> exists: `prometheus pull <slug>` updates it, or install with --as <another name>
+<url> is not an agent: it has no plan.yaml
+cannot clone <url>: <git's message>
+'<slug>' can't name an agent: pass another with --as
+```
+
+**Fix.** As the message says: pull to update an agent you already have, `--as` for a second copy or a name that is taken by a command, and check the URL (and your access to it) when the clone fails.
+
+### Pull refused: local commits
+
+```text
+<slug>'s main has commits the upstream doesn't (besides refreshes): propose them …
+```
+
+**Cause.** `main` of your copy has a change the upstream doesn't, so moving it to the upstream's would drop that change.
+
+**Fix.** Put the change on a branch and `prometheus propose <slug>` it, or, if you don't need it, reset `main` to the upstream yourself. Pull works on `main` with nothing uncommitted and no run active.
+
+### Propose refused
+
+```text
+<slug> has <branch> checked out: propose a change branch (/agent-revise or /agent-improve)
+the change isn't ready to propose: <why>
+<slug> has no upstream (origin): it was not installed or shared
+```
+
+**Fix.** Make the change with `/agent-revise` or `/agent-improve` and finish it (the critic recorded, when the plan changed) before proposing it; an agent you created yourself needs `prometheus share` first.
+
+### Serving needs a token
+
+```text
+serving on <host> needs a token (--token or PROMETHEUS_SERVE_TOKEN): anyone who reaches it could run the agent
+```
+
+**Fix.** Pass `--token` (or set `PROMETHEUS_SERVE_TOKEN`) with a long random value, and give it to the callers; or serve on `127.0.0.1` only, for callers on the same machine.
+
+### Already released
+
+```text
+this commit is already released as <version>
+```
+
+**Fix.** Nothing to do: that version is the release. Change the agent and merge the change to release again.
+
 ## Web app
 
 ### The router doesn't start behind a login proxy
@@ -457,11 +668,11 @@ You may see these messages go by. Each is a guard doing its job, and the agent k
 
 ### A secret used outside a program
 
-`agent_check` reports "secret '…' reaches only a command the batcher runs".
+`agent_check` reports "secret '…' reaches only what the batcher runs".
 
 **Cause.** A secret is referenced somewhere a model would see it: a model stage's gate, an input's location, an intent. Models never get secrets.
 
-**Fix.** The agent makes that stage a program (`script:` with `run:`), which gets the secret as an argument, or moves the call to a connector.
+**Fix.** The agent makes that stage a program (`program: {file, args}`), which gets the secret as an argument, or moves the call to a connector.
 
 ### Plan changed after the critique
 

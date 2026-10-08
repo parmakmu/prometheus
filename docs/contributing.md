@@ -61,7 +61,14 @@ Every result also carries `next`, the agent's state and its legal moves (*from a
 | [`.pi/skills/agent/scripts/`](../.pi/skills/agent/scripts/) | the Python scripts |
 | [`templates/agent/`](../templates/agent/) | what a new agent gets: its extension, agents, settings, role. Outside the skill, so agents don't carry a copy |
 | [`.pi/agents/plan-critic.md`](../.pi/agents/plan-critic.md) | the critic; must stay identical to the template's copy (a test checks) |
-| [`tests/`](../tests/) | the pytest suite |
+| [`prometheus/cli.py`](../prometheus/cli.py) | the `prometheus` command: `init`, `doctor`, starting the planner (`pi -e … --skill …` in `~/.prometheus`) or an agent. The package (`pyproject.toml`) carries the repo's `.pi/` parts, `templates/` and `pyproject.toml` under `prometheus/`, in the same layout |
+| [`prometheus/frozen.py`](../prometheus/frozen.py) | `load_agent`: a release unpacked into the cache (`git archive` + an empty repo), each run in its `runs/<id>/`, compiled with `compile_wave.py --frozen`, run by `pi -p "/prometheus-run <run>"` |
+| [`prometheus/frozen_runner.ts`](../prometheus/frozen_runner.ts) | that command: launches the compiled plan through pi-subagents' RPC, writes `events.jsonl`, stops the run on SIGTERM, aborts any model turn and exits at the end (pi-subagents' completion message would start one) |
+| [`prometheus/sharing.py`](../prometheus/sharing.py) | `install` (clone, refresh from this prometheus, review the agent's own code), `pull`, `share` (secret scan, push main and releases), `propose` (push a change branch; GitLab push options open a merge request), the catalog. Plain git: any remote works |
+| [`prometheus/serve.py`](../prometheus/serve.py) | `prometheus serve`: one release as a FastAPI app; the run form is generated from the agent's interface (a function signature built per agent), runs are kept in memory and reopened from their folders (`call.json`) |
+| [`prometheus/a2a.py`](../prometheus/a2a.py) | A2A 1.0 (HTTP+JSON binding) on `serve`'s runs: the Agent Card from the interface, messages (file and data parts) to runs, task states, artifacts as download links, SSE StreamResponses, the spec's `google.rpc.Status` errors; push notifications and the extended card not offered |
+| [`catalog.yaml`](../catalog.yaml) | agents installable by name; shipped in the package |
+| [`tests/`](../tests/) | the pytest suite; `PROMETHEUS_LIVE_TESTS=1` adds a run through your real Pi (no model) |
 | [`ui/`](../ui/) | the web app: router (and its sandboxes), per-agent workers, the egress proxy, the page; see its [README](../ui/README.md) |
 
 The skill's `SKILL.md` and `references/` are instructions for the model, not documentation for people. [`.claude/CLAUDE.md`](../.claude/CLAUDE.md) is the short brief for Claude Code: the settled decisions, one line each, linking here and to [Design decisions](design.md).
@@ -69,7 +76,8 @@ The skill's `SKILL.md` and `references/` are instructions for the model, not doc
 ## Set up and test
 
 ```sh
-uv sync                      # .venv with the scripts' packages and pytest
+uv sync                      # .venv with the scripts' packages, pytest, and prometheus itself (editable)
+uv tool install -e .         # `prometheus` on your PATH, running this checkout
 uv run pytest                # everything; extension tests skip without the Node deps
 npm install && uv run pytest # adds type-checking and loading both extensions (Node >= 22, Pi installed globally with npm)
 uv run ruff check

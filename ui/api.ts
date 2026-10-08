@@ -1,4 +1,7 @@
-/** The run API: an agent called like a service, on its own. A caller (a script, or another agent) starts a run with a
+/** Replaced by `prometheus serve` (prometheus/serve.py: a release over HTTP and A2A, runs that pause for an answer);
+ * kept while the web app is in use, not developed further (2026-10-08).
+ *
+ * The run API: an agent called like a service, on its own. A caller (a script, or another agent) starts a run with a
  * request, param values and files; the agent runs it in its own sandbox, in a session of its own (listed with its
  * sessions as "API · …"), with /agent-auto. Where the run needs someone (a question, an approval, a review, a message
  * from the model), the call waits in needs_input until the caller answers: questions go back to whoever called. One

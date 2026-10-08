@@ -36,6 +36,7 @@ from utils import (
     read_plan,
     refuse,
     report_state,
+    stage_kind,
     subagent_child,
     write_plan,
 )
@@ -110,7 +111,7 @@ def replan(change: Annotated[str, typer.Option(help="the change as a JSON object
         refuse("the change must be a JSON object")
     extra = sorted(set(c) - REPLAN_KEYS)
     if "waves" in extra:
-        refuse("waves are not part of the plan: they follow from the stages' needs, kinds and `pause_after`")
+        refuse("waves are not part of the plan: they follow from the stages' `after`, kinds and `pause_after`")
     if extra:
         refuse(f"a replan cannot change {extra}; it changes {sorted(REPLAN_KEYS - {'note'})}. "
                f"{', '.join(LOCKED)} are locked: change them with /agent-revise once no run is active")
@@ -125,7 +126,7 @@ def replan(change: Annotated[str, typer.Option(help="the change as a JSON object
     if run.wave_running:
         refuse(f"a wave of run {run.id} is running: replan after agent_log_finish")
     frozen = set(run.state.get("stages") or {})
-    by_key = {s.get("key"): s for s in stages}
+    by_key = {s.get("id"): s for s in stages}
     unknowns = {u.get("id"): u for u in plan.get("unknowns") or []}
     questions = {q.get("id"): q for q in plan.get("questions") or []}
 
@@ -135,19 +136,19 @@ def replan(change: Annotated[str, typer.Option(help="the change as a JSON object
             problems.append(f"stage '{key}' is done or running in run {run.id}; it is history")
         elif key not in by_key:
             problems.append(f"no stage '{key}' to remove")
-        elif by_key[key].get("kind") == "side_effect":
+        elif stage_kind(by_key[key]) == "side_effect":
             problems.append(f"stage '{key}' is a side effect the user asked for; removing it is a change for /agent-revise once no run is active")
     for st in c.get("stages") or []:
-        key = st.get("key") if isinstance(st, dict) else None
+        key = st.get("id") if isinstance(st, dict) else None
         if not key:
-            problems.append("each stage needs a key"); continue
+            problems.append("each stage needs an id"); continue
         if key in frozen:
             problems.append(f"stage '{key}' is done or running in run {run.id}; it is history")
         elif "status" in st:
             problems.append(f"stage '{key}': status belongs to the run, not the plan")
         old = by_key.get(key)
-        if old is not None and old.get("kind") == "side_effect" and (st.get("kind") != "side_effect" or st.get("approval") != "required"):
-            problems.append(f"stage '{key}' is a side effect; it must stay kind: side_effect with approval: required")
+        if old is not None and stage_kind(old) == "side_effect" and stage_kind(st) != "side_effect":
+            problems.append(f"stage '{key}' is a side effect; its kind must stay side_effect")
     problems += [f"no unknown '{u}'" for u in c.get("findings") or {} if u not in unknowns]
     problems += [f"no question '{q}'" for q in c.get("answers") or {} if q not in questions]
     problems += [f"question '{q.get('id')}' already exists" for q in c.get("questions") or [] if q.get("id") in questions]
@@ -160,8 +161,8 @@ def replan(change: Annotated[str, typer.Option(help="the change as a JSON object
     for key in c.get("remove") or []:
         stages.remove(by_key.pop(key))
     for st in map(styled, c.get("stages") or []):
-        if st["key"] in by_key:
-            stages[stages.index(by_key[st["key"]])] = st
+        if st["id"] in by_key:
+            stages[stages.index(by_key[st["id"]])] = st
         else:
             stages.append(st)
     for uid, finding in (c.get("findings") or {}).items():
@@ -287,9 +288,9 @@ def card():
                      for i in plan.get("inputs") or [] if isinstance(i, dict)],
           "outputs": [{k: o.get(k) for k in ("id", "kind", "format", "location") if o.get(k) is not None}
                       for o in plan.get("outputs") or [] if isinstance(o, dict)],
-          "approvals": [{"stage": s["key"], "title": s.get("title")} for s in stages
-                        if s.get("kind") == "side_effect" or s.get("approval") == "required" or s.get("pattern") == "approval"],
-          "reviews": [{"stage": s["key"], "title": s.get("title")} for s in stages if s.get("pause_after")]})
+          "approvals": [{"stage": s["id"], "title": s.get("title")} for s in stages
+                        if stage_kind(s) == "side_effect" or s.get("pattern") == "approval"],
+          "reviews": [{"stage": s["id"], "title": s.get("title")} for s in stages if s.get("pause_after")]})
 
 
 if __name__ == "__main__":

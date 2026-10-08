@@ -22,7 +22,7 @@ COMP = validate_plan.read_plan(EX / "competitor-memo", strict=True)
 
 
 def st(p, key):
-    return next(s for s in p["stages"] if s["key"] == key)
+    return next(s for s in p["stages"] if s["id"] == key)
 
 
 def ran(p, **stages):
@@ -42,31 +42,34 @@ def check(base, mutate):
 # (name, base plan, mutation, expected substring, "error" | "warning")
 CASES = [
     ("open question but ready", INV, lambda p: p["questions"][0].__setitem__("answer", None), "are unanswered", "error"),
-    ("side effect without approval", INV, lambda p: st(p, "drafts").__setitem__("approval", "none"), "need approval: required", "error"),
+    ("kind as a bare word", INV, lambda p: st(p, "extract").__setitem__("kind", "deterministic"), "kind is a mapping: {value: deterministic", "error"),
+    ("an unknown stage field", INV, lambda p: st(p, "compare").__setitem__("consumes", ["budget"]), "unknown field 'consumes'", "error"),
     ("waves listed in the plan", INV, lambda p: p.__setitem__("waves", [{"id": "w1", "stages": ["find"]}]), "plans do not list waves", "error"),
     ("status in the plan", INV, lambda p: st(p, "find").__setitem__("status", "done"), "status belongs to the run", "error"),
-    ("done stage needs a pending one", INV, lambda p: ran(p, extract="done"), "is done in run test-run but needs 'find', which is pending", "error"),
+    ("done stage needs a pending one", INV, lambda p: ran(p, extract="done"), "is done in run test-run but runs after 'find', which is pending", "error"),
     ("provisional stage running", COMP, lambda p: ran(p, discover="done", confirm_list="done", analyse="running"), "is provisional but running", "error"),
-    ("cycle", INV, lambda p: st(p, "find").__setitem__("needs", ["compare"]), "dependency cycle", "error"),
-    ("consumes without needs", INV, lambda p: st(p, "compare").__setitem__("needs", []), "which it does not need", "error"),
-    ("judgment data output without schema", INV, lambda p: st(p, "find")["out"][0].pop("schema"), "needs a schema", "error"),
-    ("deterministic without verify", INV, lambda p: st(p, "extract").pop("verify"), "need verify", "error"),
-    ("map without batch", INV, lambda p: st(p, "find").pop("batch"), "positive integer batch", "error"),
-    ("map without items", INV, lambda p: st(p, "find").pop("items"), "need `items`", "error"),
+    ("cycle", INV, lambda p: st(p, "find").__setitem__("after", ["compare"]), "dependency cycle", "error"),
+    ("reads without after", INV, lambda p: st(p, "compare").__setitem__("after", []), "which it does not run after", "error"),
+    ("judgment data output without schema", INV, lambda p: st(p, "find")["writes"][0].pop("schema"), "needs a schema", "error"),
+    ("deterministic without a check", INV, lambda p: (st(p, "extract").pop("gate"), st(p, "extract").pop("done_when")), "need a gate, review or done_when", "error"),
+    ("judgment without a reason", INV, lambda p: st(p, "find")["kind"].pop("reason"), "has no kind.reason", "warning"),
+    ("map without batch", INV, lambda p: st(p, "find")["map"].pop("batch"), "positive integer map.batch", "error"),
+    ("map without over", INV, lambda p: st(p, "find")["map"].pop("over"), "need `map.over`", "error"),
     ("model on external runner", INV, lambda p: (p.setdefault("agents", {}).setdefault("available", []).append({"name": "cli", "runner": "external-cli"}), st(p, "extract").update(agent="cli", model="m")), "runs no model", "warning"),
     ("unknown model role", INV, lambda p: p.__setitem__("models", {"critic": "m"}), "not a known role", "warning"),
-    ("secret in a model stage's gate", INV, lambda p: (p.setdefault("params", {}).__setitem__("tok", {"description": "d", "type": "secret"}), st(p, "review").__setitem__("verify", {"gate": "check ${tok}"})), "reaches only a command the batcher runs", "error"),
+    ("a model stage without instructions", INV, lambda p: st(p, "review").pop("instructions", None), "give it `instructions`", "warning"),
+    ("secret in a model stage's gate", INV, lambda p: (p.setdefault("params", {}).__setitem__("tok", {"description": "d", "type": "secret"}), st(p, "review").__setitem__("gate", "check ${tok}")), "reaches only what the batcher runs", "error"),
     ("reads outside content with a shell", INV, lambda p: st(p, "find").__setitem__("agent", "worker"), "reads outside content (mail) as 'worker', which has a shell", "warning"),
     ("network host that isn't one", INV, lambda p: p.__setitem__("network", ["https://api.github.com/x"]), "network", "error"),
     ("non-positive budget", INV, lambda p: p.setdefault("limits", {}).__setitem__("max_cost_usd", 0), "max_cost_usd", "error"),
     ("unknown agent", INV, lambda p: st(p, "extract").__setitem__("agent", "parser"), "not in the available agents", "error"),
-    ("typed gate plus returned schema", INV, lambda p: (st(p, "review")["out"][0].pop("path"), st(p, "review").__setitem__("verify", {"gate": {"command": "x", "output": "json"}})), "typed gate cannot be combined", "error"),
-    ("map child key collision", INV, lambda p: p["stages"].append({"key": "find-2", "title": "x", "kind": "deterministic", "pattern": "script", "agent": "worker", "verify": {"check": "x"}}), "collides with child keys", "error"),
-    ("absolute out path", INV, lambda p: st(p, "compare")["out"][0].__setitem__("path", "~/report.xlsx"), "path is absolute", "error"),
-    ("path param after path text", INV, lambda p: st(p, "compare")["out"][0].__setitem__("path", "../${report_dir}/r.xlsx"), "compiles to an absolute path", "error"),
-    ("deterministic work in a worker", INV, lambda p: (st(p, "extract").pop("script"), st(p, "extract").pop("run"), st(p, "extract").__setitem__("pattern", "worker")), "deterministic work in a worker child", "warning"),
+    ("typed gate plus returned schema", INV, lambda p: (st(p, "review")["writes"][0].pop("path"), st(p, "review").__setitem__("gate", {"command": "x", "output": "json"})), "typed gate cannot be combined", "error"),
+    ("map child key collision", INV, lambda p: p["stages"].append({"id": "find-2", "title": "x", "kind": {"value": "deterministic"}, "pattern": "script", "agent": "worker", "done_when": "x"}), "collides with child keys", "error"),
+    ("absolute writes path", INV, lambda p: st(p, "compare")["writes"][0].__setitem__("path", "~/report.xlsx"), "to an absolute path", "error"),
+    ("path param after path text", INV, lambda p: st(p, "compare")["writes"][0].__setitem__("path", "../${report_dir}/r.xlsx"), "compiles to an absolute path", "error"),
+    ("deterministic work in a worker", INV, lambda p: (st(p, "extract").pop("program"), st(p, "extract").__setitem__("pattern", "worker")), "deterministic work in a worker child", "warning"),
     ("side effect on an app with a builtin agent", INV, lambda p: None, "has no connector tools", "warning"),
-    ("undefined param", INV, lambda p: st(p, "compare")["out"][0].__setitem__("path", "${nope}/r.xlsx"), "undefined param", "error"),
+    ("undefined param", INV, lambda p: st(p, "compare")["writes"][0].__setitem__("path", "${nope}/r.xlsx"), "undefined param", "error"),
     ("user-scoped agent", INV, lambda p: (p["agents"]["available"].append({"name": "x-parser", "source": "user"}), st(p, "extract").__setitem__("agent", "x-parser")), "user-scoped", "error"),
     ("asked finding without question", INV, lambda p: p["questions"][2].pop("from_finding"), "marked asked", "error"),
     ("ready without critique", INV, lambda p: (p.pop("critique"), [q.pop("from_finding", None) for q in p["questions"]]), "no critique", "error"),
@@ -75,9 +78,9 @@ CASES = [
     ("resolves_after cycle", COMP, lambda p: st(p, "analyse").__setitem__("resolves_after", "memo"), "resolves_after makes a cycle", "error"),
     ("provisional without intent", COMP, lambda p: st(p, "analyse").pop("intent"), "need an intent", "error"),
     ("probe unknown unresolved", COMP, lambda p: p["unknowns"].append({"id": "u9", "text": "x", "resolve_by": "probe"}), "no finding", "error"),
-    ("memo without reviewer", COMP, lambda p: (p["stages"].remove(st(p, "review-memo")), st(p, "publish").__setitem__("needs", ["memo"]), st(p, "publish").__setitem__("consumes", ["memo_draft"])), "needs verify.review", "error"),
-    ("returned result across waves", COMP, lambda p: st(p, "review-memo")["out"][0].pop("path"), "from an earlier wave", "error"),
-    ("shape: unknown kind", INV, lambda p: st(p, "extract").__setitem__("kind", "mechanical"), "stage 'extract': kind: Input should be", "error"),
+    ("memo without reviewer", COMP, lambda p: (p["stages"].remove(st(p, "review-memo")), st(p, "publish").__setitem__("after", ["memo"]), st(p, "publish").__setitem__("reads", ["memo_draft"])), "needs review or a downstream reviewer", "error"),
+    ("returned result across waves", COMP, lambda p: st(p, "review-memo")["writes"][0].pop("path"), "from an earlier wave", "error"),
+    ("shape: unknown kind", INV, lambda p: st(p, "extract")["kind"].__setitem__("value", "mechanical"), "stage 'extract': kind.value: Input should be", "error"),
     ("shape: pattern lanes (removed, never compiled)", INV, lambda p: st(p, "review").__setitem__("pattern", "lanes"), "pattern: Input should be", "error"),
     ("shape: provisional not a boolean", INV, lambda p: st(p, "extract").__setitem__("provisional", "yes"), "provisional: Input should be a valid boolean", "error"),
     ("redundant context", INV, lambda p: st(p, "review").__setitem__("context", "fresh"), "already the default", "warning"),
@@ -86,16 +89,16 @@ CASES = [
     ("two params read one variable", INV, lambda p: p["params"]["budget_file"].__setitem__("env", "MAIL_DIR"), "like param 'mail_dir'", "error"),
     ("secret with a default", COMP, lambda p: p["params"]["notion_token"].__setitem__("default", "x"), "a secret has no default", "error"),
     ("secret in a path", INV, lambda p: p["params"]["report_dir"].__setitem__("type", "secret") or p["params"]["report_dir"].pop("default"), "cannot be part of a path", "error"),
-    ("script with a folder", INV, lambda p: st(p, "extract").__setitem__("script", "../x.py"), "must be a file name", "error"),
-    ("script on a judgment stage", INV, lambda p: st(p, "review").__setitem__("script", "r.py"), "a judgment stage has no program", "error"),
-    ("script on a map stage", INV, lambda p: (st(p, "find").__setitem__("kind", "deterministic"), st(p, "find").__setitem__("script", "f.py")), "not supported yet", "error"),
-    ("run without script", INV, lambda p: st(p, "review").__setitem__("run", "a b"), "name the program with script:", "error"),
-    ("run with a returned output", INV, lambda p: (st(p, "extract").__setitem__("run", "x"), st(p, "extract")["out"][1].pop("path")), "writes files and returns nothing", "error"),
-    ("run with an undefined param", INV, lambda p: st(p, "extract").__setitem__("run", "${nope}"), "undefined param", "error"),
-    ("script without run", INV, lambda p: st(p, "extract").pop("run"), "give `run:` the program's arguments", "warning"),
-    ("script with pattern worker", INV, lambda p: st(p, "extract").__setitem__("pattern", "worker"), "has pattern: script", "error"),
-    ("two stages share a script", INV, lambda p: st(p, "compare").__setitem__("script", "extract_invoice_lines.py"), "give each stage its own", "error"),
-    ("script stage without a program", INV, lambda p: st(p, "extract").pop("script"), "name its program", "warning"),
+    ("program with a folder", INV, lambda p: st(p, "extract")["program"].__setitem__("file", "../x.py"), "must be a file name", "error"),
+    ("program on a judgment stage", INV, lambda p: st(p, "review").__setitem__("program", {"file": "r.py"}), "a judgment stage has none", "error"),
+    ("program on a map stage", INV, lambda p: (st(p, "find")["kind"].__setitem__("value", "deterministic"), st(p, "find").__setitem__("program", {"file": "f.py"})), "not supported yet", "error"),
+    ("program args without a file", INV, lambda p: st(p, "review").__setitem__("program", {"args": "a b"}), "program.file: Field required", "error"),
+    ("program args with a returned output", INV, lambda p: st(p, "extract")["writes"][1].pop("path"), "writes files and returns nothing", "error"),
+    ("program args with an undefined param", INV, lambda p: st(p, "extract")["program"].__setitem__("args", "${nope}"), "undefined param", "error"),
+    ("program without args", INV, lambda p: st(p, "extract")["program"].pop("args"), "give the program its `args`", "warning"),
+    ("program with pattern worker", INV, lambda p: st(p, "extract").__setitem__("pattern", "worker"), "has pattern: script", "error"),
+    ("two stages share a program", INV, lambda p: st(p, "compare")["program"].__setitem__("file", "extract_invoice_lines.py"), "give each stage its own", "error"),
+    ("script stage without a program", INV, lambda p: st(p, "extract").pop("program"), "name its program", "warning"),
     ("unknown param type", INV, lambda p: p["params"]["mail_dir"].__setitem__("type", "folder"), "param 'mail_dir': type: Input should be", "error"),
 ]
 
@@ -105,7 +108,7 @@ WAVES = [
      [(["find", "extract", "extract-rest", "compare", "review"], "none"), (["approve-drafts", "drafts"], "approval")]),
     ("competitor-memo: replan after discovery", COMP, lambda p: None,
      [(["discover"], "replan"), (["confirm-list", "analyse", "memo", "review-memo"], "none"), (["publish"], "approval")]),
-    ("pause_after moves the stages that need it", INV, lambda p: st(p, "compare").__setitem__("pause_after", True),
+    ("pause_after moves the stages that run after it", INV, lambda p: st(p, "compare").__setitem__("pause_after", True),
      [(["find", "extract", "extract-rest", "compare"], "review"), (["review"], "none"), (["approve-drafts", "drafts"], "approval")]),
     ("done stages leave the waves", INV, lambda p: ran(p, find="done", extract="done", extract_rest="done", compare="done", review="done"),
      [(["approve-drafts", "drafts"], "approval")]),
@@ -142,7 +145,7 @@ def test_a_ready_plan_needs_its_critique_recorded_by_the_tool():
     edited = copy.deepcopy(INV)
     edited["goal"] = "something else"
     assert any("changed after the critic" in e for e in validate_plan.validate(edited)[0])
-    assert validate_plan.check_ready({"status": "ready", "stages": [{"key": "a", "kind": "deterministic"}]}) is None
+    assert validate_plan.check_ready({"status": "ready", "stages": [{"id": "a", "kind": {"value": "deterministic"}}]}) is None
 
 
 def test_the_examples_carry_the_fingerprint_of_their_own_plan():
@@ -175,7 +178,7 @@ def test_gate_packages_come_from_the_agents_pyproject(tmp_path):
     (tmp_path / "gates" / "check_lines.py").write_text("import csv\nimport not_listed_pkg\n", encoding="utf-8")
     (tmp_path / "gates" / "check_report.py").write_text("import openpyxl\nimport yaml\n", encoding="utf-8")
     plan = copy.deepcopy(INV)
-    st(plan, "compare")["verify"]["gate"] = "uv run ../gates/check_report.py ${report_dir}/Q3-invoice-variance.xlsx"
+    st(plan, "compare")["gate"] = "uv run ../gates/check_report.py ${report_dir}/Q3-invoice-variance.xlsx"
     errors, _warnings, _summary = validate_plan.validate(plan, agent_root=tmp_path)
     assert any("check_lines.py would fail" in e and "agent_add_package" in e and "not_listed_pkg" in e for e in errors), errors
     assert not any("check_report.py would fail" in e for e in errors), errors  # yaml is PyYAML's import name
@@ -224,3 +227,14 @@ def test_a_changed_revision_alone_needs_no_critic():
     plan["critique"] = {"plan_digest": validate_plan.plan_digest(plan)}
     assert validate_plan.check_ready({**plan, "revision": 6}) is None
     assert validate_plan.check_ready({**plan, "goal": "other"})  # content: the critic must see it
+
+
+def test_the_editors_schema_is_the_validators():
+    # plan.schema.json is generated from the models; after changing them, write it again:
+    # uv run python -c "import json, sys; sys.path.insert(0, '.pi/skills/agent/scripts'); import validate_plan as v; \
+    #   open('.pi/skills/agent/plan.schema.json', 'w').write(json.dumps(v.plan_json_schema(), indent=1) + '\n')"
+    import json
+    schema = validate_plan.plan_json_schema()
+    assert json.loads((SKILL / "plan.schema.json").read_text(encoding="utf-8")) == schema
+    stage = schema["$defs"]["Stage"]
+    assert stage["additionalProperties"] is False and {"after", "reads", "writes", "program", "map"} <= set(stage["properties"])

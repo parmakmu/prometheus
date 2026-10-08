@@ -923,7 +923,7 @@ export default function agentExtension(pi: ExtensionAPI) {
       "Pass `budget` only after preflight budget: the user saw what the run spent and gave a new limit.",
     ],
     parameters: Type.Object({
-      approve: Type.Optional(Type.Array(Type.String(), { description: "side-effect stage keys the user explicitly approved" })),
+      approve: Type.Optional(Type.Array(Type.String(), { description: "side-effect stage ids the user explicitly approved" })),
       reviewed: Type.Optional(Type.Boolean({ description: "the user reviewed the last wave's outputs and said to go on" })),
       budget: Type.Optional(Type.Number({ description: "the run's new cost limit in USD, given by the user after preflight budget" })),
     }),
@@ -937,7 +937,7 @@ export default function agentExtension(pi: ExtensionAPI) {
     description: "Record the user's answer for a decision stage, in the file the compiler reads.",
     promptGuidelines: ["Record only answers the user actually gave; never answer a decision stage yourself."],
     parameters: Type.Object({
-      stage: Type.String({ description: "the decision stage key" }),
+      stage: Type.String({ description: "the decision stage id" }),
       answer: Type.Any({ description: "the user's answer as JSON (object, string, list)" }),
     }),
     script: "run_log.py",

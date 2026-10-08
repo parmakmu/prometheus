@@ -52,6 +52,9 @@ SKILL_DIR = SCRIPT_DIR.parent
 PROMETHEUS_DIR = SKILL_DIR.parents[2]  # .pi/skills/agent -> the repo root; the templates are not part of the skill
 TEMPLATE_DIR = PROMETHEUS_DIR / "templates" / "agent"
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+# the `prometheus` command's own words: `prometheus <slug>` opens an agent, so no agent may be named like one of them
+RESERVED = {"init", "doctor", "help", "list", "install", "share", "upgrade", "refresh", "pull", "run", "release", "ui", "check",
+            "propose", "catalog", "serve", "prune"}
 IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store")
 PLAN = Path("plan.yaml")
 STATE_FILES = {Path(agent_params.ENV_FILE): agent_params.ENV_HEADER}
@@ -178,12 +181,15 @@ def main(
     request: Annotated[str, typer.Option(help="the user's request, verbatim")] = "",
     refresh: Annotated[bool, typer.Option("--refresh", help="update template files and the skill copy")] = False,
     if_stale: Annotated[bool, typer.Option("--if-stale", help="with --refresh: do nothing when the agent already has this prometheus version")] = False,
+    lock: Annotated[bool, typer.Option(help="write uv.lock (uv resolves the agent's packages, which may build them: --no-lock for an agent not yet reviewed)")] = True,
     from_agent: Annotated[str | None, typer.Option("--from", help="start from this agent (a slug under --root, or a folder): its plan as a draft, its gates, programs, subagents and packages")] = None,
 ):
     """Create or refresh an agent."""
 
     if not SLUG_RE.match(slug):
         refuse(f"slug must match {SLUG_RE.pattern}", 2)
+    if slug in RESERVED and not refresh:
+        refuse(f"{slug!r} is a prometheus command (`prometheus {slug}`), so it can't name an agent; pick another slug", 2)
     if not TEMPLATE_DIR.is_dir():  # an agent's copy of the skill has no templates: they are Prometheus's
         refuse(f"no agent template at {TEMPLATE_DIR}: create and refresh agents from prometheus", 2)
     agent_dir = Path(root) / slug
@@ -263,7 +269,7 @@ def main(
     if source:
         written += copy_from(source, agent_dir, slug, request)
     agent_abs = agent_dir.resolve()
-    locked = lock_packages(agent_abs)
+    locked = lock_packages(agent_abs) if lock else None
     if locked:
         written.append(locked)
     note = None

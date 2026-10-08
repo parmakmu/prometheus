@@ -26,7 +26,7 @@ def test_the_plan_is_split_and_written_in_its_sections(tmp_path):
     assert all(read_yaml(agent / ".plan" / f"{p}.yaml", {}).get(p) for p in PLAN_PARTS)
     banners = [line.removeprefix(BANNER).rstrip(" ─") for line in text.splitlines() if line.startswith(BANNER) and line.endswith("─")]
     assert banners == ["What you asked for", "What it works on", "How it works", "Assumptions", "Limits and models"]
-    assert "\n\n  - key: " in text  # stages one paragraph each
+    assert "\n\n  - id: " in text  # stages one paragraph each
     # the same plan, and the same text when written again (a banner read back is not repeated)
     assert plan_digest(read_plan(agent)) == plan_digest(plan)
     write_plan(agent, read_plan(agent))
