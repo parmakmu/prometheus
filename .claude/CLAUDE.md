@@ -121,6 +121,8 @@ Launching
   `mission_close`, `done_when`. Commands activate `subagent` before their prompt.
 - `/agent-auto` runs waves in code through pi-subagents' RPC, handing over (as a `followUp`) only when the model or
   a person is needed; until then notice turns are told to do nothing and the run tools are refused (`AUTO_OWNS`).
+  A notice turn has no prompt, or (pi-subagents >= 0.76) "Subagent updates above."; a wave /agent-auto recorded stays
+  refused to agent_log_finish after the hand-over (a late notice, run 2026-10-09-4).
 
 Runs and changes
 - Runs are folders; ≤1 active; relative params resolve inside the run; one mission per run.

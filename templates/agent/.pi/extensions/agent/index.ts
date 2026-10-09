@@ -69,6 +69,9 @@ Note from the user for this run (may be empty): ${note}`;
 
 /** Starts every /agent-auto hand-over: its turn ends the autopilot's hold on the run tools. */
 const HANDOVER_MARK = "/agent-auto ran";
+/** pi-subagents (>= 0.76) wakes an idle parent with its notices and then this message; before, with no prompt. */
+const PARENT_WAKE = "Subagent updates above.";
+const isNotice = (prompt?: string) => !prompt?.trim() || prompt.trim() === PARENT_WAKE;
 /** The tools /agent-auto calls itself while it runs; the model's are refused meanwhile. */
 const AUTO_OWNS = new Set(["agent_compile", "agent_log_start", "agent_log_finish", "agent_new_run", "agent_stop_run", "subagent"]);
 
@@ -377,6 +380,11 @@ export default function agentExtension(pi: ExtensionAPI) {
     // run 2026-10-05-1: a completion notice woke the model, which called agent_log_finish on a wave /agent-auto had recorded
     if (autopilot && AUTO_OWNS.has(event.toolName))
       return { block: true, reason: "/agent-auto is running this run's waves and records them itself; it hands over when it needs you. Do nothing now." };
+    // run 2026-10-09-4: the wave's completion notice came after the hand-over, and the model recorded the wave again
+    const wave = (event.input as { wave?: string }).wave;
+    if (event.toolName === "agent_log_finish" && wave && autoRecorded.has(wave))
+      return { block: true, reason: `/agent-auto already recorded wave ${wave}: there is nothing to record. Follow its hand-over message.` };
+    if (event.toolName === "agent_new_run") autoRecorded.clear();
     const input = event.input as { path?: string; command?: string };
     const shellCommand = event.toolName === "bash" || event.toolName === "powershell" ? (input.command ?? "") : "";
     const packageFile =
@@ -449,13 +457,15 @@ export default function agentExtension(pi: ExtensionAPI) {
   // /agent-auto is running waves: from its start until it hands over
   let autopilot = false;
   let looping = false; // its loop is launching or waiting for a wave
+  const autoRecorded = new Set<string>(); // waves of this run /agent-auto recorded: their late notices need nothing
   pi.on("before_agent_start", (event, ctx) => {
     if (!findRoot(ctx.cwd)) return;
     let systemPrompt = event.systemPrompt.replace(PI_PREAMBLE, ROLE_PREAMBLE);
     if (autopilot && event.prompt?.includes(HANDOVER_MARK)) autopilot = false;
     // pi-subagents wakes the model with each wave's completion notice (no prompt of its own); /agent-auto records
     // the wave itself, and its run tools are refused meanwhile (tool_call)
-    else if (autopilot && !event.prompt?.trim()) systemPrompt += "\n\n/agent-auto is running the waves and records them itself: answer a completion notice with one word and call no tools.";
+    else if ((autopilot || autoRecorded.size) && isNotice(event.prompt))
+      systemPrompt += `\n\n/agent-auto ${autopilot ? "is running the waves and records them itself" : `already recorded wave ${[...autoRecorded].join(", ")} itself`}: answer a completion notice with one word and call no tools.`;
     return systemPrompt === event.systemPrompt ? undefined : { systemPrompt };
   });
 
@@ -578,6 +588,7 @@ export default function agentExtension(pi: ExtensionAPI) {
       return ctx.ui.notify(`/agent-auto starts from a ready plan or a run between waves; the agent is ${state}: use /agent-run.`, "warning");
     }
     autopilot = true;
+    autoRecorded.clear();
     for (;;) {
       const c = await step("compile_wave.py", []);
       if (!c.ok) return handOver("the next wave needs something first", c);
@@ -600,6 +611,7 @@ export default function agentExtension(pi: ExtensionAPI) {
       if (end === "paused") return handOver(`a child of wave ${c.wave} asked a question (pi-subagents run ${id})`, { wave: c.wave, subagent_run_id: id });
       const f = await step("run_log.py", ["finish", "--wave", c.wave]);
       if (!f.ok) return handOver(`recording wave ${c.wave} failed`, f);
+      autoRecorded.add(c.wave);
       const took = Math.round((Date.now() - started) / 1000);
       show(`Wave ${c.wave} ${f.wave_status === "done" ? "done" : "did not complete"}`,
         `${took >= 60 ? `${Math.floor(took / 60)}m ${took % 60}s` : `${took}s`}${typeof f.cost_usd === "number" ? ` · $${f.cost_usd.toFixed(4)}` : ""}` +
@@ -661,6 +673,7 @@ export default function agentExtension(pi: ExtensionAPI) {
     handler: async (args, ctx) => {
       if (looping) return ctx.ui.notify("/agent-auto is running this run's waves; it hands over when it needs you.", "warning");
       autopilot = false; // a hand-over that never arrived: you take the run back
+      autoRecorded.clear();
       ask(ctx, RUN_PROMPT(args.trim()));
     },
   });

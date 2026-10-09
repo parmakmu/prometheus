@@ -1022,18 +1022,24 @@ def test_agent_auto_runs_the_waves_without_the_model(ext, tmp_path, run_py):
     wf = tmp_path / "auto"
     (wf / "plan.yaml").write_text(TWO, encoding="utf-8")
     finish = {"toolCall": {"toolName": "agent_log_finish", "input": {"wave": "w1"}}}
+    compile_call = {"toolCall": {"toolName": "agent_compile", "input": {}}}
     report = drive(ext, ext.tmp / ".ext" / "agent.ts", wf, [
         {"cmd": "agent-auto", "background": True}, {"sleep": 3000},
-        # while its wave runs, a completion notice's turn (no prompt): told to do nothing, and its run tools refused
-        {"systemPrompt": "Some other opening.", "prompt": ""}, finish,
+        # while its wave runs, a completion notice's turn (pi-subagents >= 0.76 wakes with a short message, before with
+        # no prompt): told to do nothing, and its run tools refused
+        {"systemPrompt": "Some other opening.", "prompt": "Subagent updates above."}, finish,
         {"wait": True},
         # handed over: the hold is gone at once, even in a turn already under way (the hand-over arrives as a
         # follow-up and starts none of its own: refused agent_compile, a model once stopped after an approval)
-        {"systemPrompt": "Some other opening.", "prompt": ""}, finish,
+        {"systemPrompt": "Some other opening.", "prompt": "Go on."}, compile_call,
+        # but the wave's notice arriving after the hand-over needs nothing: w1 is recorded (run 2026-10-09-4)
+        {"systemPrompt": "Some other opening.", "prompt": "Subagent updates above."}, finish,
     ], extra_env={"FAKE_SUBAGENTS_RPC": str(HERE / "mock-subagents.mjs"), "FAKE_SUBAGENTS_SLOW": "6000"})
     steps = report["steps"]
     assert "one word" in steps[2]["systemPrompt"] and steps[3]["blocked"], steps[2:4]
     assert steps[5]["systemPrompt"] is None and not steps[6]["blocked"], steps[5:7]
+    assert "already recorded wave w1" in steps[7]["systemPrompt"], steps[7]
+    assert steps[8]["blocked"] and "already recorded wave w1" in steps[8]["reason"], steps[8]
     out = [o for s in report["steps"] for o in s["out"]]  # a background command's output lands in later steps
     assert [o["status"] for o in out if o["kind"] == "spawn"] == ["done"], out
     (prompt,) = [o["text"] for o in out if o["kind"] == "prompt" and o["deliverAs"] == "followUp"]

@@ -32,7 +32,7 @@ import agent_git
 import agent_params
 import typer
 from compile_wave import Compiler
-from runs import RUN_ID_RE, RUNS, Run, active_run, list_runs
+from runs import RUN_ID_RE, RUNS, Run, active_run, list_runs, read_run
 from utils import (
     emit,
     mission_of,
@@ -250,10 +250,18 @@ def finish(
     note: Annotated[str | None, typer.Option()] = None,
 ):
     """Record a wave result."""
-    plan, run = open_agent()
+    plan, run = open_agent(need_run=False)
+    if run is None and (last := (list_runs(Path.cwd()) or [None])[-1]):
+        run = Run(last[0], last[1], read_run(last[1]))  # a wave of a run that has ended: say it is recorded (a completion notice after /agent-auto)
+    if run is None:
+        refuse("no active run: start one with agent_new_run (run_log.py new)")
     state = run.state
     entry = next((r for r in reversed(state.get("launches") or []) if r.get("wave") == wave and r.get("status") == "running"), None)
     if entry is None:
+        recorded = next((r for r in reversed(state.get("launches") or []) if r.get("wave") == wave), None)
+        if recorded:
+            refuse(f"wave {wave} of run {run.id} is already recorded ({recorded.get('status')}; the run is {state.get('status')}): "
+                   "nothing to record again, and nothing to relaunch")
         refuse(f"run {run.id} has no running launch of wave {wave}")
     returned, record = None, {}
     if result:

@@ -674,6 +674,16 @@ You may see these messages go by. Each is a guard doing its job, and the agent k
 
 **Fix.** The agent makes that stage a program (`program: {file, args}`), which gets the secret as an argument, or moves the call to a connector.
 
+### A wave recorded twice
+
+```text
+wave <wave> of run <id> is already recorded (done; the run is done): nothing to record again, and nothing to relaunch
+```
+
+**Cause.** A wave's completion notice reached the model after the wave was recorded, usually by `/agent-auto`, which records waves itself.
+
+**Fix.** None: the run is recorded. The agent answers the notice with nothing to do.
+
 ### Plan changed after the critique
 
 ```text
