@@ -6,7 +6,7 @@ critique:
   revision: 1
   passes: 2
   verdict: revise
-  plan_digest: 722e95d4d4411c09  # agent_record_critique writes it: the plan as the critic saw it
+  plan_digest: 8b2dc9ac1858ae12  # agent_record_critique writes it: the plan as the critic saw it
   findings:
     - id: f1
       severity: major

@@ -5,9 +5,9 @@ While a run is active the plan changes only here (the agent extension blocks dir
 commits go to the run's branch run/<id>, which the user reviews when the run ends. With no run
 active, the plan changes on a change branch (/agent-revise) by direct edits and `critique`.
 
-replan    (an active run, no wave running) applies {stages, remove, findings, questions, answers,
-          note}: full stage definitions replace or add stages (one given without `provisional`
-          becomes concrete); `remove` drops pending stages; findings and answers fill unknowns and
+resolve    (an active run, no wave running) applies {stages, remove, findings, questions, answers,
+          note}: full stage definitions replace or add stages (one given without
+          `resolves_after` becomes concrete); `remove` drops pending stages; findings and answers fill unknowns and
           questions. Locked: stages done or running in the run, and the request, goal, done_when,
           params, inputs, outputs and agents (a change for /agent-revise); a side effect stays
           one. Bumps the revision, sets draft, clears the critique, commits.
@@ -43,9 +43,9 @@ from utils import (
 from validate_plan import plan_digest, validate
 
 PLAN = Path("plan.yaml")
-CRITIC_PASSES = 2  # per replan: a plan fixed after a finding gets a new revision, not a new budget
+CRITIC_PASSES = 2  # each time a run resolves stages: a plan fixed after a finding gets a new revision, not a new budget
 LOCKED = ("request", "goal", "done_when", "params", "inputs", "outputs", "agents")
-REPLAN_KEYS = {"stages", "remove", "findings", "questions", "answers", "note"}
+RESOLVE_KEYS = {"stages", "remove", "findings", "questions", "answers", "note"}
 app = typer.Typer(add_completion=False)
 
 
@@ -72,6 +72,17 @@ def styled(value, key=None):
             s.fa.set_flow_style()
         return s
     return value
+
+
+def back_to_run_branch(run):
+    """Make sure an active run's own branch is checked out before its plan is read: someone may have switched
+    branches. Not while a wave runs (the call is refused then anyway)."""
+    if run is None or run.wave_running:
+        return
+    try:
+        agent_git.back_to_run_branch(Path.cwd(), run.branch)
+    except RuntimeError as exc:
+        refuse(f"run {run.id}: {exc}. Tell the user; do not change branches or files yourself")
 
 
 def commit(message, run):
@@ -104,27 +115,26 @@ def main(agent_dir: Annotated[str, typer.Option("--agent", help="agent root")] =
 
 
 @app.command()
-def replan(change: Annotated[str, typer.Option(help="the change as a JSON object, or a file holding it")]):
-    """Change pending stages after discovery."""
+def resolve(change: Annotated[str, typer.Option(help="the change as a JSON object, or a file holding it")]):
+    """Resolve provisional stages after their discovery, or change pending ones the user asked about."""
+    back_to_run_branch(active_run(Path.cwd()))  # before the plan is read
     plan, c = read_plan(Path.cwd(), {}), json_arg(change)
     if not isinstance(c, dict):
         refuse("the change must be a JSON object")
-    extra = sorted(set(c) - REPLAN_KEYS)
+    extra = sorted(set(c) - RESOLVE_KEYS)
     if "waves" in extra:
-        refuse("waves are not part of the plan: they follow from the stages' `after`, kinds and `pause_after`")
+        refuse("waves are not part of the plan: they follow from the stages' `after`, kinds and `pauses_after`")
     if extra:
-        refuse(f"a replan cannot change {extra}; it changes {sorted(REPLAN_KEYS - {'note'})}. "
+        refuse(f"resolving cannot change {extra}; it changes {sorted(RESOLVE_KEYS - {'note'})}. "
                f"{', '.join(LOCKED)} are locked: change them with /agent-revise once no run is active")
 
     stages = plan.get("stages") or []
     run = active_run(Path.cwd())
     if run is None:
-        refuse("no run is active: the replan tools work only during a run. Before the first run (on main) or on a "
+        refuse("no run is active: agent_resolve works only during a run. Before the first run (on main) or on a "
                "change branch, edit plan.yaml directly; after a run, start a change with /agent-revise")
-    if conflict := agent_git.branch_conflict(Path.cwd(), run.branch):
-        refuse(conflict)
     if run.wave_running:
-        refuse(f"a wave of run {run.id} is running: replan after agent_log_finish")
+        refuse(f"a wave of run {run.id} is running: resolve after agent_log_finish")
     frozen = set(run.state.get("stages") or {})
     by_key = {s.get("id"): s for s in stages}
     unknowns = {u.get("id"): u for u in plan.get("unknowns") or []}
@@ -175,24 +185,23 @@ def replan(change: Annotated[str, typer.Option(help="the change as a JSON object
     plan["status"] = "draft"
     plan.pop("critique", None)
     write_plan(Path.cwd(), plan)
-    new, git_note = commit(f"r{rev + 1} draft: replan" + (f": {c['note']}" if c.get("note") else ""), run)
+    new, git_note = commit(f"r{rev + 1} draft: resolve" + (f": {c['note']}" if c.get("note") else ""), run)
     emit({"ok": True, "previous_commit": previous, "commit": new, "git_note": git_note, "note": c.get("note"), **report(plan)})
 
 
 @app.command()
 def critique(result: Annotated[str, typer.Option(help="the critic's result as JSON {run_id, verdict, passes?, findings}, or a file")]):
     """Record a plan-critic result and mark the plan ready if it validates."""
+    back_to_run_branch(active_run(Path.cwd()))  # before the plan is read
     plan, c = read_plan(Path.cwd(), {}), json_arg(result)
     if not isinstance(c, dict) or not c.get("run_id") or not c.get("verdict"):
         refuse("the result needs run_id and verdict")
     if not isinstance(c.get("passes", 1), int) or not 1 <= c.get("passes", 1) <= CRITIC_PASSES:
-        refuse(f"passes is 1 or 2: at most {CRITIC_PASSES} critic passes per revision, and per replan during a run. "
+        refuse(f"passes is 1 or 2: at most {CRITIC_PASSES} critic passes per revision, and each time a run resolves stages. "
                "Do not launch another; record the last pass with each remaining finding rejected and a note why")
     run = active_run(Path.cwd())
-    if run and (conflict := agent_git.branch_conflict(Path.cwd(), run.branch)):
-        refuse(conflict)
     if run and run.wave_running:
-        refuse(f"a wave of run {run.id} is running: the critic reviews a replan, which waits for agent_log_finish")
+        refuse(f"a wave of run {run.id} is running: the critic reviews resolved stages, which waits for agent_log_finish")
     if run is None and agent_git.branch(Path.cwd()) == agent_git.MAIN and list_runs(Path.cwd()):
         refuse("main changes only by a reviewed merge once a run exists: change the plan with /agent-revise "
                "(a branch), and record the critic there")
@@ -203,11 +212,11 @@ def critique(result: Annotated[str, typer.Option(help="the critic's result as JS
     if child.get("state") not in ("completed", "complete") or (child.get("agent") or "plan-critic") != c.get("agent", "plan-critic"):
         refuse(f"run {c['run_id']} is a {child.get('agent')} child in state {child.get('state')}, not a completed "
                f"{c.get('agent', 'plan-critic')} run: record the critic's result only once it has completed")
-    if run:  # a replan: count the critic results recorded since the last wave launched
+    if run:  # resolving: count the critic results recorded since the last wave launched
         waves = len(run.state.get("launches") or [])
         seen = [e.get("run_id") for e in run.state.get("critiques") or [] if e.get("after_waves") == waves]
         if c["run_id"] not in seen and len(seen) >= CRITIC_PASSES:
-            refuse(f"this replan already had {CRITIC_PASSES} critic passes ({', '.join(seen)}); do not launch another. "
+            refuse(f"resolving these stages already had {CRITIC_PASSES} critic passes ({', '.join(seen)}); do not launch another. "
                    f"Record the last one again (run_id {seen[-1]}) with each remaining finding rejected and a note why, "
                    "tell the user about any blocking one, and continue")
         if c["run_id"] not in seen:
@@ -284,13 +293,13 @@ def card():
           "params": [{"name": n, "type": agent_params.kind(s), "description": agent_params.spec_of(s).get("description"),
                       "required": agent_params.spec_of(s).get("required", True), "set_here": values.get(n) is not None}
                      for n, s in specs.items()],
-          "inputs": [{k: i.get(k) for k in ("id", "kind", "format", "location") if i.get(k) is not None}
+          "inputs": [{k: i.get(k) for k in ("id", "kind", "format", "path") if i.get(k) is not None}
                      for i in plan.get("inputs") or [] if isinstance(i, dict)],
-          "outputs": [{k: o.get(k) for k in ("id", "kind", "format", "location") if o.get(k) is not None}
+          "outputs": [{k: o.get(k) for k in ("id", "kind", "format", "path") if o.get(k) is not None}
                       for o in plan.get("outputs") or [] if isinstance(o, dict)],
           "approvals": [{"stage": s["id"], "title": s.get("title")} for s in stages
                         if stage_kind(s) == "side_effect" or s.get("pattern") == "approval"],
-          "reviews": [{"stage": s["id"], "title": s.get("title")} for s in stages if s.get("pause_after")]})
+          "reviews": [{"stage": s["id"], "title": s.get("title")} for s in stages if s.get("pauses_after")]})
 
 
 if __name__ == "__main__":

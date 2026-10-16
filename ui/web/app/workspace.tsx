@@ -23,7 +23,7 @@ export type AgentSummary = {
   active_run: string | null;
   next_wave: string | null;
   next_stages: string[];
-  waiting: "approval" | "review" | "replan" | null;
+  waiting: "approval" | "review" | "resolve" | null;
   stages: Stage[];
   stages_done: number;
   stages_total: number;
@@ -103,11 +103,11 @@ function Node({ slug, path, dir, depth = 0, label, meta, metaTitle, editable, lo
 }
 
 // what the run is doing right now, in one line: the running steps, or what it waits for
-// the run's line under "Steps": only what isn't already in the list, i.e. that it waits for you (or is replanning)
+// the run's line under "Steps": only what isn't already in the list, i.e. that it waits for you (or is resolving)
 function Now({ w }: { w: AgentSummary }) {
   if (w.stages.some((s) => s.status === "running") || !w.waiting) return null;
-  const text = { approval: "Waiting for your approval in the chat", review: "Waiting for your review in the chat", replan: "Adjusting the plan" }[w.waiting];
-  return <p className={`px-2 pb-1 text-xs ${w.waiting === "replan" ? "text-muted-foreground" : "text-violet-700"}`}>{text}</p>;
+  const text = { approval: "Waiting for your approval in the chat", review: "Waiting for your review in the chat", resolve: "Adjusting the plan" }[w.waiting];
+  return <p className={`px-2 pb-1 text-xs ${w.waiting === "resolve" ? "text-muted-foreground" : "text-violet-700"}`}>{text}</p>;
 }
 
 // A plain list: an icon says where each step is (done, running, waiting); a running step names its subagents in one

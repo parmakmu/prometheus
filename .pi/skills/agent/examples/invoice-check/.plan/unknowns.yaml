@@ -3,13 +3,13 @@
 unknowns:
   - id: u1
     text: what the mail export looks like (formats, attachments)
-    resolve_by: probe
+    resolved_by: probe
     finding: >-
       1,240 .eml files; about 300 carry PDF attachments; a sample of 3 PDFs all
       had a text layer
     run_id: example-probe-run
   - id: u2
     text: when an amount difference counts as a PO mismatch
-    resolve_by: user
+    resolved_by: user
     question: q2
 

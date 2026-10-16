@@ -1,6 +1,6 @@
 // Load an agent extension with a mock pi host and drive it.
 // Usage: node --experimental-strip-types ext-harness.mjs <entry index.ts> <cwd> <steps.json>
-// steps: [{cmd:"agent-list", args:""}, {systemPrompt:"..."}, {tool:"agent_check", params:{...}}, {toolCall:{toolName, input}}, {env:"NAME"}, ...]
+// steps: [{cmd:"agent-list", args:""}, {systemPrompt:"...", prompt?, message?}, {tool:"agent_check", params:{...}}, {toolCall:{toolName, input}}, {env:"NAME"}, ...]
 // {cmd, background: true} starts a command and goes on; {sleep: ms} waits; {wait: true} waits for that command to end
 // With FAKE_SUBAGENTS_RPC=<mock-subagents.mjs>, pi-subagents' RPC answers ping and spawn: a spawned wave
 // runs in the mock at once and its status.json is written under $PI_SUBAGENTS_TEMP_ROOT (FAKE_SUBAGENTS_DEAD: as
@@ -82,7 +82,9 @@ for (const step of steps) {
       rec.reason = res?.reason ?? null;
     } else if (step.systemPrompt !== undefined) {
       let res;
-      for (const h of handlers.before_agent_start ?? []) res = (await h({ type: "before_agent_start", prompt: step.prompt ?? "", systemPrompt: step.systemPrompt }, ctx)) ?? res;
+      // Pi >= 1.2: a run a custom message starts has no prompt ({message: {customType}}), a user prompt's has one
+      const start = step.message ? { messageType: "custom", message: step.message } : { messageType: "user", prompt: step.prompt ?? "" };
+      for (const h of handlers.before_agent_start ?? []) res = (await h({ type: "before_agent_start", ...start, systemPrompt: step.systemPrompt }, ctx)) ?? res;
       rec.systemPrompt = res?.systemPrompt ?? null;
     } else if (step.cmd) {
       const def = commands[step.cmd];

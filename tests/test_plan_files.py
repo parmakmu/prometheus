@@ -4,7 +4,6 @@ The scripts read and write the plan as one (utils.read_plan, write_plan); these 
 rewriting changes nothing, that an older agent's plan moves on refresh, and that a section left in plan.yaml is
 reported.
 """
-import shutil
 import sys
 
 from conftest import SKILL, copy_example
@@ -41,23 +40,6 @@ def test_an_empty_part_has_no_file(tmp_path):
     plan["unknowns"] = []
     write_plan(agent, plan)
     assert not (agent / ".plan" / "unknowns.yaml").exists() and "unknowns" not in read_plan(agent)
-
-
-def test_a_refresh_moves_an_older_plans_parts_to_dot_plan(tmp_path, run_py):
-    assert run_py([SKILL / "scripts" / "scaffold_agent.py", "old", "--root", tmp_path, "--request", "x"]).data["ok"]
-    agent = tmp_path / "old"
-    # an agent from before 2026-10-05: one plan.yaml, the planning parts in it
-    example = read_plan(SKILL / "examples" / "invoice-check")
-    (agent / "plan.yaml").write_text(
-        "".join(f"{k}: {v!r}\n" if isinstance(v, (int, str)) else "" for k, v in example.items()) +
-        "questions:\n  - {id: q1, question: which folder?, answer: mail}\n", encoding="utf-8")
-    shutil.rmtree(agent / ".plan", ignore_errors=True)
-    before = plan_digest(read_plan(agent))
-    r = run_py([SKILL / "scripts" / "scaffold_agent.py", "old", "--root", tmp_path, "--refresh"])
-    assert r.data["ok"] and any("questions moved to .plan/" in w for w in r.data["written"]), r.data
-    assert "questions:" not in (agent / "plan.yaml").read_text(encoding="utf-8")
-    assert read_yaml(agent / ".plan" / "questions.yaml", {})["questions"][0]["answer"] == "mail"
-    assert plan_digest(read_plan(agent)) == before
 
 
 def test_a_part_left_in_plan_yaml_is_reported(tmp_path, run_py):

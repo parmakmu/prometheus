@@ -6,17 +6,20 @@ Usage: session_digest.py --agent DIR [--sessions-dir DIR] [--sessions 5] [--runs
 Only what is new: sessions that started, and runs that started, after the newest
 entry of the agent's improvements.yaml (the lessons /agent-improve saved)
 were not reviewed yet; the entries are returned as `lessons`. A lesson's `date`
-is a timestamp (an old one may be a bare date, read as the start of that day).
+is a timestamp.
 Sessions of /agent-improve and /agent-revise are skipped: they change the
 plan, they are not evidence of how it ran.
 
-Pi keeps one JSONL per session under <agent dir>/sessions/--<cwd with / as ->--/ (the agent dir is
-$PI_CODING_AGENT_DIR, else ~/.pi/agent).
+Pi keeps one JSONL per session in the agent's own .pi/sessions (the template's `sessionDir`).
 Prints one JSON object: `sessions` (newest first, at most --sessions), each with
 its user messages, tool use and cost, the failed or blocked tool results, and the
 calls repeated three times or more; `runs` from runs/*/run.yaml (status, cost,
-launches that did not finish, waves launched more than once). Only signals: the
-model opens the files they point at. Nothing is changed.
+launches that did not finish, waves launched more than once); `imported`: runs from
+bundles (bundle.py add, runs/imported/), unreviewed by when they were imported: a
+release's run or the agent's own on another machine (`kind`), its state and error, each
+child that didn't complete with its error, output and session file, and the agent's own
+sessions during it (`agent_sessions`; all read with agent_sessions). Only signals: the model opens the
+files they point at. Nothing is changed.
 """
 import json
 from collections import Counter
@@ -27,9 +30,10 @@ from typing import Annotated
 import prometheus_version
 import typer
 from runs import list_runs
-from utils import emit, read_yaml
+from utils import emit, read_json, read_yaml
 
 SNIPPET = 240  # characters kept of a message, argument or result
+OUTPUT = 1200  # characters kept of a failed child's output
 FAILURE = ("traceback", "exit code", "command not found", "no module named", "permission denied")
 REPEATS = 3
 LESSONS = "improvements.yaml"
@@ -44,7 +48,7 @@ def default_sessions_dir(agent_dir: Path) -> Path:
 
 
 def moment(value):
-    """A timestamp or bare date as an aware datetime (a bare date is the start of that day, local time); None if unreadable."""
+    """A timestamp as an aware datetime (local time when it names no zone); None if unreadable."""
     try:
         when = datetime.fromisoformat(str(value))
     except ValueError:
@@ -178,9 +182,23 @@ def digest_run(run_id: str, run_dir: Path):
     }
 
 
+def digest_import(agent_dir: Path, folder: Path):
+    """A run from a bundle (bundle.json): what ran, how it ended, the children that didn't complete, and the agent's
+    own sessions during it (an agent's run)."""
+    info = read_json(folder / "bundle.json") or {}
+    where = folder.relative_to(agent_dir)
+    failed = [{**{k: c.get(k) for k in ("key", "agent", "status", "error", "exit_code")}, "wave": launch.get("wave"),
+               "output": clip(c.get("output") or "", OUTPUT), "session": f"{where}/{c.get('session') or c.get('transcript')}" if c.get("session") or c.get("transcript") else None}
+              for launch in info.get("launches") or [] for c in launch.get("children") or []
+              if c.get("status") not in ("completed", "complete", "done")]
+    return {"folder": str(where), **{k: info.get(k) for k in ("kind", "version", "commit", "run", "state", "error", "versions", "with_files")},
+            "launches": [{k: x.get(k) for k in ("wave", "status", "cost_usd")} for x in info.get("launches") or []],
+            "failed_children": failed, "agent_sessions": [f"{where}/{name}" for name in info.get("sessions") or []]}
+
+
 def main(
     agent_dir: Annotated[Path, typer.Option("--agent", help="The agent folder, agents/<slug>.")],
-    sessions_dir: Annotated[Path | None, typer.Option(help="Pi's session folder for the agent; default from its path.")] = None,
+    sessions_dir: Annotated[Path | None, typer.Option(help="Pi's session folder for the agent; default: its .pi/sessions.")] = None,
     sessions: Annotated[int, typer.Option(help="How many of the newest unreviewed sessions to read.")] = 5,
     runs: Annotated[int, typer.Option(help="How many of the newest unreviewed runs to read.")] = 3,
 ):
@@ -205,6 +223,8 @@ def main(
         if unreviewed(d["started"]) and not d.pop("plan_session"):
             found.append(d)
     new_runs = [(rid, d) for rid, d in list_runs(agent_dir) if unreviewed((read_yaml(d / "run.yaml", {}) or {}).get("started_at"))]
+    imports = sorted((agent_dir / "runs" / "imported").glob("*/bundle.json"))
+    new_imports = [f.parent for f in imports if unreviewed((read_json(f) or {}).get("imported_at"))]
     emit({
         "ok": True,
         "agent": agent_dir.name,
@@ -214,6 +234,7 @@ def main(
         "lessons": lessons,
         "sessions": found,
         "runs": [digest_run(rid, d) for rid, d in new_runs[-runs:]] if runs else [],
+        "imported": [digest_import(agent_dir, d) for d in new_imports[-runs:]] if runs else [],
         "note": "This digest is the evidence: do not open the raw session files (their lines are too long to read). Read more of a session with agent_sessions (show <file> --around <the failure's at>); open only the run.yaml, gates and scripts a finding points at.",
     })
 

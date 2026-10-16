@@ -63,6 +63,22 @@ def _run(args, cwd=None, env=None, input=None) -> Result:
 
 
 @pytest.fixture(scope="session", autouse=True)
+def private_prometheus(tmp_path_factory):
+    """Releases and the cache in the test session's own folders, never the user's: a test that forgets to set them
+    still can't install or unpack a release into ~/.local/share."""
+    root = tmp_path_factory.mktemp("prometheus")
+    saved = {k: os.environ.get(k) for k in ("PROMETHEUS_RELEASES", "PROMETHEUS_CACHE")}
+    os.environ["PROMETHEUS_RELEASES"] = str(root / "releases")
+    os.environ["PROMETHEUS_CACHE"] = str(root / "cache")
+    yield root
+    for k, v in saved.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+
+
+@pytest.fixture(scope="session", autouse=True)
 def private_pi(tmp_path_factory):
     """Scripts read pi-subagents' run records and Pi's agent folder (missions, sessions): point both
     at a folder of the test session's own, never the user's."""

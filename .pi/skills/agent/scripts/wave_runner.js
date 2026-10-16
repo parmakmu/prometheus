@@ -50,7 +50,7 @@ function params(item) { const { key, ...p } = child(item); return p; }
 function batchOutput(m, b) { return m.outdir + "/" + b.index + m.ext; }
 function batchChild(m, b) {
   const c = { key: m.key + "-" + b.index, label: m.title + " — batch " + b.index, agent: m.agent, cwd: m.cwd,
-              task: text(m.task) + "\n\nYour batch file (one item per line): " + b.file + "\nWrite your batch result to: " + batchOutput(m, b),
+              task: text(m.task) + "\n\nYour batch file (one item per line): " + b.file + "\nName each item in your result exactly as it is written in the batch file, so every batch's results name items alike.\nWrite your batch result to: " + batchOutput(m, b),
               output: batchOutput(m, b) };
   if (m.context) c.context = m.context;
   if (m.model) c.model = m.model;

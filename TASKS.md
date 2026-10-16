@@ -1,80 +1,44 @@
-# Tasks (2026-10-08, distribution and frozen modes)
+# Tasks
 
 Status: [ ] todo · [~] doing · [x] done · [-] dropped (reason)
 
-Design: install with `uv tool`, planner in `~/.prometheus`, agents in `PROMETHEUS_AGENTS`; three modes (interactive,
-embedded via `load_agent`, service as an image the tech team deploys); embedded and service run a frozen release
-(`r<rev>`) as one launch with no orchestrator. GitLab; users are developers; everyone uses their own model keys.
+Where this is going (2026-10-08): install with `uv tool`, planner in `~/.prometheus`, agents in `PROMETHEUS_AGENTS`;
+three modes (interactive, embedded via `load_agent`, service through `prometheus serve`); embedded and service run a
+frozen release as code, with no orchestrator. GitLab; users are developers; everyone uses their own model keys.
 
-## 0. Quick tests (no product code)
+## Open
 
-- [x] 1. `pi -p "/cmd"` works as the frozen runner (Pi 1.1.0, pi-subagents 0.75.0, probe extensions in the scratchpad): print mode waits for an async command handler, starts no model turn, ~0.3 s startup; pi-subagents' RPC answers (`-e` its `index.js` with `--no-extensions`); `spawn` of an inline workflow completed in 0.25 s with its value in `status.json`; `process.exitCode` set in the handler is the exit code. Caveats: a thrown handler error still exits 0 (the runner sets the code itself); pi-subagents prints `turn_end could not resolve the persisted assistant entry ID` (with and without a session), harmless here
-- [-] 2. (skipped for now: no devpod here; run in a devpod) bubblewrap inside a devpod container: does it start
-- [-] 3. (skipped for now: no devpod here) devpod rebuild: which paths survive (agents folder, `~/.prometheus`, `~/.pi/agent`)
+- [ ] 75. the run protocol (~3k tokens) is read at the start of every run, even one that turns out fully reused
+  (email-summaries run 2026-10-17-2: the read was most of the run's cost). Give each start only what it needs: the
+  tool results already carry `next` and conclusions; the protocol could be split so a plain run reads a short core
+- [ ] 73. a map's merge checks that every item of the split appears once in the result (the batch task already says
+  to name items as the batch file does)
+- [ ] 38. per-item reuse in map stages: a batch child writes one result per item (its id), a store keyed by item
+  content + stage fingerprint, split leaves known items out, merge restores item order. Until an agent runs over a
+  growing input; 68 reuses a map stage whole
+- [ ] 28. live: emails-to-excel with an approval in the browser
 
-## 1. Install and launch
+## Done (details in git history and `docs/design.md`)
 
-- [x] 4. `pyproject.toml` as a package (hatchling): `[project.scripts] prometheus = prometheus.cli:main`; the wheel keeps the repo layout under `prometheus/` (`.pi/` parts, `templates/`), no sessions/tests/docs/ui; `rich` listed. Needs `uv sync` (build backend, editable install): not run
-- [x] 5. `prometheus/cli.py` (typer + rich): `init` (asks only in a terminal; `--yes`), `doctor` (pi, pi-subagents, node, uv, git identity, agents folder), `prometheus` (pi in `~/.prometheus` with `-e`, `--skill`, `--append-system-prompt` for the role and the agents folder; sessions via the copied settings.json, so no `--session-dir`; `PI_AGENT_PYTHON` = its own Python), `prometheus <slug> [pi args]`; lookup flag > env > `~/.config/prometheus/config.toml` > prompt > default. Live: `doctor` passes here (pi 1.1.0, pi-subagents now 0.76.1)
-- [x] 6. planner extension: root from its own file (fallback: from pi's folder upwards, for a copy elsewhere), agents from `PROMETHEUS_AGENTS` else `<root>/agents`; `/agent-new` names the skill and agents folder absolutely; role, SKILL.md and tool texts say "the agents folder" and `prometheus <slug>`. `plan-critic`: linked into `~/.prometheus/.pi/agents/` (not registered at runtime: that takes only description/prompt/tools). Live: `prometheus --mode json /agent-list` listed the repo's agents
-- [x] 7. `prometheus_version.py`: in the installed layout (no git, no pyproject.toml) the version comes from the package's metadata; test for it; `scaffold_agent.RESERVED` refuses command names as new slugs
-- [x] 8. already there: the agent extension runs `uv sync` for its own `.venv` on first start; `prometheus <slug>` leaves `PI_AGENT_PYTHON` unset so it does
-- [x] 9. `tests/test_cli.py` (settings order, init without a terminal, the planner's and an agent's pi command, reserved slugs), installed-layout version test; harness runs in the session folder and as ES modules; 310 pass, 15 skipped (with `PYTHONPATH=.` until `uv sync`); docs: README, tutorial, commands ("The prometheus command"), how-to (another agents folder; upgrade), troubleshooting (4 new refusals), contributing, glossary; CLAUDE.md
+- [x] 1–37. install and launch, `prometheus` CLI, releases, frozen runner and `load_agent`, sharing with plain git,
+  `prometheus serve`, A2A (card, tasks, pauses, `pattern: a2a`)
+- [x] 25–26, 39–51. released runs reuse each other; `prune`; first live map stage; stage `instructions`; plan field
+  names; review fixes; `.compiled/<wave>.{js,json}`; Pi 1.3 + pi-subagents 0.78; packaging + psutil; a run works on
+  its own branch; "resolve"; consistent field names
+- [x] 46. live: /agent-auto on Pi 1.3 + pi-subagents 0.78 (emails-to-excel run 2026-10-16-1)
+- [x] 52–59. bundles: `prometheus bundle`, `serve` `GET /runs/<id>/bundle`, `run.bundle()`, `/agent-bundle`;
+  `/agent-improve <bundle>`; `prometheus run <slug>@<ref> --bundle`; `prune --keep-failed`
+- [x] 60–64. releases: no `.pi/extensions/` in an unpacked release; `RELEASE.json`; `prometheus runs`;
+  `prometheus doctor <slug>`; `prometheus install <source>@v1` (frozen, releases folder `releases/<slug>/<version>/`)
+- [x] 65. `docs/python-api.md`
+- [x] 66–67. children's sessions and records (`work/.pi/sessions/`) bundled; `agent_sessions` reads transcripts;
+  `prune` removes empty launch folders
+- [x] 68–72. a map stage reused whole; outputs anywhere in the run reused; a fully reused wave recorded at compile
+  (`launched: false`); deliverables with item counts in the finished result
+- [x] 74. results state conclusions: a finished run's `report` (`do`: open nothing when every deliverable was
+  checked); a new run starts without asking whether inputs changed. Live: run 2026-10-17-2, 5 tool calls in 11 s
 
-## 2. Release check and frozen compile
+## Dropped
 
-- [x] 10. `release.py`: releasable (no provisional stages, every program present, no person-facing decisions, side effects listed); interface diff against the previous release (inputs, params, outputs, side effects), breaking needs `--breaking`; tags `r<rev>`
-- [x] 11. `compile_wave.py --frozen <folder>` (not `--all`): the whole plan as one workflow, approvals from the call, run folder outside the agent, no git
-- [x] 12. `tests/test_release.py` (release, breaking/minor, what blocks a release, the frozen compile) and a CLI test; `prometheus release <slug>` (check shown, asks in a terminal, `--yes`, `--breaking`); releases are `v<major>.<minor>` tags (not the moving `r<rev>`), accepted in state `planned` or `ready`; no validator rule needed (release.py does its own checks); docs: python-scripts, commands, troubleshooting (3 refusals), CLAUDE.md; 315 pass, 15 skipped. Live: emails-to-excel checks releasable as v1.0 (model only in `discover` + review), not tagged
-
-## 3. Frozen runner and Python API
-
-- [x] 13. runner: a command run with `pi -p --no-session -e <pi-subagents> -e <agent extension>` (task 1); the run folder is outside the agent, so set `UV_PROJECT=<agent>` (programs and gates run `uv run` from `work/`) and `git init` it (writer children's `preserveStagedIndex` needs a repo); secrets from the environment, not `.env`; `spawn` via pi-subagents' RPC; watch `status.json` (no 3 s poll); SIGTERM → pi-subagents `stop`; JSON-line events
-- [x] 14. `prometheus run <slug>@rN --input … --param … --approve … --json`
-- [x] 15. `from prometheus import load_agent`: `run` / `start` / `events` / `wait` / `cancel`; inputs as path, bytes or file; outputs as paths; `record`; checks Pi, pi-subagents, model login on load
-- [x] 16. `tests/test_frozen.py` (release picking, unpack, values and outputs, refusal, how an end is read incl. cancel) + live test (`PROMETHEUS_LIVE_TESTS=1`); runner type-checked; 322 pass, 16 skipped. Live: a released no-model agent ran in 2.5 s at $0 (correct output); cancel stops it in pi-subagents (`stopped`). Found and fixed: `work/` must exist; runs must sit inside an agent layout (batcher's `../../../` path, `uv run`), so a release is unpacked to a cache and runs go in its `runs/`; the checkout folder must be named like the agent; `complete` from pi-subagents is the workflow, wave_runner's `status` says if stages passed; in `pi -p` pi-subagents' completion wake starts model turns, so the runner aborts turns and exits at the end (the first live attempt, before this, may have made a few model calls). Not done: emails-to-excel embedded (its `discover` uses a model: your key and money; say if you want it); docs: commands, how-to (run from code), troubleshooting (3), contributing, CLAUDE.md
-
-## 4. GitLab sharing
-
-- [-] 17. release hashes: not needed (install refreshes the agent from your own prometheus, so everything prometheus owns is your copy; only the agent's own code is reviewed)
-- [x] 18. `prometheus/sharing.py` + commands, plain git (no GitLab here; any remote works): `install` (clone, refresh, show own code / packages / lessons, keep only if confirmed), `pull` (upstream commits and own files changed shown, main reset to upstream + refreshed; local non-refresh commits refused), `share` (secret scan, review, push main and `v*` tags; GitLab can create the project on push), `propose` (CLI, not a slash command: pushes a ready change branch; GitLab push options open an MR, plain push elsewhere). Tests with bare repos (`tests/test_sharing.py`, 6); live: install declined without a terminal, kept with `--yes`
-- [x] 19. `catalog.yaml` at the repo root, shipped in the package (`PROMETHEUS_CATALOG` overrides); `prometheus catalog`, `list`, `refresh`, `upgrade`; `propose` and `catalog` reserved as slugs; one error handler in `main()`; docs: commands, how-to (share, install, propose), troubleshooting (4), contributing, CLAUDE.md; 328 pass, 16 skipped
-
-## 5. `prometheus serve` (the owner: no Docker or CI here; whoever deploys the service wraps it)
-
-- [x] 20. `prometheus serve <slug>[@v]` on FastAPI (the owner chose it, as a plain dependency), one agent per process (its environment holds only that agent's secrets; several agents: a process each behind a proxy): `/health`, `/` (the agent), `/runs…`, a run form generated from its interface (so `/docs` and `/openapi.json` describe it: a file per path param, several for a folder, text fields, `approve`), run state, events (SSE), outputs (download; a folder as zip), cancel; output params always placed in the run, paths only as uploads; token (required off loopback), `--max-runs`, `--max-upload-mb`, JSON log lines; runs read back after a restart (`call.json`). `tests/test_serve.py` (5); live: `prometheus serve counter@v1` called with curl (describe, `?wait=true` run at $0, SSE events, download, refusal without approve, `/docs`). Found: uploads arrive as starlette's UploadFile, not FastAPI's subclass (the run got a coroutine's text); refusals carried server paths (now only stage, title, why and missing names); 334 pass, 16 skipped. Docs: commands, how-to (serve), troubleshooting, contributing, CLAUDE.md
-- [-] 21. Dockerfile + `.gitlab-ci.yml` in the agent template: left to whoever deploys a service
-- [-] 22. contract for the tech team: `serve`'s endpoints are documented instead
-
-## 6. devpod and CI
-
-- [-] 23. devpod image / Feature: dropped (the owner: deployment is for whoever deploys)
-- [-] 24. CI across Pi versions: dropped (same)
-
-## 7. A2A (the owner: A2A only, no MCP)
-
-- [x] 31. read the A2A 1.0.0 spec (a2a-protocol.org/latest): HTTP+JSON binding `POST /message:send` / `:stream`, `GET /tasks/{id}`, `GET /tasks`, `POST /tasks/{id}:cancel` / `:subscribe`, push configs, `GET /extendedAgentCard`; card at `/.well-known/agent-card.json`; camelCase, enums `TASK_STATE_*` / `ROLE_*`; Part = exactly one of `text`, `raw` (base64), `url`, `data` (+ `filename`, `mediaType`); blocking by default (`configuration.returnImmediately`); errors `google.rpc.Status` with `ErrorInfo` (domain a2a-protocol.org, reason e.g. TASK_NOT_FOUND), 404 / 400; content type `application/a2a+json`; `A2A-Version` header (Major.Minor)
-- [x] 32. `prometheus serve` also speaks A2A's REST binding: the Agent Card at `/.well-known/agent-card.json` (from the interface: a skill, the params as the input it takes), send a message (file parts for path params, a data part for text params and `approve`) → a task, get / cancel / subscribe, artifacts for the outputs; mapped onto the same runs as `/runs`
-- [x] 33. `tests/test_a2a.py` (4: card, send → task + artifacts, stream, the spec's errors); live: card, blocking send `TASK_STATE_COMPLETED` with an artifact link, a stream of task → status updates → artifact → end. Found: output params placed in a run lost their file names (`outputs/report`, and emails-to-excel's `emails.xlsx` would have been `outputs/output_file`): now the default's name, else `<param>.<format>`. `--public-url` for the card and links behind a proxy. Not checked against the official A2A SDK (`a2a-sdk` isn't installed: say if you want it as a dev dependency). Docs: commands, how-to, contributing, CLAUDE.md; 338 pass, 16 skipped
-
-## 8. What A2A changes (the owner agreed, 2026-10-08)
-
-- [x] 34. released runs pause instead of refusing: wave by wave in code (as /agent-auto, no orchestrator), stopping at a decision or an unapproved side effect in A2A's `TASK_STATE_INPUT_REQUIRED` (with what it would write, from the preflight), resumed by the caller's answer on the same task (A2A message with taskId; `/runs/<id>` too; `load_agent`'s Run gets `answer()`); approving up front stays as a shortcut. The release check stops refusing decision and approval stages (provisional stages and missing programs still block). Done: `compile_frozen` reads `state.json` (one wave `all` when nothing asks, else derived waves); `frozen.Run` is a driver thread (compile → launch a wave → record) that pauses with `needs` (paths made relative for HTTP) and resumes from any process; the runner runs one named wave (`wave_end`); release checks every wave's compile, decisions allowed; `prometheus run` asks in a terminal; serve `POST /runs/<id>/answer`; A2A `TASK_STATE_INPUT_REQUIRED` with the needs as text and data, answered by a message with the taskId (`TASK_NOT_WAITING` otherwise). Tests fake only the pi launch (the programs run); live through real pi: one launch, and a pause → answer → second wave. 340 pass, 16 skipped
-- [x] 35. the Agent Card carries the exact interface (params with types, outputs, side effects, version) as a prometheus A2A extension in `capabilities.extensions`, from the release tag
-- [x] 36. agents calling agents through A2A: a stage that calls another agent's endpoint (a program on `batcher`: send files, wait, write the artifacts into `work/`, an ordinary gate); a remote agent with side effects makes the calling stage a side effect; replaces the `calls:` idea (27). Done as a stage pattern, not a program: `pattern: a2a` with an `a2a:` block (url, files → consumed ids, params, approve, token as a secret param, timeout_s); validator rules (batcher only, no script/run, not a decision, out path, files consumed, approve ⇒ side_effect, token a secret; secrets allowed in it); compiled to a batcher item (no fix child, no reuse); `batch_tool.py` op `a2a` (stdlib: card, one message with returnImmediately, poll, download artifacts, fail with the callee's question or message); plan-schema.md, python-scripts, troubleshooting (2), CLAUDE.md. `tests/test_a2a_stage.py` (10): validator cases, the compiled item, a real HTTP round trip to `prometheus serve` (complete; asks → fails; wrong token → 401)
-- [x] 37. the web app's run API (`ui/api.ts`, `/a/<slug>/api`): marked replaced by `prometheus serve`, not developed further: a note at the top of `ui/api.ts` and in `ui/README.md`; the code stays
-
-## Later
-
-- [x] 25. released runs reuse each other: a release's runs stay in its cache folder (`runs/`), `reuse_earlier` reads a run's finished stages from `run.yaml` or `state.json` (`runs.list_released_runs`, `stages_done`), the frozen compile reuses and saves fingerprints (`<wave>.inputs.json`), the driver saves `<wave>-result.json`. Test: the same file twice → the judgment and its review are not run again, outputs copied; a changed file → judged again
-- [x] 39. live map stage (agents/email-summaries, hand-written plan, 8 emails in 2 batches): run 2026-10-09-1 failed with `Unknown agent: reader`: the split child's artifacts made `work/.pi/`, and `projectRootResolution: nearest` then looked for project agents there; template now `git-root` (this agent patched in place; other agents get it with `prometheus refresh`). Run 2026-10-09-2 done: split → 2 reader batches → merge, 8 summaries, children $0.0022: the first live map stage and batcher split/merge
-- [x] 40. stage `instructions` (the child's brief; was the pass-through `notes`, now warned): validator field + warnings, compiler, plan-schema, SKILL.md step 4, a validator case; email-summaries given instructions. Agents get it with `prometheus refresh`
-- [ ] 38. per-item reuse in map stages (batches are split at run time: fingerprint each batch's items)
-- [x] 26. retention: `run_history.py prune` covers a release's runs too (work, inputs, outputs, pi-subagents' records; `state.json` and events stay; paused runs kept) and removes mission files whose launches were all pruned; `prometheus prune <slug>` (the agent and each release in the cache), `serve --keep N` (after each run). A release's runs are ordered by start (`call.json`), not by id. Test; docs: python-scripts, commands, how-to, CLAUDE.md; 352 pass
-- [-] 27. agents calling agents (`calls:`): replaced by 36 (A2A)
-- [ ] 28. live: emails-to-excel with an approval in the browser (carried over)
-- [-] 29. chat web app: frozen, no new features (users are developers; TUI first)
-- [-] 30. model-key proxy: not needed (own keys; the service gets its key from the deployment)
-- [x] 41. plan field names for people who hand-edit plan.yaml (no aliases: unpublished): `needs`→`after`, `consumes`→`reads`, `out`→`writes`, `verify.check`→`done_when`, `verify.gate`/`verify.review`→top-level `gate`/`review` (no `verify`), `kind: {value, reason}` (no `kind_reason`), `script`+`run`→`program: {file, args}`, `items`/`items_glob`/`batch`→`map: {over, glob, batch}`, no `approval: required` (a side effect implies it), `key`→`id`. Done: validator models (+ `utils.stage_kind`), compiler, release, plan_edit, run_log, list_agents, sharing; an unknown stage field is an error (a misspelling no longer passes silently); examples, both agents and the tests migrated (critique digests restamped); plan-schema.md, SKILL.md, classify, replanning, run-protocol, the critic, docs. Also: `plan.schema.json` generated from the models (`plan_json_schema()`, a test keeps it current), named on plan.yaml's second line (yaml-language-server) so editors complete and check it; `prometheus check <slug>`; `cli.get_agent` (was in sharing.py and repeated twice in cli.py). 357 pass, 16 skipped. The agents need `prometheus refresh --all` (their skill copies still read the old names)
-- [x] 42. review of the modes commit (2026-10-09): install ran uv lock before review; blocking async routes froze the server; runs orphaned by a restart stayed running; the a2a op sent its token to any link; double answer / cancel-before-launch races; --breaking ignored without detected changes; decisions not in the interface; `..` file names; chunked uploads uncapped; empty token; secrets in pushed history; `git clone` without `--`. All fixed with tests (365 pass)
-- [x] 43. email-summaries run 2026-10-09-4: recorded fine, but the wave's completion notice reached the model after /agent-auto's hand-over and it tried agent_log_finish again ("no active run"). pi-subagents 0.76 wakes with "Subagent updates above." (the notice check looked for no prompt); now both count, a wave /agent-auto recorded is refused to agent_log_finish after the hand-over, and run_log finish says a wave is already recorded. Agents get it with `prometheus refresh --all`
+- [-] 2–3. devpod checks · 17. release hashes · 21–24. Dockerfile, CI, devpod image (the service team's) · 27.
+  `calls:` (A2A instead) · 29. chat web app features (frozen) · 30. model-key proxy (own keys)

@@ -15,7 +15,7 @@ start     records a launch of the active run's next wave (the plan must be ready
 finish    records how the wave's launch ended, read from pi-subagents' status.json unless
           --result is given. `done` marks its stages done (and the run, after the last wave); any
           other status puts them back to pending for a relaunch. Saves the return value to
-          .compiled/<wave>-result.json, commits files the wave wrote on run/<id>, and returns what
+          .compiled/<wave>.json (`result`), commits files the wave wrote on run/<id>, and returns what
           the parent needs next (ends_with, next_wave with what its compile would ask first; at the
           end the review, mission_close and done_when).
 decision  writes the user's answer for a decision stage where compile_wave.py looks for it.
@@ -32,7 +32,16 @@ import agent_git
 import agent_params
 import typer
 from compile_wave import Compiler
-from runs import RUN_ID_RE, RUNS, Run, active_run, list_runs, read_run
+from runs import (
+    RUN_ID_RE,
+    RUNS,
+    Run,
+    active_run,
+    list_runs,
+    read_run,
+    read_wave,
+    record_wave_result,
+)
 from utils import (
     emit,
     mission_of,
@@ -86,7 +95,8 @@ def subagents_outcome(run_id):
         refuse(f"cannot read pi-subagents' record of run {run_id} ({path}); "
                "pass the agent's return value with --result and --status")
     if st.get("state") in STILL_RUNNING:
-        if process_alive(st.get("pid")) is False:
+        started = st["startedAt"] / 1000 if isinstance(st.get("startedAt"), (int, float)) else None  # ms
+        if process_alive(st.get("pid"), started) is False:
             refuse(f"run {run_id} is still {st.get('state')} in pi-subagents, but its process ({st.get('pid')}) is gone: "
                    "it ended without recording how. Record it with agent_log_finish passing status failed "
                    "(stopped if it was stopped) and result {}")
@@ -211,8 +221,14 @@ def start(
         answers = json.loads(decisions)
     except ValueError as exc:
         refuse(f"--decisions is not JSON: {exc}")
-    run.state.setdefault("launches", []).append({
-        "wave": wave,
+    add_launch(plan, run, nxt, subagent_run_id, mission_id, [a.strip() for a in approved.split(",") if a.strip()], answers)
+    emit({"ok": True, "run": run.id, "wave": wave})  # the entry is in run.yaml; the model supplied what it holds
+
+
+def add_launch(plan, run, nxt, subagent_run_id, mission_id, approved, answers):
+    """Append a launch of wave `nxt` ({id, stages, ends_with}) to run.yaml, its stages running; returns the entry."""
+    entry = {
+        "wave": nxt["id"],
         "stages": nxt["stages"],
         "revision": plan.get("revision", 1),
         "ends_with": nxt["ends_with"],
@@ -222,13 +238,59 @@ def start(
         "subagent_run_id": subagent_run_id,
         "mission_id": mission_id or mission_of(subagent_run_id),  # a launch recorded late: its mission lists it
         "started_at": now(),
-        "approvals": [a.strip() for a in approved.split(",") if a.strip()],
+        "approvals": approved,
         "decisions": answers,
         "params": agent_params.record(plan.get("params"), agent_params.load(Path.cwd(), plan.get("params"))),
-    })
+    }
+    run.state.setdefault("launches", []).append(entry)
     set_status(run.state, nxt["stages"], "running")
     run.save()
-    emit({"ok": True, "run": run.id, "wave": wave})  # the entry is in run.yaml; the model supplied what it holds
+    return entry
+
+
+def record_without_launch(plan, run, nxt, returned, approved):
+    """A wave every stage of which is reused from an earlier run (compile_wave: nothing_to_launch), recorded as
+    launched and finished at once, with no launch: what agent_log_finish would return."""
+    entry = add_launch(plan, run, nxt, None, None, approved, {})
+    entry["launched"] = False
+    return close_launch(plan, run, entry, Status.done, returned, {}, None)
+
+
+def count_items(path: Path):
+    """How many items a deliverable holds, where that can be read without a model: a JSON array's entries, a JSON
+    lines file's lines, a CSV's rows (header not counted), a folder's files; else None."""
+    try:
+        if path.is_dir():
+            return sum(1 for f in path.rglob("*") if f.is_file())
+        suffix = path.suffix.lower()
+        if suffix == ".json":
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return len(data) if isinstance(data, list) else None
+        if suffix in (".jsonl", ".ndjson"):
+            return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+        if suffix == ".csv":
+            return max(0, sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip()) - 1)
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    return None
+
+
+def list_deliverables(plan, run):
+    """The plan's outputs as this run has them: {id, path (relative to the agent when inside it), exists, items (how
+    many, when count_items can tell)}, resolved as the compiler resolves them (params, and relative paths inside the
+    run): the final report checks a count from here instead of reading the file."""
+    compiler = Compiler(Path.cwd(), plan, agent_params.load(Path.cwd(), plan.get("params")), run.dir, run.state, set())
+    found = []
+    for o in plan.get("outputs") or []:
+        if not isinstance(o, dict) or not o.get("id") or not (path := compiler.out_path(o)):
+            continue
+        path = Path(path)
+        shown = path.relative_to(Path.cwd().resolve()) if path.is_relative_to(Path.cwd().resolve()) else path
+        entry = {"id": o["id"], "path": str(shown), "exists": path.exists()}
+        if path.exists() and (items := count_items(path)) is not None:
+            entry["items"] = items
+        found.append(entry)
+    return found
 
 
 def next_preflight(plan, run, wave):
@@ -274,7 +336,7 @@ def finish(
         returned, record = subagents_outcome(entry["subagent_run_id"])
     if status is None and returned is None and record.get("state") in ("failed", "stopped", "paused"):
         # the agent ended before its script returned (a script error, a timeout, a
-        # validation failure): pi-subagents >= 0.73 says which in workflow.failureKind
+        # validation failure): pi-subagents says which in workflow.failureKind
         status = Status.stopped if record.get("state") == "stopped" else Status.failed
         entry["error"] = str(record.get("error") or "")[:500] or None
         entry["failure_kind"] = (record.get("workflow") or {}).get("failureKind")
@@ -283,9 +345,15 @@ def finish(
         if given not in {s.value for s in Status}:
             refuse(f"cannot tell how wave {wave} ended (pi-subagents state {record.get('state')!r}, returned status {given!r}); pass --status")
         status = Status(given)
+    emit(close_launch(plan, run, entry, status, returned, record, note))
+
+
+def close_launch(plan, run, entry, status, returned, record, note):
+    """Record how a launch ended (its stages done or pending again, its cost and children), commit what the wave wrote,
+    and say what comes next: agent_log_finish's result."""
+    state, wave = run.state, entry["wave"]
     if returned is not None:
-        (run.dir / ".compiled").mkdir(parents=True, exist_ok=True)
-        (run.dir / ".compiled" / f"{wave}-result.json").write_text(json.dumps(returned, indent=2, ensure_ascii=False), encoding="utf-8")
+        record_wave_result(run.dir, wave, returned)
     cost = record.get("totalCost") or {}
     if cost.get("costUsd") is not None:
         entry["cost_usd"] = round(float(cost["costUsd"]), 6)
@@ -316,7 +384,7 @@ def finish(
         nxt = {k: nxt[k] for k in ("id", "stages", "ends_with")}
         if preflight := next_preflight(plan, run, nxt):
             nxt["preflight"] = preflight
-    emit({"ok": True, "run": run.id, "run_status": state["status"], "wave_status": wave_status,
+    return {"ok": True, "run": run.id, "run_status": state["status"], "wave_status": wave_status,
           "ends_with": entry.get("ends_with") if status is Status.done else None,
           # a summary only: outputs are files the gates checked; read one only when something needs a look
           "children": {k: {"status": (v or {}).get("status"), "output": (v or {}).get("outputReference")}
@@ -329,7 +397,37 @@ def finish(
           "mission_close": close_mission(run, "completed", f"Agent run {run.id} completed ({len(keys)} stages"
                                          + (f", ${total:.4f} in children" if total else "") + ").") if done else None,
           # the criteria the final report goes through, so the parent need not read the plan for them
-          "done_when": plan.get("done_when") if done else None})
+          "done_when": plan.get("done_when") if done else None,
+          # where the deliverables are in this run: the report names them, nothing to work out
+          "outputs": list_deliverables(plan, run) if done else None,
+          "report": write_report(plan, run) if done else None}
+
+
+def write_report(plan, run):
+    """The final report, settled by code where it can be: each deliverable with how its stage's output was checked
+    (gate, review, or reused from a run where they passed), and what is left for the model: the criteria, when some
+    deliverable no check covers. `do` says which."""
+    stages = {s.get("id"): s for s in plan.get("stages") or [] if isinstance(s, dict)}
+    by_output = {o.get("id"): k for k, s in stages.items() for o in s.get("writes") or [] if isinstance(o, dict)}
+    children = {}
+    for launch in run.state.get("launches") or []:
+        children.update(((read_wave(run.dir, launch.get("wave")).get("result") or {}).get("children")) or {})
+    lines, unchecked = [], []
+    for d in list_deliverables(plan, run):
+        key = by_output.get(d["id"])
+        st, child = stages.get(key) or {}, children.get(key) or {}
+        how = ("reused from an earlier run, checked there" if child.get("reused")
+               else ", ".join(c for c, ok in (("its gate passed", st.get("gate") not in (None, "", "true")),
+                                              ("its review passed", st.get("review"))) if ok))
+        if not how:
+            unchecked.append(d["path"])
+        items = f", {d['items']} items" if "items" in d else ""
+        lines.append(f"{d['path']} ({'present' if d['exists'] else 'MISSING'}{items}): {how or 'no check covers it'}")
+    return {"deliverables": lines, "criteria": plan.get("done_when") or [],
+            "do": ("Report the deliverables and criteria as they stand: every deliverable was checked. Open nothing."
+                   if not unchecked else
+                   f"Report the deliverables as they stand. Only these no check covers: {', '.join(unchecked)}. Judge "
+                   "the criteria about them from their items count; open one only if that can't settle it, once.")}
 
 
 @app.command()

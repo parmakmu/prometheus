@@ -19,12 +19,12 @@ Prefer a browser? `npm install`, `npm run ui:server` and `npm run ui:web` start 
 
 The first time an agent runs, it writes small programs for its mechanical steps, and you look them over. Every run after that reuses them, so the same input gives the same result, faster and for a fraction of the cost. Here's what that looked like in real runs of the example above:
 
-| | Every stage done by a model | Programs run as commands |
-|---|---|---|
-| Model cost of the work | $0.016 | $0.004 |
-| Time, start to finish | under 4 minutes | 77 seconds |
+| | Every stage done by a model | Programs run as commands | The same emails again |
+|---|---|---|---|
+| Model cost of the work | $0.016 | $0.004 | $0: the earlier judgment is reused |
+| Time, start to finish | under 4 minutes | 77 seconds | 29 seconds |
 
-To be fair, an agent is more than many jobs need. If you'll only do the job once, a plain Pi session is quicker. If no step needs judgment, a script with a test is all you need. And if you want something to run with nobody watching, this isn't it: an agent always waits for you to approve side effects and review changes, because that's the point of it.
+To be fair, an agent is more than many jobs need. If you'll only do the job once, a plain Pi session is quicker. If no step needs judgment, a script with a test is all you need. And an agent never acts behind your back: it waits for you to approve side effects and to review what its runs change, because that's the point of it. Once its plan has settled, you can release it and run it from code or as a service, with its side effects approved up front by whoever calls it.
 
 ## Documentation
 
@@ -37,6 +37,7 @@ To be fair, an agent is more than many jobs need. If you'll only do the job once
 | [Troubleshooting](docs/troubleshooting.md) | find out why a step was refused, and what to do |
 | [How prometheus works](docs/how-it-works.md) | understand the ideas, following one agent from plan to second run |
 | [Commands](docs/commands.md) | look up a command |
+| [Python API](docs/python-api.md) | look up how to run a released agent from Python code |
 | [Params, `.env` and secrets](docs/params-and-secrets.md) | look up how machine-specific values and secrets work |
 
 **Working on prometheus**
@@ -50,4 +51,4 @@ To be fair, an agent is more than many jobs need. If you'll only do the job once
 
 ## Requirements
 
-Pi 1.0.1 or later with pi-subagents 0.75.0 or later, Node, uv (which brings Python 3.14), and git. `prometheus doctor` checks them; the [tutorial](docs/tutorial.md#before-you-begin) shows how to install them.
+Pi 1.3.0 or later with pi-subagents 0.78.0 or later, Node, uv (which brings Python 3.14), and git. `prometheus doctor` checks them; the [tutorial](docs/tutorial.md#before-you-begin) shows how to install them.

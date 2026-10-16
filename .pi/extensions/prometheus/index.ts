@@ -165,7 +165,7 @@ export default function prometheus(pi: ExtensionAPI) {
     newRequested = false;
     const root = ROOT;
     const py = pythonFor(root);
-    const r = await pi.exec(py, ["-c", "import dotenv, pydantic, pydantic_settings, ruamel.yaml, typer"], { cwd: root, timeout: 10_000 });
+    const r = await pi.exec(py, ["-c", "import dotenv, packaging, psutil, pydantic, pydantic_settings, ruamel.yaml, typer"], { cwd: root, timeout: 10_000 });
     if (r.code !== 0) ctx.ui.notify(`The skill scripts' Python packages are missing for ${py}. Run \`uv sync\` in ${root}, then restart pi.`, "warning");
   });
 

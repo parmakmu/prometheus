@@ -11,7 +11,8 @@ made to be cheap to read: plain lines, no JSON syntax, clipped text.
 
 `list`: one line per session, newest first: file, start, records, turns, cost, `plan` for a
 /agent-improve or /agent-revise one, and the first user message.
-`show`: a bounded transcript of one session (FILE is a name from `list`, or a unique prefix of it),
+`show`: a bounded transcript of one session (FILE is a name from `list`, or a unique prefix of it, or a
+child's session or pi-subagents transcript in an imported bundle, runs/imported/..., as session_digest names it),
 one line per record: its number (the line number in the file), the time, then U (user), A
 (assistant: its text, then ` -> tool(args)` for each call) or R (a tool result; R! when it failed).
 Text is clipped to --text-chars (a successful result to half of that: failures matter more).
@@ -48,7 +49,12 @@ def sessions_dir(agent_dir: Path):
 
 
 def find(agent_dir: Path, name: str):
-    """The session file called `name` (or the one `name` is the start of); exits with an error otherwise."""
+    """The session file called `name` (or the one `name` is the start of), or a child's session in an imported bundle
+    (runs/imported/..., as session_digest names it); exits with an error otherwise."""
+    imported = (agent_dir.resolve() / name).resolve()
+    if name.startswith("runs/imported/") and name.endswith(".jsonl") and imported.is_file() \
+            and imported.is_relative_to(agent_dir.resolve() / "runs" / "imported"):
+        return imported
     folder = sessions_dir(agent_dir)
     names = sorted(p.name for p in folder.glob("*.jsonl")) if folder.is_dir() else []
     exact = [n for n in names if n == name or n == f"{name}.jsonl"]
@@ -63,8 +69,18 @@ def clock(timestamp):
     return str(timestamp or "")[11:19]
 
 
+def as_session_entry(entry):
+    """A record of a pi-subagents transcript (a child's: `recordType: message`, from an imported bundle) as the Pi
+    session entry it carries; any other record as it is."""
+    if entry.get("recordType") == "message" and isinstance(entry.get("message"), dict):
+        return {"type": "message", "timestamp": entry.get("timestamp"),
+                "message": {"toolName": entry.get("toolName"), "isError": entry.get("isError"), **entry["message"]}}
+    return entry
+
+
 def render(n, entry, size):
     """One record as one line, or None when it is not part of the conversation."""
+    entry = as_session_entry(entry)
     msg = entry.get("message") or {}
     role = msg.get("role")
     if entry.get("type") != "message" or role not in ("user", "assistant", "toolResult"):

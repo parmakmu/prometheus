@@ -3,6 +3,9 @@
     install <url | catalog name>   clone into the agents folder, then refresh it from your prometheus, so everything
                                    prometheus owns (its extension, the skill copy, the template files) is your own
                                    trusted copy; what is left is the agent's own code, shown for review before it stays
+    install <url | name>@v1        on a machine that only runs it: the newest 1.x release, frozen (only its tag
+                                   fetched, unpacked into the releases folder, no repository kept, nothing refreshed:
+                                   it runs as released); its own code shown for review the same way
     pull <slug>                    the upstream's new commits, shown, then fast-forwarded onto main (and refreshed)
     share <slug> <remote>          checked for secrets and run data, then main and its releases pushed
     propose <slug>                 the checked-out change branch pushed (on GitLab, a merge request opened)
@@ -14,6 +17,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 from ruamel.yaml import YAML
@@ -22,12 +26,6 @@ from prometheus import cli
 from prometheus.cli import PrometheusError
 
 REFRESH_COMMIT = "Refresh from prometheus"  # scaffold_agent.py's message: install and pull make these locally
-# what a secret looks like in a file: provider keys and tokens, private keys, a secret's NAME=value line
-SECRET_PATTERNS = [
-    (re.compile(r"\b(sk-(ant-)?[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{30,}|glpat-[A-Za-z0-9_-]{20,}|"
-                r"xox[abpr]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{35})\b"), "an API key or token"),
-    (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"), "a private key"),
-]
 
 
 def git(folder: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
@@ -53,8 +51,10 @@ def owned_by_prometheus(rel: str) -> bool:
 
 
 def list_own_code(folder: Path) -> list[tuple[str, int]]:
-    """The agent's own files that run or reach a model (gates, programs, subagent profiles), with their line counts."""
-    files = git(folder, "ls-files").stdout.splitlines()
+    """The agent's own files that run or reach a model (gates, programs, subagent profiles), with their line counts;
+    a frozen release's from its folder (its repository is empty)."""
+    files = git(folder, "ls-files").stdout.splitlines() or \
+        sorted(str(f.relative_to(folder)) for f in folder.rglob("*") if f.is_file() and ".git" not in f.relative_to(folder).parts)
     own = [f for f in files if f.startswith(("gates/", "scripts/", ".pi/agents/", ".pi/extensions/")) and not owned_by_prometheus(f)
            and not f.endswith(".gitkeep")]
     return [(f, len((folder / f).read_text(encoding="utf-8", errors="replace").splitlines())) for f in own]
@@ -68,7 +68,7 @@ def list_own_packages(folder: Path) -> list[str]:
         base = tomllib.loads((cli.find_files() / "templates" / "agent" / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
     except (OSError, KeyError, ValueError):
         return []
-    name = lambda d: re.split(r"[\s<>=!~;\[(]", d, maxsplit=1)[0].lower()
+    name = cli.import_script("utils").package_name
     return [d for d in have if name(d) not in {name(b) for b in base}]
 
 
@@ -99,13 +99,19 @@ def refresh(folder: Path, lock: bool = True) -> dict:
 
 def install(source: str, slug: str | None = None, confirm=lambda info: True) -> Path:
     """Clone an agent (a catalog name, a URL or a folder), refresh it from this prometheus, and keep it only if
-    `confirm(describe(...))` says so; returns its folder."""
+    `confirm(describe(...))` says so; returns its folder. With "@v1" (or "@v1.2"), a release instead, frozen
+    (install_release)."""
+    from prometheus.frozen import VERSION_RE
+    head, at, tail = source.rpartition("@")
+    source, version = (head, tail) if at and VERSION_RE.match(tail) else (source, None)  # git@host:… is a URL
     entry = next((a for a in read_catalog() if a["name"] == source), None)
     url = entry["url"] if entry else source
     slug = slug or (entry and entry["name"]) or re.sub(r"\.git$", "", url.rstrip("/").rsplit("/", 1)[-1].rsplit(":", 1)[-1])
     scaffold = cli.import_script("scaffold_agent")
     if not scaffold.SLUG_RE.match(slug) or slug in scaffold.RESERVED:
         raise PrometheusError(f"{slug!r} can't name an agent: pass another with --as")
+    if version:
+        return install_release(url, slug, version, confirm)
     agents = cli.get_setting("agents")[0]
     folder = agents / slug
     if folder.exists():
@@ -122,6 +128,36 @@ def install(source: str, slug: str | None = None, confirm=lambda info: True) -> 
         if not confirm(describe(folder)):
             raise PrometheusError(f"not installed: {slug} removed")
         refresh(folder)  # trusted now: its uv.lock
+    except BaseException:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise
+    return folder
+
+
+def install_release(url: str, slug: str, version: str, confirm=lambda info: True) -> Path:
+    """The newest release of `url` matching `version`, frozen, for a machine that only runs it: only that tag is
+    fetched (into a scratch repository, deleted after), unpacked into the releases folder as any release is
+    (frozen.unpack), and kept only if `confirm(describe(...))` says so. Nothing is refreshed: it runs as released.
+    Installed already: its folder, unchanged (a moved tag is refused)."""
+    from prometheus import frozen
+    listed = subprocess.run(["git", "ls-remote", "--tags", "--refs", "--", url, "v*"], capture_output=True, text=True, check=False)
+    if listed.returncode != 0:
+        raise PrometheusError(f"cannot read {url}: {(listed.stderr or listed.stdout).strip()}")
+    tags = [line.split("refs/tags/", 1)[1] for line in listed.stdout.splitlines() if "refs/tags/" in line]
+    versions = sorted((t for t in tags if re.match(r"^v\d+\.\d+$", t)), key=lambda t: tuple(map(int, t[1:].split("."))), reverse=True)
+    wanted = frozen.pick_release([{"version": v} for v in versions], version)["version"]
+    with tempfile.TemporaryDirectory() as scratch:
+        repo = Path(scratch) / slug
+        git(repo.parent, "init", "-q", str(repo))
+        git(repo, "fetch", "-q", "--depth", "1", "--", url, f"refs/tags/{wanted}:refs/tags/{wanted}")
+        release = next(r for r in cli.run_script("release.py", "list", "--agent", str(repo))["releases"] if r["version"] == wanted)
+        installed = frozen.release_folder(slug, release)
+        if (installed / frozen.RELEASE_FILE).is_file():
+            return frozen.unpack(repo, release, slug, source=url)  # here already (or refused: its tag moved)
+        folder = frozen.unpack(repo, release, slug, source=url)
+    try:
+        if not confirm(describe(folder)):
+            raise PrometheusError(f"not installed: {slug} {wanted} removed")
     except BaseException:
         shutil.rmtree(folder, ignore_errors=True)
         raise
@@ -176,7 +212,7 @@ def scan_for_secrets(folder: Path) -> list[str]:
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        found += [f"{rel}: looks like {what}" for pattern, what in SECRET_PATTERNS if pattern.search(text)]
+        found += [f"{rel}: looks like {what}" for pattern, what in cli.import_script("utils").SECRET_PATTERNS if pattern.search(text)]
     return found + scan_history(folder, set(found))
 
 
@@ -192,7 +228,7 @@ def scan_history(folder: Path, found_now: set[str]) -> list[str]:
             if Path(file).name.startswith(".env"):
                 found.append(f"{file}: a values file (it may hold secrets) is in commit {commit}")
         elif line.startswith("+") and not line.startswith("+++"):
-            found += [f"{file}: looks like {what}, in commit {commit}" for pattern, what in SECRET_PATTERNS
+            found += [f"{file}: looks like {what}, in commit {commit}" for pattern, what in cli.import_script("utils").SECRET_PATTERNS
                       if pattern.search(line) and f"{file}: looks like {what}" not in found_now]
     return list(dict.fromkeys(found))
 

@@ -6,7 +6,7 @@ critique:
   revision: 1
   passes: 1
   verdict: revise
-  plan_digest: c163ad0cd9b5a31a  # agent_record_critique writes it: the plan as the critic saw it
+  plan_digest: 69aab069b9c71fd0  # agent_record_critique writes it: the plan as the critic saw it
   findings:
     - id: f1
       severity: major
@@ -25,7 +25,7 @@ critique:
         an earlier draft fixed a profile schema and batch size before knowing how
         many competitors or what sources exist
       disposition: accepted
-      note: analyse is now provisional, resolved after discover
+      note: analyse is now provisional until discover
     - id: f3
       severity: minor
       category: unknown_misrouted

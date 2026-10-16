@@ -29,15 +29,18 @@ export function subagentStatus(cwd: string, id: string): any | null {
 export const costOf = (st: any) => st?.totalCost?.costUsd ?? null;
 
 // A command child (the batcher runner: no model) runs a reviewed program, then the stage's gate, or splits
-// or merges a map stage. Its request is in the compiled wave (runs/<id>/.compiled/<wave>.wave.json, found by the
-// child's key; the child runs in runs/<id>/work), its result in its output log: {program: {exit, stdout, stderr}, gate: {exit}}.
+// or merges a map stage. Its request is in the compiled wave (the data at the start of runs/<id>/.compiled/<wave>.js,
+// found by the child's key; the child runs in runs/<id>/work), its result in its output log: {program: {exit, stdout, stderr}, gate: {exit}}.
+// A compiled wave's data: `const W = {...};` (JSON, indented, so its closing brace is the first "\n};\n") before the runner.
+const waveOf = (script: string) => JSON.parse(script.slice(script.indexOf("const W = ") + "const W = ".length, script.indexOf("\n};\n") + 2));
+
 export function commandOf(cwd: string, childCwd: string | undefined, key: string): { op: string; script: string | null; command: string | null; gate: string | null } | null {
   if (!childCwd) return null;
   const compiled = path.join(path.dirname(childCwd), ".compiled");
   if (!existsSync(compiled) || !realpathSync(compiled).startsWith(realpathSync(cwd))) return null;
-  for (const f of readdirSync(compiled).filter((n) => n.endsWith(".wave.json"))) {
+  for (const f of readdirSync(compiled).filter((n) => n.endsWith(".js"))) {
     try {
-      const items = JSON.parse(readFileSync(path.join(compiled, f), "utf8")).steps.flatMap((s: any) => s.layer ?? []);
+      const items = waveOf(readFileSync(path.join(compiled, f), "utf8")).steps.flatMap((s: any) => s.layer ?? []);
       const item = items.find((i: any) => i.key === key && typeof i.task === "string" && i.task.startsWith("BATCH_TOOL_REQUEST "));
       if (!item) continue;
       const r = JSON.parse(item.task.slice("BATCH_TOOL_REQUEST ".length));

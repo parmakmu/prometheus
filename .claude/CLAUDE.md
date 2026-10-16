@@ -6,10 +6,11 @@ pi-subagents one wave at a time. This file is the settled decisions, one line ea
 [`docs/design.md`](../docs/design.md), the architecture and the Pi facts relied on in
 [`docs/contributing.md`](../docs/contributing.md). Don't re-litigate them; keep the docs true when behaviour changes.
 
-Docs: `tutorial`, `how-to`, `troubleshooting` (every refusal a user meets), `commands`, `params-and-secrets`,
+Docs: `tutorial`, `how-to`, `troubleshooting` (every refusal a user meets), `commands`, `python-api` (the package's
+exports: `load_agent`, `Agent`, `Run`, `Result`, `PrometheusError`), `params-and-secrets`,
 `how-it-works` (the *what*), `design` (the *why*), `state-machine`, `python-scripts`, `contributing` (Divio types);
 `ui/README.md` for the web app. Model-facing rules: the skill's `SKILL.md` (planning), `references/run-protocol.md`
-(read every run), `replanning.md` and `changing.md` (only when a route needs them), `plan-schema.md`.
+(read every run), `resolving.md` and `changing.md` (only when a route needs them), `plan-schema.md`.
 
 ## Owner's constraints (don't reopen without asking)
 
@@ -23,11 +24,16 @@ Docs: `tutorial`, `how-to`, `troubleshooting` (every refusal a user meets), `com
   approval stages, programs written, `compile_wave --frozen` compiles it); the tag's message holds the interface
   (params, outputs, side effects, decisions), and a change that can break callers needs `--breaking` (major+1; the
   flag alone raises it too). `load_agent` /
-  `prometheus run` unpack a release into `~/.cache/prometheus/releases/<slug>/<v>-<commit>/<slug>/` (+ `git init`) and run
+  `prometheus run` unpack a release into `~/.local/share/prometheus/releases/<slug>/<v>/` (`PROMETHEUS_RELEASES`;
+  data, not a cache: + `git init`; no `.pi/extensions/`, so it can't be revised in place; `RELEASE.json`: the release
+  record, agent, version, full commit, interface, source; `utils.agent_name` reads the agent's name from it, since the
+  folder is named by version; a moved tag is refused) and run
   in its `runs/<id>/` (the batcher's relative path and `uv run` need the agent layout); the runner extension aborts any
   model turn and `process.exit`s at the end: in `pi -p`, pi-subagents' completion wake otherwise starts model turns.
   Sharing is plain git (`prometheus/sharing.py`; no GitLab API, no glab): install = clone + refresh from your own
-  prometheus (what it owns becomes your trusted copy; no hash list) + review of the agent's own code; pull allows only
+  prometheus (what it owns becomes your trusted copy; no hash list) + review of the agent's own code; `install
+  <source>@v1` (2026-10-16) freezes one release for a machine that only runs it (that tag only, reviewed, no repository,
+  no refresh), and `load_agent` then picks from the installed `RELEASE.json` records; pull allows only
   local refresh commits on main; propose uses GitLab push options for the MR; the catalog is `catalog.yaml`.
   `prometheus serve <slug>[@v]` (FastAPI, a plain dependency): one agent per process (its environment holds only its
   secrets), a run form generated from its interface, paths only as uploads and outputs only in the run; no Docker or
@@ -41,7 +47,16 @@ Docs: `tutorial`, `how-to`, `troubleshooting` (every refusal a user meets), `com
   with `pattern: a2a` (an `a2a:` block: url, files, params, approve, token): batch_tool's `a2a` op, no model;
   approving the callee's side effects makes the stage a side effect. Released runs reuse each other (`reuse_earlier`
   reads `state.json` too: `runs.list_released_runs`, `stages_done`); `run_history.py prune` / `prometheus prune` /
-  `serve --keep` delete old runs' files (and orphaned pi-subagents mission files), keeping their history.
+  `serve --keep` delete old runs' files (and orphaned pi-subagents mission files), keeping their history; a release's
+  newest failed runs stay whole (`--keep-failed`). A failed released run is fixed from a bundle (2026-10-16; not an
+  `/agent-doctor`): `prometheus bundle` / `GET /runs/<id>/bundle` (`bundle.py make`: the run, pi-subagents' records via
+  `utils.launch_records`, children's sessions; secrets → `${NAME}`; caller files only with `--with-files`) →
+  `/agent-improve <bundle.tgz>` (`bundle.py add` → `runs/imported/`, never reused from; `session_digest` `imported`) →
+  `prometheus run <slug>@<branch> --bundle <file>` (`frozen.load_build`: any non-`v` ref, version `build`) → release.
+  Also `Run.bundle()` (embedded), and `/agent-bundle` for an agent's own run in a copy without prometheus (`kind: run`,
+  version `r<rev>`, its sessions during the run). On the runner machine, diagnosis only: `prometheus runs <slug> [run]`
+  (`bundle.py show`) and `prometheus doctor <slug>[@v]` (secrets in the environment, `uv sync --locked --dry-run`, model
+  stages; no git identity needed).
 - Agents use pi-subagents' `projectRootResolution: "git-root"` (template settings.json): a child's session artifacts
   create `runs/<id>/work/.pi/`, and with `nearest` the next child resolved project agents there ("Unknown agent: reader",
   first live map stage, 2026-10-09; run -2 then passed: split, 2 reader batches, merge, $0.0022).
@@ -53,8 +68,8 @@ Docs: `tutorial`, `how-to`, `troubleshooting` (every refusal a user meets), `com
   field is an error. `key` stays only where pi-subagents means a child. `plan.schema.json` (the skill's, generated by
   `validate_plan.plan_json_schema()` from the models, a test keeps it current) is named on plan.yaml's second line for
   editors; `prometheus check <slug>` runs the validator.
-- Runtime: Pi (built on 0.87.1; tests pass to 1.0.1; the owner runs Pi 1.0.1 + pi-subagents 0.75.0, since 0.74.0's
-  runner breaks on Pi 1.0.0) + pi-subagents (0.73.1; tests pass to 0.75.0).
+- Runtime: Pi 1.3.0 + pi-subagents 0.78.0 (the owner's, 2026-10-16), the least `prometheus doctor` accepts
+  (`cli.MIN_VERSIONS`); no code for older versions: on an upgrade, adapt and raise the floor.
 - Plans are YAML. Commands and tools live in one self-contained `index.ts` per agent: no re-exports, no prompt
   templates. Keep it simple: the owner pushes back on indirection and duplicate folders.
 - Python 3.14 (a refresh raises a lower `>=` floor, keeps the agent's own packages); typer, pathlib (`os` only for
@@ -68,7 +83,7 @@ agent (what Prometheus builds; "workflow" only for pi-subagents' own: workflow s
 (`plan.yaml`) · stage · wave (stages launched as one call; derived) · launch (one attempt at a wave) · child · run
 (`runs/<id>/`; pi-subagents' id is `subagent_run_id`) · gate (`gates/`) · stage program (`scripts/`) · check
 (validating the plan) · subagent (a profile: builtin or `.pi/agents/`; the plan's `agents:`/`agent:` keep their
-names) · replan (during a run, `run/<id>`) · change (`/agent-revise` or `/agent-improve`, `revise/…`, `improve/…`).
+names) · resolve (during a run, `run/<id>`) · change (`/agent-revise` or `/agent-improve`, `revise/…`, `improve/…`).
 The skill is `.pi/skills/agent/`; the planner is Prometheus where it must be told apart from its agents.
 
 ## Architecture
@@ -79,7 +94,7 @@ extensions are thin: run a script (`$PI_AGENT_PYTHON`, else the nearest `.venv`,
 `templates/agent/` plus a copy of the skill make each agent (`scaffold_agent.py`), so it runs without Prometheus.
 `wave_runner.js` is the only JS a wave carries; `batch_tool.py` is stdlib-only. Libraries: typer, pydantic
 (`validate_plan.py`: shape, then one `Checker` method per rule group), pydantic-settings + python-dotenv, ruamel.yaml,
-graphlib. Web app: `ui/router.ts` (routes; split into `common`, `sandbox` + `bwrap`/`podman`, `workers`, `files`,
+packaging (requirements, versions), psutil (`process_alive`: a reused pid is not the process recorded), graphlib. Web app: `ui/router.ts` (routes; split into `common`, `sandbox` + `bwrap`/`podman`, `workers`, `files`,
 `subagents`) + one `ui/worker.ts`
 (Pi SDK) per user and agent, page in `ui/web`. `prometheus/cli.py` is the `prometheus` command (typer + rich): `init`,
 `doctor`, the planner (`pi -e <ext> --skill <skill> --append-system-prompt <role>` in `~/.prometheus`, whose `.pi/` has
@@ -92,7 +107,7 @@ its own file and the agents from `PROMETHEUS_AGENTS` (else `<root>/agents`). The
 Planning
 - Only `/agent-new` starts planning (`agent_scaffold` refuses otherwise).
 - Kinds classified side_effect → decision → deterministic → judgment (`references/classify.md`).
-- Unknowns get `resolve_by`; discovery stages make dependents `provisional`, which makes the run replan.
+- Unknowns get `resolved_by`; discovery stages make dependents `provisional`, which makes the run resolve.
 - A separate fresh-context critic; every finding gets a disposition; ≤2 passes per revision.
 - Questions: draft first, ≤3 per round, ≤2 rounds, never param values; every fixed-answer question via
   `ask_user_question`, in the user's terms (no tool names, files, record numbers).
@@ -105,13 +120,18 @@ Doing the work
   create/refresh); gates and programs run with `uv run`; no PEP 723 headers.
 - A producer is told who reads its output ("Used next by"), and its reviewer the same.
 - Explicit acceptance on writers and gated stages: `{level, preserveStagedIndex: true, review: {required: false}}`.
-- The same judgment on the same inputs is made once (`reuse_earlier`, fingerprint in `.compiled/<wave>.inputs.json`:
-  items, input contents not places, subagent file, program, gates, settings, pi-subagents version; `reuse: false`).
+- The same judgment on the same inputs is made once (`reuse_earlier`; fingerprint: items, input contents not places,
+  subagent file, program, gates, settings, pi-subagents version; `reuse: false`; a map stage whole: its items' contents
+  and batch size, a reused map is one reused layer item; per item is TASKS 38; outputs anywhere inside the run, not
+  only work/, are copied). A wave all of whose stages are reused is recorded at compile, not launched
+  (`nothing_to_launch`; `run_log.record_without_launch`; `launched: false` with agent_log_finish's result). A launched wave is two files in
+  `.compiled/`: `<wave>.js` (its data, `const W`, and the runner) and `<wave>.json` (the call, `inputs` = fingerprints,
+  `result` once it ended). No fallbacks for older formats: we are still developing.
 - Cost is the plan's: `models: {default, review}`, a stage's `model`, `limits.max_cost_usd` (preflight `budget`;
   `--budget` raises the run's own), `limits.command_timeout_s`. Prometheus picks no model ids.
 
 Launching
-- Waves are derived (`validate_plan.derive_waves`); `ends_with` replan > review > approval > none.
+- Waves are derived (`validate_plan.derive_waves`); `ends_with` resolve > review > approval > none.
 - The compiler writes data (`const W = {…}` + `wave_runner.js`), passed as a `workflow` path, not text.
 - Guards: ready plan to start; commit only a launchable wave; refuse an unrecorded launch (`scriptDigest`); hold
   after `review`; side effects only with `--approve`; a relaunch reuses unchanged completed children and map batches.
@@ -121,7 +141,8 @@ Launching
   `mission_close`, `done_when`. Commands activate `subagent` before their prompt.
 - `/agent-auto` runs waves in code through pi-subagents' RPC, handing over (as a `followUp`) only when the model or
   a person is needed; until then notice turns are told to do nothing and the run tools are refused (`AUTO_OWNS`).
-  A notice turn has no prompt, or (pi-subagents >= 0.76) "Subagent updates above."; a wave /agent-auto recorded stays
+  A notice turn is a user prompt starting "Inspect subagent updates above." or a run a `subagent…` custom message
+  started (Pi >= 1.2: `before_agent_start` has `messageType`); a wave /agent-auto recorded stays
   refused to agent_log_finish after the hand-over (a late notice, run 2026-10-09-4).
 
 Runs and changes
@@ -173,8 +194,8 @@ Web app
 
 ## Status (2026-10-05)
 
-`uv run pytest`: 368 tests (104 in `tests/test_agent.py`, which needs `npm install` and uv; the rest skip what
-they can't run). Verified live on emails-to-excel: planning with critic and questions, discovery + replan,
+`uv run pytest`: 394 tests (104 in `tests/test_agent.py`, which needs `npm install` and uv; the rest skip what
+they can't run). Verified live on emails-to-excel: planning with critic and questions, discovery + resolve,
 approvals, programs written, committed, reviewed and run as commands, review/merge, reuse of programs, the
 question tool, "Used next by", `/agent-auto` launching through the RPC (runs 2026-10-05-1/-2), a run API call with its own files and params (run -5). Not yet live: its
 follow-up hand-over and hold, lost runners, `pi -p`; per-stage models; budgets; map stages and `batcher` batches;

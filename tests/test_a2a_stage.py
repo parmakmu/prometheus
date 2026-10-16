@@ -17,7 +17,7 @@ from compile_wave import Compiler
 from validate_plan import validate
 
 CALLER = """\
-version: 1
+format: 1
 revision: 1
 status: draft
 request: count the lines with the counter agent
@@ -36,7 +36,7 @@ params:
 inputs:
   - id: lines
     kind: file
-    location: ${lines_file}
+    path: ${lines_file}
 agents:
   checked: test
   available: [batcher]

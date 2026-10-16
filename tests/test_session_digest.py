@@ -24,7 +24,7 @@ def result(n, name, text, error=False):
 def test_digest_reports_failures_repeats_cost_and_unfinished_launches(tmp_path, run_py):
     agent_dir = tmp_path / "wf"
     (agent_dir / "runs" / "2026-01-01-1").mkdir(parents=True)
-    (agent_dir / "plan.yaml").write_text("version: 1\n")
+    (agent_dir / "plan.yaml").write_text("format: 1\n")
     (agent_dir / "runs" / "2026-01-01-1" / "run.yaml").write_text(
         "id: 2026-01-01-1\nstatus: done\nlaunches:\n  - {wave: w1, status: failed, cost_usd: 0.5}\n  - {wave: w1, status: done, cost_usd: 0.25}\n"
     )
@@ -58,7 +58,7 @@ def test_digest_refuses_a_folder_that_is_not_an_agent(tmp_path, run_py):
 def test_sessions_before_the_last_lesson_are_skipped(tmp_path, run_py):
     agent_dir = tmp_path / "wf"
     agent_dir.mkdir()
-    (agent_dir / "plan.yaml").write_text("version: 1\n")
+    (agent_dir / "plan.yaml").write_text("format: 1\n")
     (agent_dir / "improvements.yaml").write_text("- {date: '2026-01-02', target: gates/g.py, decision: rejected}\n")
     sessions = tmp_path / "sessions"
     sessions.mkdir()
@@ -74,7 +74,7 @@ def test_sessions_before_the_last_lesson_are_skipped(tmp_path, run_py):
 def agent_with(tmp_path, lessons=None):
     agent_dir = tmp_path / "wf"
     agent_dir.mkdir()
-    (agent_dir / "plan.yaml").write_text("version: 1\n")
+    (agent_dir / "plan.yaml").write_text("format: 1\n")
     if lessons:
         (agent_dir / "improvements.yaml").write_text(lessons)
     sessions = tmp_path / "sessions"

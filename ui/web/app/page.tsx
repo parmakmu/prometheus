@@ -34,7 +34,7 @@ const STATES: Record<string, { label: string; tone: string; needsYou?: boolean }
   ready: { label: "Ready", tone: "bg-emerald-100 text-emerald-800" },
   between_waves: { label: "Running", tone: "bg-sky-100 text-sky-800" },
   wave_running: { label: "Running", tone: "bg-sky-100 text-sky-800" },
-  replan_draft: { label: "Adjusting its plan", tone: "bg-sky-100 text-sky-800" },
+  resolve_draft: { label: "Adjusting its plan", tone: "bg-sky-100 text-sky-800" },
   branch_review: { label: "Waiting for your review", tone: "bg-violet-100 text-violet-800", needsYou: true },
   change_draft: { label: "Change in progress", tone: "bg-amber-100 text-amber-800" },
   change_ready: { label: "Change waiting for your review", tone: "bg-violet-100 text-violet-800", needsYou: true },

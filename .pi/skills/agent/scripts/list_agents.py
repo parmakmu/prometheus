@@ -9,12 +9,13 @@ last_run {id, status, started_at, finished_at, last_wave}, recent_runs (the last
 first: id, status, started_at, finished_at, note, cost_usd: its subagents' cost summed over its launches,
 agent_cost_usd: the agent's own model's, from its sessions, session_digest.agent_costs),
 active_run, next_wave (its id) and next_stages (its stage ids), waiting (what the active run is paused on after its last
-wave: approval | review | replan, else null), stages_done/stages_total (of the active run) and stages
+wave: approval | review | resolve, else null), stages_done/stages_total (of the active run) and stages
 (every plan stage: key, title, status: done | running | null, null when no run is active; children {done, failed, total, items: each child's key, agent, state, run_id}
 while its wave runs, from pi-subagents' record of the launch),
 provisional, open_questions, custom_subagents, prometheus_version (the skill copy's; stale when
-Prometheus here would copy something else, prometheus_version.up_to_date), branch (checked out) and unmerged
-(run/, revise/ and improve/ branches not merged into main). Waves and stage status come from
+Prometheus here would copy something else, prometheus_version.up_to_date), branch (checked out), unmerged
+(run/, revise/ and improve/ branches not merged into main) and off_branch (the active run's branch isn't checked
+out: what is, and what to do; else null). Waves and stage status come from
 validate_plan (waves are derived; status lives in runs/<id>/run.yaml).
 Nothing is changed.
 """
@@ -72,11 +73,11 @@ def child_progress(run_state, stage_keys):
     return out
 
 
-WAITS = {"approval": "approval", "review": "review", "replan": "replan"}  # a wave's ends_with → what the run waits for
+WAITS = {"approval": "approval", "review": "review", "resolve": "resolve"}  # a wave's ends_with → what the run waits for
 
 
 def waiting_for(run_state, next_wave):
-    """What an active run is paused on after its last wave finished: approval | review | replan, else None."""
+    """What an active run is paused on after its last wave finished: approval | review | resolve, else None."""
     last = next(iter(reversed([x for x in run_state.get("launches") or [] if isinstance(x, dict)])), None)
     if not next_wave or not last or last.get("status") != "done":
         return None
@@ -102,10 +103,11 @@ def summarise(root, slug, current):
     custom = sorted(p.stem for p in subagents_dir.iterdir() if p.suffix == ".md") if subagents_dir.is_dir() else []
     goal = plan.get("goal") or ""
     installed = prometheus_version.installed(Path(root) / slug)
+    where = agent_state.state(Path(root) / slug)
     return {
         "slug": slug,
         "status": plan.get("status"),
-        "state": agent_state.state(Path(root) / slug)["state"],
+        "state": where["state"],
         "revision": plan.get("revision", 1),
         "goal": goal if len(goal) <= 120 else goal[:117] + "...",
         "runs": len(runs),
@@ -117,7 +119,7 @@ def summarise(root, slug, current):
         "stages_total": len(stages),
         "stages": [{"key": s.get("id"), "title": s.get("title"), "status": stage_status.get(s.get("id")),
                     **({"children": progress[s.get("id")]} if s.get("id") in progress else {})} for s in stages],
-        "provisional": [s.get("id") for s in stages if s.get("provisional") is True],
+        "provisional": [s.get("id") for s in stages if s.get("resolves_after")],
         "open_questions": [q.get("id") for q in questions if q.get("answer") in (None, "")],
         "last_run": last,
         "recent_runs": recent_runs(Path(root) / slug, runs),
@@ -126,6 +128,7 @@ def summarise(root, slug, current):
         "stale": bool(current) and not prometheus_version.up_to_date(installed, current),
         "branch": agent_git.branch(Path(root) / slug),
         "unmerged": agent_git.unmerged_branches(Path(root) / slug),
+        "off_branch": where.get("off_branch"),
     }
 
 

@@ -4,7 +4,7 @@ deciding anything at run time.
 
 A release is the tag v<major>.<minor> on a commit of main, made only when the plan can run that way:
   - it is ready (the critic recorded for this plan), on main, with nothing uncommitted and no active run;
-  - no stage is provisional (its run would replan: that is editing the plan, which only the agent's own runs do);
+  - no stage is provisional (its run would resolve: that is editing the plan, which only the agent's own runs do);
   - every stage program (`script:`) exists (a released run never writes code);
   - every wave compiles as a released run compiles it (compile_wave.compile_frozen). A decision or a side effect
     is fine: the run asks its caller there (A2A's input-required), and goes on with the answer.
@@ -117,7 +117,7 @@ def problems_with(agent_dir, plan):
     errors, _warnings, summary = validate(plan, None, None, agent_dir)
     found += [f"plan: {e}" for e in errors]
     stages = [s for s in plan.get("stages") or [] if isinstance(s, dict) and s.get("id")]
-    found += [f"stage {key} is provisional: its run would replan; run the agent until the plan is settled, then release"
+    found += [f"stage {key} is provisional: its run would resolve; run the agent until the plan is settled, then release"
               for key in summary.get("provisional") or []]
     programs = {s["id"]: (s.get("program") or {}).get("file") for s in stages}
     found += [f"stage {key}'s program scripts/{file} doesn't exist yet: a released run never writes code; "

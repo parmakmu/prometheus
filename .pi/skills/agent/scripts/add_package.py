@@ -9,7 +9,6 @@ requirement as `uv add` takes it (`openpyxl`, `pandas>=2`, `httpx[http2]`), noth
 scripts and agents, packages change only where a change can be reviewed: not on `main` once a run
 exists (a run's or a /agent-revise branch). Prints the packages now listed in pyproject.toml.
 """
-import re
 import shutil
 import subprocess
 import tomllib
@@ -18,10 +17,18 @@ from typing import Annotated
 
 import agent_git
 import typer
+from packaging.requirements import InvalidRequirement, Requirement
 from runs import active_run, list_runs
 from utils import emit, refuse, report_state
 
-REQUIREMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9,._-]+\])?([<>=!~]=?[A-Za-z0-9.*+!_-]+(,[<>=!~]=?[A-Za-z0-9.*+!_-]+)*)?$")
+
+def is_requirement(text):
+    """A package from the index, as `uv add` takes it: a name, extras, version bounds, markers (PEP 508). Not a URL
+    (`name @ https://…`), a path or an option: those install code no index has reviewed."""
+    try:
+        return Requirement(text).url is None
+    except InvalidRequirement:
+        return False
 
 
 def listed(pyproject: Path):
@@ -39,7 +46,7 @@ def main(
     if not (root / "plan.yaml").is_file() or not (root / "pyproject.toml").is_file():
         refuse(f"{root} is not an agent (no plan.yaml or pyproject.toml)", 2)
     report_state(root)
-    if bad := [p for p in packages if not REQUIREMENT.match(p)]:
+    if bad := [p for p in packages if not is_requirement(p)]:
         refuse(f"not a package requirement: {', '.join(bad)}")
     if not reason.strip():
         refuse("say why the agent needs the package: the user is asked to approve it with the reason")

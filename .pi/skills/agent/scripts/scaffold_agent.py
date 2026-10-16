@@ -19,8 +19,7 @@ The template holds README.md, pyproject.toml (Python deps for `uv sync`),
 batcher) and the plan skeleton.
 
 --refresh rewrites the template files and the skill copy in an existing
-agent, and moves an older plan's planning sections (unknowns, questions,
-critique, agents) from plan.yaml to .plan/. Otherwise it never touches plan.yaml, .env, runs/, uploads/, gates/, scripts/ or agents
+agent. It never touches plan.yaml, .env, runs/, uploads/, gates/, scripts/ or agents
 the plan added.
 
 The agent is its own git repo (agent_git.py); both modes commit the result.
@@ -44,8 +43,9 @@ import agent_git
 import agent_params
 import prometheus_version
 import typer
+from packaging.version import Version
 from runs import active_run
-from utils import parts_in_plan_file, read_plan, refuse, write_plan
+from utils import package_name, read_plan, refuse, write_plan
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 SKILL_DIR = SCRIPT_DIR.parent
@@ -54,7 +54,7 @@ TEMPLATE_DIR = PROMETHEUS_DIR / "templates" / "agent"
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 # the `prometheus` command's own words: `prometheus <slug>` opens an agent, so no agent may be named like one of them
 RESERVED = {"init", "doctor", "help", "list", "install", "share", "upgrade", "refresh", "pull", "run", "release", "ui", "check",
-            "propose", "catalog", "serve", "prune"}
+            "propose", "catalog", "serve", "prune", "bundle", "runs"}
 IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store")
 PLAN = Path("plan.yaml")
 STATE_FILES = {Path(agent_params.ENV_FILE): agent_params.ENV_HEADER}
@@ -72,11 +72,6 @@ def template_files() -> list[Path]:
     )
 
 
-def version_key(text: str):
-    """'3.14' -> (3, 14), for comparing Python versions."""
-    return tuple(int(part) for part in text.split(".") if part.isdigit())
-
-
 def add_skill_packages(path: Path, template: str):
     """Bring the agent's pyproject.toml up to the template: its dependencies the agent lacks
     (keeping the packages the agent added), and its requires-python when the agent's `>=`
@@ -87,19 +82,16 @@ def add_skill_packages(path: Path, template: str):
         have = tomllib.loads(text)["project"]["dependencies"]
     except (KeyError, TypeError, ValueError):
         return []
-    def name(dep):
-        return re.split(r"[\s<>=!~;\[(]", dep, maxsplit=1)[0].lower().replace("_", "-")
-
-    names = {name(d) for d in have}
+    names = {package_name(d) for d in have}
     wanted = tomllib.loads(template)["project"]
-    missing = [d for d in wanted["dependencies"] if name(d) not in names]
+    missing = [d for d in wanted["dependencies"] if package_name(d) not in names]
     changes = list(missing)
     if missing:
         deps = "dependencies = [" + ", ".join(f'"{d}"' for d in [*have, *missing]) + "]"
         text = re.sub(r"(?ms)^dependencies\s*=\s*\[.*?\]", lambda _m: deps, text, count=1)
     # raise a lower `>=` floor to the template's; keep a higher one, or any other specifier the agent chose
     have_floor = re.search(r'(?m)^requires-python\s*=\s*"\s*>=\s*([\d.]+)\s*"\s*$', text)
-    if have_floor and version_key(have_floor.group(1)) < version_key(wanted["requires-python"].lstrip(">= ")):
+    if have_floor and Version(have_floor.group(1)) < Version(wanted["requires-python"].lstrip(">= ")):
         floor = f'requires-python = "{wanted["requires-python"]}"'
         text = text[:have_floor.start()] + floor + text[have_floor.end():]
         changes.append(floor)
@@ -123,7 +115,7 @@ def lock_packages(agent_dir: Path):
 
 
 def rehome_sessions(agent_dir: Path):
-    """Conversations started before the folder moved (workflows/ to agents/, say) record the old folder as their cwd,
+    """Conversations started before the agent's folder moved (another agents folder, say) record the old one as their cwd,
     and Pi lists a session folder's conversations only for the cwd they record: the web app and `pi --resume` showed
     none. Each conversation's first line gets the folder it is in now. The number rewritten."""
     here, n = str(agent_dir.resolve()), 0
@@ -138,10 +130,6 @@ def rehome_sessions(agent_dir: Path):
             path.write_text(json.dumps(header, separators=(",", ":")) + "\n" + rest, encoding="utf-8")
             n += 1
     return n
-
-
-# before agents were called agents (2026-10-04): a refresh removes these
-OBSOLETE = (".pi/extensions/workflow", ".pi/skills/workflow")
 
 
 def refresh_refusal(agent_dir: Path):
@@ -239,16 +227,6 @@ def main(
         dst.write_text(text, encoding="utf-8")
         written.append(str(rel))
 
-    # an older agent's plan.yaml holds how it was planned too: that moves to .plan/ (the same plan, read as one)
-    if refresh and (moved := parts_in_plan_file(agent_dir)):
-        write_plan(agent_dir, read_plan(agent_dir, {}))
-        written.append(f"{PLAN} ({', '.join(moved)} moved to .plan/)")
-
-    # what an older prometheus put in an agent under names it no longer uses: Pi would still load it
-    removed = [rel for rel in OBSOLETE if (agent_dir / rel).exists()]
-    for rel in removed:
-        shutil.rmtree(agent_dir / rel)
-
     skill_dst = agent_dir / ".pi" / "skills" / "agent"  # never this script's own copy: that has no templates
     if skill_dst.exists():
         shutil.rmtree(skill_dst)
@@ -289,7 +267,6 @@ def main(
         "was": was,
         "written": written,
         "kept": kept,
-        **({"removed": removed} if removed else {}),
         "plan": str(agent_abs / PLAN),
         "today": datetime.datetime.now().astimezone().date().isoformat(),  # local date
     }, indent=2))

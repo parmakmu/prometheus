@@ -39,7 +39,7 @@ export default function frozenRunner(pi: ExtensionAPI) {
       const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
       const timer = setTimeout(() => {
         off();
-        reject(new Error(`pi-subagents did not answer ${method} (needs pi-subagents >= 0.74, loaded with -e)`));
+        reject(new Error(`pi-subagents did not answer ${method} (is it installed? it is loaded with -e)`));
       }, timeoutMs);
       const off = pi.events.on(`subagents:rpc:v1:reply:${requestId}`, (reply: any) => {
         clearTimeout(timer);

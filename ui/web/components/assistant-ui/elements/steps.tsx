@@ -37,7 +37,7 @@ const STEP_WORDS: Record<string, (a: Record<string, unknown>) => string> = {
   agent_log_start: () => "Noting the wave's launch",
   agent_log_finish: () => "Noting how the wave ended",
   agent_record_decision: () => "Recording your decision",
-  agent_replan: () => "Adjusting the plan",
+  agent_resolve: () => "Adjusting the plan",
   agent_record_critique: () => "Recording the critic's review",
   agent_stop_run: () => "Stopping the run",
   agent_merge: (a) => (a.action === "merge" ? "Merging the changes" : a.action === "discard" ? "Discarding the branch" : "Keeping the branch for later"),

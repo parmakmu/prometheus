@@ -2,10 +2,13 @@
 
   run.yaml    id, status (active | done | stopped), revision, started_at, finished_at, note,
               stages {key: running | done} (absent = pending), launches [one entry per wave
-              launch], critiques [{run_id, after_waves}] (critic results a replan recorded;
-              plan_edit.py caps them per replan). Written by run_log.py and plan_edit.py.
+              launch], critiques [{run_id, after_waves}] (critic results recorded while the run resolved stages;
+              plan_edit.py caps them each time). Written by run_log.py and plan_edit.py.
   work/       the children's cwd: stage outputs, decisions, batches, scripts
-  .compiled/  compiled waves and their results
+  .compiled/  per wave launched: <wave>.js, the script pi-subagents runs (the wave as data, `const W`,
+              then wave_runner.js), and <wave>.json: the compile's result (the call), `inputs` (each
+              model stage's fingerprint, for reuse_earlier) and, once the wave ended, `result` (what it
+              returned: status and children)
 
 Relative param values (an `outputs` default, say) resolve against runs/<id>/. At most one run is
 active; /agent-run continues it.
@@ -15,7 +18,7 @@ import re
 from pathlib import Path
 from typing import NamedTuple
 
-from utils import read_yaml, write_yaml
+from utils import read_json, read_yaml, write_yaml
 
 RUNS = "runs"
 RUN_ID_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})-(\d+)$")
@@ -65,6 +68,33 @@ def stages_done(run_dir):
         return set(json.loads((Path(run_dir) / "state.json").read_text(encoding="utf-8")).get("done") or [])
     except (OSError, ValueError):
         return set()
+
+
+def read_wave(run_dir, wave):
+    """A launched wave's record (.compiled/<wave>.json), or {}."""
+    record = read_json(Path(run_dir) / ".compiled" / f"{wave}.json")
+    return record if isinstance(record, dict) else {}
+
+
+def write_wave(run_dir, wave, record):
+    compiled = Path(run_dir) / ".compiled"
+    compiled.mkdir(parents=True, exist_ok=True)
+    (compiled / f"{wave}.json").write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def record_wave_result(run_dir, wave, returned):
+    """Add what a launch of the wave returned to its record."""
+    write_wave(run_dir, wave, {**read_wave(run_dir, wave), "result": returned})
+
+
+def read_wave_spec(run_dir, wave):
+    """The wave as data (`const W = {...};`, the start of .compiled/<wave>.js), or None."""
+    try:
+        text = (Path(run_dir) / ".compiled" / f"{wave}.js").read_text(encoding="utf-8")
+        spec, _end = json.JSONDecoder().raw_decode(text, text.index("const W = ") + len("const W = "))
+    except (OSError, ValueError):
+        return None
+    return spec if isinstance(spec, dict) else None
 
 
 def read_run(run_dir):

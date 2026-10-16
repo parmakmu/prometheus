@@ -3,7 +3,7 @@
 # agents/invoice-check/plan.yaml (and .plan/), with gates/check_lines.py and
 # gates/check_report.py written during planning.
 
-version: 1
+format: 1
 revision: 1
 status: ready
 
@@ -36,13 +36,13 @@ params:
 inputs:
   - id: mail
     kind: folder
-    location: ${mail_dir}
+    path: ${mail_dir}
     format: eml
     access: read
     note: 1,240 .eml files observed; about 300 have PDF attachments
   - id: budget
     kind: file
-    location: ${budget_file}
+    path: ${budget_file}
     format: xlsx
     access: read
     note: sheet "Q3" with columns cost_center, supplier, po_number, po_amount, budget
@@ -50,12 +50,12 @@ inputs:
 outputs:
   - id: variance_report
     kind: file
-    location: ${report_dir}/Q3-invoice-variance.xlsx
+    path: ${report_dir}/Q3-invoice-variance.xlsx
     format: xlsx
     overwrite: false
   - id: reply_drafts
     kind: app
-    location: Gmail drafts
+    path: Gmail drafts
     format: email
 
 # ── How it works ────────────────────────────────────────────────────────────

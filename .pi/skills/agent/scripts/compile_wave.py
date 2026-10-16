@@ -6,15 +6,15 @@ Usage:
   compile_wave.py [--agent DIR] [--approve key,key] [--out FILE] [--check]
 
 The wave runs in the active run's folder (runs/<id>/, see validate_plan.py):
-children work in runs/<id>/work/, relative param values resolve against
-runs/<id>/, and the result is also saved to runs/<id>/.compiled/<wave>.json.
+children work in runs/<id>/work/, and relative param values resolve against
+runs/<id>/. A launchable wave is saved in runs/<id>/.compiled/ (runs.py says how).
 Gate commands name their scripts as ../gates/<script>; the compiler points
 that at the agent's gates/ folder.
 
 It refuses a wave already launched but not recorded (see unrecorded_launch).
 A model stage an earlier run finished on the same inputs is not launched again:
-its outputs are copied from that run (reuse_earlier; fingerprints in
-runs/<id>/.compiled/<wave>.inputs.json).
+its outputs are copied from that run (reuse_earlier; fingerprints in the
+`inputs` of runs/<id>/.compiled/<wave>.json).
 Before compiling, it commits pending changes to the agent's plan
 (agent_git.py) and returns the commit, so the launch is reproducible; that is
 the only change it makes to the agent. Git is required.
@@ -22,7 +22,7 @@ the only change it makes to the agent. Git is required.
 Waves are not written in the plan: validate_plan.derive_waves groups the stages
 that are not done, each as early as its `after` allows, and starts a new wave
 wherever the parent must act (a decision or approval, a side effect's report,
-a user review, a replan).
+a user review, resolving provisional stages).
 
 --agent  agent root (default: current directory)
 --approve   side-effect stage ids the user approved for this launch
@@ -54,6 +54,7 @@ The compiler never launches anything.
 """
 import hashlib
 import json
+import os
 import re
 import shlex
 import shutil
@@ -65,16 +66,26 @@ import agent_git
 import agent_params
 import typer
 from ruamel.yaml.error import YAMLError
-from runs import RUNS, active_run, list_released_runs, list_runs, stages_done
+from runs import (
+    RUNS,
+    active_run,
+    list_released_runs,
+    list_runs,
+    read_wave,
+    read_wave_spec,
+    stages_done,
+    write_wave,
+)
 from utils import (
+    agent_name,
     emit,
-    pi_agent_dir,
     read_json,
     read_plan,
     refuse,
     report_state,
     stage_kind,
     subagent_records,
+    subagents_package,
 )
 from validate_plan import agent_tools, check_ready, project_subagents, validate
 
@@ -102,14 +113,6 @@ def unrecorded_launch(run_dir, state, wave_id):
         if rid not in recorded and (st.get("workflow") or {}).get("scriptDigest") == digest:
             return st.get("runId") or rid, st.get("state")
     return None
-
-
-def subagents_package(agent_dir):
-    """pi-subagents' package.json (its version), project install first, else Pi's; [] when not found."""
-    for root in (Path(agent_dir) / ".pi" / "npm", pi_agent_dir() / "npm"):
-        if (f := root / "node_modules" / "pi-subagents" / "package.json").is_file():
-            return [f]
-    return []
 
 
 def canonical(value):
@@ -176,7 +179,7 @@ class Compiler:
         self.unresolved = set()  # errors only a run can clear (a resume of an earlier wave's stage)
         self.notes = []
         self.spliced = set()  # keys whose result a later child's task splices in (reuse_finished)
-        self.fingerprints = {}  # stage -> fingerprint, written to .compiled/<wave>.inputs.json (reuse_earlier)
+        self.fingerprints = {}  # stage -> fingerprint, saved as the wave record's `inputs` (reuse_earlier)
         self.reused_from = {}  # stage -> the earlier run its outputs are copied from
 
     # --- paths ---------------------------------------------------------------
@@ -216,7 +219,7 @@ class Compiler:
         returned result follows the text, else None."""
         if cid in self.inputs:
             inp = self.inputs[cid]
-            loc = self.resolve_text(inp.get("location", "")) if inp.get("location") else "(given in this task)"
+            loc = self.resolve_text(inp.get("path", "")) if inp.get("path") else "(given in this task)"
             fmt = f", {inp['format']}" if inp.get("format") else ""
             note = f" — {inp['note']}" if inp.get("note") else ""
             return f"- {cid} ({inp.get('kind')}{fmt}): {loc}{note}", None
@@ -252,7 +255,7 @@ class Compiler:
     def task(self, key, st, in_wave, extra_lines=()):
         """The child's task: text, or parts [{text} | {result: key}] when it includes the result
         of a stage earlier in this wave (wave_runner.js splices it in)."""
-        slug = self.agent_dir.name
+        slug = agent_name(self.agent_dir)
         parts = []
 
         def lit(s):
@@ -410,9 +413,9 @@ class Compiler:
                 "task": "BATCH_TOOL_REQUEST " + json.dumps(req), "fix": fix}
 
     def consumed_path(self, cid):
-        """Where an id a stage reads is: an input's location, or the path of the stage output that produces it."""
+        """Where an id a stage reads is: an input's path, or the path of the stage output that produces it."""
         if cid in self.inputs:
-            return self.resolve_text(str(self.inputs[cid].get("location") or ""))
+            return self.resolve_text(str(self.inputs[cid].get("path") or ""))
         if cid in self.producer:
             return self.out_path(self.producer[cid][1])
         return None
@@ -490,7 +493,7 @@ class Compiler:
         spec = st.get("map") or {}
         items_id = spec.get("over")
         if items_id in self.inputs:
-            source = self.resolve_text(self.inputs[items_id].get("location", ""))
+            source = self.resolve_text(self.inputs[items_id].get("path", ""))
         else:
             source = self.out_path(self.producer[items_id][1]) if items_id in self.producer else None
         if not source:
@@ -549,14 +552,15 @@ class Compiler:
         """What a model stage's output depends on, hashed: its child and review items (this run's
         folder masked), the contents of what it reads, its subagent's file, program and gates.
         None when that can't be known: it reads an app or url, a returned result, or the output of
-        a stage in this wave that has no fingerprint (a program, a map)."""
+        a stage in this wave that has no fingerprint (a program). A map stage's item is its map step: its
+        batch size, instructions, subagent and model; what it maps over is among its reads."""
         text = canonical([item, review]).replace(str(self.run_dir), "<run>")
         # an input's place is masked: its contents are hashed below, so the same files moved elsewhere (run
         # 2026-10-05-1: scratch/emails to uploads/emails) still reuse
         for cid in self.stages[key].get("reads") or []:
             inp = self.inputs.get(cid) or {}
-            if inp.get("kind") in ("file", "folder") and inp.get("location"):
-                where = self.resolve_text(inp["location"])
+            if inp.get("kind") in ("file", "folder") and inp.get("path"):
+                where = self.resolve_text(inp["path"])
                 for form in {where, str(Path(where).expanduser())}:
                     text = text.replace(form, f"<input {cid}>")
         h = hashlib.sha256(text.encode())
@@ -565,9 +569,9 @@ class Compiler:
                 inp = self.inputs[cid]
                 if inp.get("kind") == "text":
                     continue  # the text is in the task
-                if inp.get("kind") not in ("file", "folder") or not inp.get("location"):
+                if inp.get("kind") not in ("file", "folder") or not inp.get("path"):
                     return None
-                path = Path(self.resolve_text(inp["location"])).expanduser()
+                path = Path(self.resolve_text(inp["path"])).expanduser()
             else:
                 pkey, o = self.producer[cid]
                 decision = stage_kind(self.stages[pkey]) == "decision" or self.stages[pkey].get("pattern") == "approval"
@@ -596,14 +600,17 @@ class Compiler:
     def reuse_earlier(self, key, item, review, in_wave):
         """Mark a model stage with no side effect `reuse` when an earlier run finished it with the same
         fingerprint: the same judgment on the same inputs is not made again. compile_wave's main copies
-        its outputs from that run's work/. Not for a subagent with connector tools, which may act on or
-        read what no file shows. Returns that run's id, or None."""
+        its outputs from that run's work/. A map stage (`item`: its map step) counts as finished there when
+        its merge or reduce completed, or it was reused itself. Not for a subagent with connector tools,
+        which may act on or read what no file shows. Returns that run's id, or None."""
         st = self.stages[key]
         outs = [self.out_path(o) for o in st.get("writes") or [] if isinstance(o, dict)]
         tools = agent_tools(project_subagents(self.agent_dir).get(st.get("agent")) or {})
         if (stage_kind(st) not in ("judgment", "deterministic") or st.get("resumes")
                 or st.get("reuse") is False
-                or not outs or not all(o and Path(o).is_relative_to(self.work) for o in outs)
+                # its outputs inside the run (work/, or outputs/ by a relative param): an earlier run has them at the same
+                # place to copy from; one written elsewhere (a path the user chose) is overwritten by each run
+                or not outs or not all(o and Path(o).is_relative_to(self.run_dir) for o in outs)
                 or any(t.startswith("mcp:") for t in tools)):  # a connector: outside state no file shows
             return None
         fp = self.fingerprint(key, item, review, in_wave)
@@ -614,11 +621,12 @@ class Compiler:
         for rid, d in reversed(list_runs(self.agent_dir) + list_released_runs(self.agent_dir)):
             if rid == self.run_id or key not in stages_done(d):
                 continue
-            for inputs in (d / ".compiled").glob("*.inputs.json"):
-                done = ((read_json(inputs.with_name(inputs.name.replace(".inputs.json", "-result.json"))) or {})
-                        .get("children") or {}).get(key) or {}
-                if ((read_json(inputs) or {}).get(key) == fp and done.get("status") == "completed"
-                        and all((d / "work" / Path(o).relative_to(self.work)).exists() for o in outs)):
+            for path in (d / ".compiled").glob("*.json"):
+                record = read_json(path) or {}
+                children = (record.get("result") or {}).get("children") or {}
+                done = children.get(key) or children.get(f"{key}-merge") or children.get(f"{key}-reduce") or {}
+                if ((record.get("inputs") or {}).get(key) == fp and done.get("status") == "completed"
+                        and all((d / Path(o).relative_to(self.run_dir)).exists() for o in outs)):
                     item["reuse"] = {**{k: done.get(k) for k in ("runId", "outputReference", "structuredOutput")}, "run": rid}
                     self.reused_from[key] = rid
                     return rid
@@ -627,14 +635,14 @@ class Compiler:
     def reuse_finished(self, wid, steps):
         """Mark the layer children that completed in the wave's last (failed or blocked) launch with
         `reuse`, so a relaunch runs only the rest; returns their keys. A child is reused only when its
-        item is unchanged since that launch (.compiled/<wave>.wave.json), every stage it runs after in this
+        item is unchanged since that launch (the wave's data in .compiled/<wave>.js), every stage it runs after in this
         wave is reused too (else its input may change), and, when a later child splices in its result,
         it has a structured output (a child's text output is not kept between launches). A map stage
         whose spec is unchanged and whose input stages are reused keeps the batches that completed (their
         output files still there) and, when all did, its reduce; the split and merge run again (no model)."""
         last = next((r for r in reversed(self.launches) if r.get("wave") == wid), None)
-        before = read_json(self.run_dir / ".compiled" / f"{wid}.wave.json")
-        outcome = read_json(self.run_dir / ".compiled" / f"{wid}-result.json")
+        before = read_wave_spec(self.run_dir, wid)
+        outcome = read_wave(self.run_dir, wid).get("result")
         if not (last and last.get("status") in ("failed", "blocked", "stopped") and isinstance(before, dict) and isinstance(outcome, dict)):
             return []
         previous = {it["key"]: canonical({k: v for k, v in it.items() if k != "reuse"})
@@ -745,7 +753,16 @@ class Compiler:
                     children.append(s)
                 steps.append({"layer": items})
             for s in maps:
-                steps.append(self.map_step(s, self.stages[s], in_wave_done))
+                step = self.map_step(s, self.stages[s], in_wave_done)
+                if reuse and (rid := self.reuse_earlier(s, step["map"], reviews.get(s), in_wave_done)):
+                    # the same items and stage as an earlier run: its merged (or reduced) output is copied, and the
+                    # stage stands in the wave as one reused item, so its split, batches and merge aren't launched
+                    steps.append({"layer": [{"key": s, "reuse": step["map"].pop("reuse")}]})
+                    reviews.pop(s, None)
+                    self.notes.append(f"{s}: reused from run {rid} (same items and stage): its output is copied, not mapped again")
+                    children.append(s)
+                    continue
+                steps.append(step)
                 children += [f"{s}-split", f"{s}-<n>", f"{s}-merge" if self.stages[s].get("pattern") == "map" else f"{s}-reduce"]
             for s, review in reviews.items():
                 steps.append(review)
@@ -776,24 +793,33 @@ class Compiler:
             call["missionId"] = mission_id
         else:
             goal = (self.plan.get("goal") or "").strip()
-            title = ((goal[:67] + "...") if len(goal) > 70 else goal) or self.agent_dir.name
+            title = ((goal[:67] + "...") if len(goal) > 70 else goal) or agent_name(self.agent_dir)
             call["mission"] = {"title": f"{title} (run {self.run_id})", "objective": goal}
         call["workflowScript"] = script
-        return {"ok": True, "run": self.run_id, "wave": wid, "stages": members, "ends_with": wave.get("ends_with"),
-                "revision": revision, "call": call, "children": children,
-                "approved": sorted(self.approvals), "notes": self.notes, "spec": spec}
+        result = {"ok": True, "run": self.run_id, "wave": wid, "stages": members, "ends_with": wave.get("ends_with"),
+                  "revision": revision, "call": call, "children": children,
+                  "approved": sorted(self.approvals), "notes": self.notes, "spec": spec}
+        reused_items = [it for step in steps for it in step.get("layer") or []]
+        if steps and all("layer" in step for step in steps) and all("reuse" in it for it in reused_items):
+            # every stage is reused: nothing to launch. What the runner would have returned, so the wave is recorded
+            # without one (run_log.record_without_launch; frozen.Run for a released run)
+            result["nothing_to_launch"] = True
+            result["outcome"] = {"wave": wid, "revision": revision, "status": "done", "children": {
+                it["key"]: {**{k: it["reuse"].get(k) for k in ("runId", "outputReference", "structuredOutput")},
+                            "status": "completed", "reused": True} for it in reused_items}}
+        return result
 
     def copy_reused(self):
-        """Copy each reused stage's outputs from the earlier run's work/ into this run's."""
+        """Copy each reused stage's outputs from the earlier run into this one, at the same place in the run."""
         for key, rid in self.reused_from.items():
-            src = self.run_dir.parent / rid / "work"
+            src = self.run_dir.parent / rid
             for o in self.stages[key].get("writes") or []:
-                rel = Path(self.out_path(o)).relative_to(self.work)
-                (self.work / rel).parent.mkdir(parents=True, exist_ok=True)
+                rel = Path(self.out_path(o)).relative_to(self.run_dir)
+                (self.run_dir / rel).parent.mkdir(parents=True, exist_ok=True)
                 if (src / rel).is_dir():
-                    shutil.copytree(src / rel, self.work / rel, dirs_exist_ok=True)
+                    shutil.copytree(src / rel, self.run_dir / rel, dirs_exist_ok=True)
                 else:
-                    shutil.copy2(src / rel, self.work / rel)
+                    shutil.copy2(src / rel, self.run_dir / rel)
 
 
 FROZEN_WAVE = "all"
@@ -823,7 +849,7 @@ def compile_frozen(agent_dir, plan, run_dir, values, approvals, state=None, reus
     at the first failure, in one launch. Otherwise the waves are derived as in an agent's own run, so a decision or an
     unapproved side effect starts a wave whose compile returns a preflight: the caller answers, and the run goes on.
     `reuse`: model stages take an earlier run's result when nothing changed (reuse_earlier, across the release's
-    runs); the result then carries the compiler as "_compiler", for write_frozen to save fingerprints and copy outputs.
+    runs); the result then carries the compiler as "_compiler", for save_wave to save fingerprints and copy outputs.
     Returns compile()'s result, or {"ok": True, "done": True} when no stage is left."""
     state = state or {}
     done, launches = set(state.get("done") or []), state.get("launches") or []
@@ -842,21 +868,34 @@ def compile_frozen(agent_dir, plan, run_dir, values, approvals, state=None, reus
     return {**compiler.compile(waves[0], reuse=reuse), **({"_compiler": compiler} if reuse else {})}
 
 
-def write_frozen(run_dir, result):
-    """Save a launchable frozen compile in the run folder (<wave>.js, the call in <wave>.json, the wave as data in
-    <wave>.wave.json); the call then names the script by path."""
-    compiled = Path(run_dir) / ".compiled"
-    compiled.mkdir(parents=True, exist_ok=True)
+def save_wave(run_dir, result, compiler):
+    """Save a launchable compile in the run folder: the script as <wave>.js, which the call then names by path (the
+    model would otherwise re-emit the whole script as output tokens to pass it back; pi-subagents reads a
+    `workflow` value with "/" as a file), and the result in <wave>.json with the fingerprints later runs reuse by
+    (`inputs`). Copies the outputs reused now. The wave's data is in the script only (runs.read_wave_spec)."""
     wave = result["wave"]
-    if compiler := result.pop("_compiler", None):  # the fingerprints later runs reuse by, and the outputs reused now
-        (compiled / f"{wave}.inputs.json").write_text(canonical(compiler.fingerprints), encoding="utf-8")
-        compiler.copy_reused()
-    script = compiled / f"{wave}.js"
+    result.pop("spec")
+    script = Path(run_dir) / ".compiled" / f"{wave}.js"
+    script.parent.mkdir(parents=True, exist_ok=True)
     script.write_text(result["call"].pop("workflowScript"), encoding="utf-8")
     result["call"]["workflow"] = str(script.resolve())
-    (compiled / f"{wave}.wave.json").write_text(canonical(result.pop("spec")), encoding="utf-8")
-    (compiled / f"{wave}.json").write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+    write_wave(run_dir, wave, {**result, "inputs": compiler.fingerprints})
+    compiler.copy_reused()
     return result
+
+
+def record_reused_wave(agent_dir, plan, run, result):
+    """A wave every stage of which is reused, recorded as it is compiled (run_log.record_without_launch): nothing is
+    launched, and the result is what agent_log_finish would have returned, with `launched: false`."""
+    import run_log  # here, not at the top: run_log imports this module
+    os.chdir(agent_dir)  # run_log works on the agent in the current folder
+    nxt = {"id": result["wave"], "stages": result["stages"], "ends_with": result["ends_with"]}
+    recorded = run_log.record_without_launch(plan, run, nxt, result["outcome"], result.get("approved") or [])
+    # first, and in words: a model that saw only a finished wave's result called agent_log_finish too (run 2026-10-16-7)
+    return {"ok": True, "launched": False,
+            "recorded": f"wave {result['wave']} is already recorded: every stage was reused, nothing was launched. Do not "
+                        "launch it or call agent_log_start or agent_log_finish: go on from this result as from agent_log_finish's",
+            **recorded, "wave": result["wave"], "stages": result["stages"], "notes": result.get("notes"), "commit": result.get("commit")}
 
 
 def main(
@@ -865,9 +904,9 @@ def main(
     budget: Annotated[float | None, typer.Option(help="raise the run's cost ceiling (USD) to this, after the user said to go on")] = None,
     reviewed: Annotated[bool, typer.Option("--reviewed", help="the user has seen the last wave's outputs and said to go on (it ended with review)")] = False,
     out: Annotated[str | None, typer.Option(help="also write the result JSON to this file")] = None,
-    no_commit: Annotated[bool, typer.Option("--no-commit", help="report only (e.g. for a status view): do not commit the plan")] = False,
+    no_commit: Annotated[bool, typer.Option("--no-commit", help="report only (e.g. for a status view): switch, commit and save nothing")] = False,
     check: Annotated[bool, typer.Option("--check", help="planning check: compile every concrete pending wave, ignore status and preflight, report errors only")] = False,
-    frozen: Annotated[str | None, typer.Option(help="a released agent's run folder: compile the whole plan as one wave there")] = None,
+    frozen: Annotated[str | None, typer.Option(help="a released agent's run folder: compile its next wave there (the whole plan as one when nothing asks the caller)")] = None,
     params_json: Annotated[str, typer.Option("--params", help="with --frozen: the caller's param values, a JSON object (no secrets)")] = "{}",
 ):
     """Compile the next wave into a pi-subagents call."""
@@ -887,11 +926,18 @@ def main(
         state = read_json(Path(frozen) / "state.json") or {}
         result = compile_frozen(agent_dir, plan, Path(frozen).resolve(), values, {a.strip() for a in approve.split(",") if a.strip()},
                                 state if isinstance(state, dict) else {}, reuse=True)
+        compiler = result.pop("_compiler", None)
         launchable = result.get("ok") and not result.get("done")
-        if not launchable:
-            result.pop("_compiler", None)
-        emit(write_frozen(frozen, result) if launchable else result, 0 if result.get("ok") else 1)
+        emit(save_wave(frozen, result, compiler) if launchable else result, 0 if result.get("ok") else 1)
     report_state(agent_dir)
+    if not check and (run := active_run(agent_dir)):
+        # the plan, gates and programs are read from what is checked out: the run's own branch
+        if no_commit and (off := agent_git.find_off_branch(agent_dir, run.branch)):
+            refuse(f"run {run.id}: {agent_git.describe_off_branch(off)}")  # a report switches nothing
+        try:
+            agent_git.back_to_run_branch(agent_dir, run.branch)
+        except RuntimeError as exc:
+            refuse(f"run {run.id}: {exc}. Tell the user; do not change branches or files yourself")
     try:
         plan = read_plan(agent_dir, strict=True) or {}
     except YAMLError as exc:
@@ -954,20 +1000,13 @@ def main(
                                 agent_git.commit(agent_dir, f"r{plan.get('revision', 1)}: plan for run {run.id}, wave {wave['id']}", to=run.branch)[0])
         except RuntimeError as exc:
             refuse(f"cannot commit the plan: {exc}")
-        # a path, not the text: the model would otherwise have to re-emit the whole script as output
-        # tokens just to pass it back (pi-subagents >= 0.74 reads a `workflow` value with "/" as a file)
-        compiled = run.dir / ".compiled"
-        compiled.mkdir(parents=True, exist_ok=True)
-        script_path = compiled / f"{wave['id']}.js"
-        script_path.write_text(result["call"].pop("workflowScript"), encoding="utf-8")
-        (compiled / f"{wave['id']}.wave.json").write_text(canonical(result.pop("spec")), encoding="utf-8")  # for reuse_finished
-        (compiled / f"{wave['id']}.inputs.json").write_text(canonical(compiler.fingerprints), encoding="utf-8")  # for reuse_earlier
-        compiler.copy_reused()
-        result["call"]["workflow"] = str(script_path.resolve())
-    text = json.dumps(result, indent=2, ensure_ascii=False)
-    for out_path in filter(None, (run.dir / ".compiled" / f"{wave['id']}.json", Path(out) if out else None)):
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(text, encoding="utf-8")
+        if not no_commit:  # a report writes nothing
+            save_wave(run.dir, result, compiler)
+            if result.get("nothing_to_launch"):
+                result = record_reused_wave(agent_dir, plan, run, result)
+    if out:
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
+        Path(out).write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
     emit(result, 0 if result.get("ok") else 1)
 
 

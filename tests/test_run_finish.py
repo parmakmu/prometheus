@@ -13,7 +13,7 @@ import pytest
 from conftest import SKILL, fake_critic, git_in
 
 PLAN = """\
-version: 1
+format: 1
 revision: 1
 status: ready
 request: "count the lines"
@@ -48,6 +48,12 @@ def ready_agent(root, run_py, slug):
     wf = root / slug
     (wf / "plan.yaml").write_text(PLAN, encoding="utf-8")
     return wf, wf / ".pi" / "skills" / "agent" / "scripts"
+
+
+def read_run_state(run_dir):
+    """A run's run.yaml as plain data."""
+    from ruamel.yaml import YAML
+    return YAML(typ="safe", pure=True).load((Path(run_dir) / "run.yaml").read_text(encoding="utf-8"))
 
 
 # the tests reading `finished` share one finished run: keep them on one worker (the rest spread out)
@@ -107,16 +113,51 @@ def test_a_leftover_run_branch_is_not_reused(tmp_path, run_py):
     subprocess.run(["git", "branch", f"run/{today}-1"], cwd=wf, check=True)
     r = run_py([k / "run_log.py", "new"], cwd=wf)
     assert r.data["run"] == f"{today}-2", r
-    # a run whose branch already exists is refused before the plan changes, and can still stop
-    subprocess.run(["git", "branch", f"run/{today}-2"], cwd=wf, check=True)
-    r = run_py([k / "plan_edit.py", "replan", "--change", '{"note": "x"}'], cwd=wf)
-    assert "already exists" in r.data["error"], r
-    assert subprocess.run(["git", "status", "--porcelain"], cwd=wf, capture_output=True, text=True, check=True).stdout == ""
-    r = run_py([k / "run_log.py", "stop"], cwd=wf)
-    assert r.data["run_status"] == "stopped" and "already exists" in r.data["git_note"], r
 
 
-def test_a_replan_gets_two_critic_passes(tmp_path, run_py):
+def test_a_run_goes_back_to_its_branch_only_when_nothing_is_uncommitted(tmp_path, run_py):
+    # someone switches branches while a run is going: the run works on its own branch again, never moving their edits
+    wf, k = ready_agent(tmp_path, run_py, "back")
+    rid = run_py([k / "run_log.py", "new"], cwd=wf).data["run"]
+    git = lambda *a: subprocess.run(["git", *a], cwd=wf, capture_output=True, text=True, check=True).stdout.strip()
+    resolve = lambda note: run_py([k / "plan_edit.py", "resolve", "--change", f'{{"note": "{note}"}}'], cwd=wf)
+    assert resolve("first").data["ok"] and git("branch", "--show-current") == f"run/{rid}"
+    main_before = git("rev-parse", "main")
+    # main, nothing changed: a report says so and switches nothing; the next step goes back to the run's branch
+    git("switch", "-q", "main")
+    st = run_py([k / "agent_state.py"], cwd=wf).data
+    assert f"the run works on run/{rid}; its next step switches back" in st["off_branch"], st
+    r = run_py([k / "compile_wave.py", "--no-commit"], cwd=wf)
+    assert "its next step switches back" in r.data["error"] and git("branch", "--show-current") == "main", r
+    assert not (wf / "runs" / rid / ".compiled").exists()  # nor does it save a wave
+    assert resolve("second").data["ok"] and git("branch", "--show-current") == f"run/{rid}"
+    # main with an edit of yours: refused, and the edit stays where it is, on main
+    git("switch", "-q", "main")
+    (wf / "gates" / "mine.py").write_text("print('mine')\n", encoding="utf-8")
+    status = run_py([k / "list_agents.py", "--agent", wf], cwd=wf).data
+    assert "uncommitted changes (gates/mine.py)" in status["off_branch"], status
+    r = resolve("third")
+    assert "uncommitted changes (gates/mine.py)" in r.data["error"] and f"git switch run/{rid}" in r.data["error"], r
+    assert git("branch", "--show-current") == "main" and (wf / "gates" / "mine.py").is_file()
+    r = run_py([k / "compile_wave.py"], cwd=wf)  # the next wave isn't compiled from main's files either
+    assert "uncommitted changes (gates/mine.py)" in r.data["error"], r
+    r = run_py([k / "run_log.py", "stop"], cwd=wf)  # stopping still works; its commit says why it waited
+    assert r.data["run_status"] == "stopped" and "uncommitted changes" in r.data["git_note"], r
+    assert git("rev-parse", "main") == main_before  # main untouched throughout
+
+
+def test_a_run_goes_back_from_another_branch_too(tmp_path, run_py):
+    wf, k = ready_agent(tmp_path, run_py, "other")
+    rid = run_py([k / "run_log.py", "new"], cwd=wf).data["run"]
+    git = lambda *a: subprocess.run(["git", *a], cwd=wf, capture_output=True, text=True, check=True).stdout.strip()
+    assert run_py([k / "plan_edit.py", "resolve", "--change", '{"note": "first"}'], cwd=wf).data["ok"]
+    git("switch", "-q", "-c", "revise/2026-01-01-1", "main")  # a change branch, checked out by hand
+    r = run_py([k / "plan_edit.py", "resolve", "--change", '{"note": "second"}'], cwd=wf)
+    assert r.data["ok"] and git("branch", "--show-current") == f"run/{rid}", r
+    assert "second" in git("log", "-1", "--format=%s", f"run/{rid}")  # the commit is the run's, not the change branch's
+    assert git("rev-parse", "revise/2026-01-01-1") == git("rev-parse", "main")
+
+def test_a_resolve_gets_two_critic_passes(tmp_path, run_py):
     # fixing a finding bumps the revision; the cap must hold across revisions
     wf, k = ready_agent(tmp_path, run_py, "crit")
     assert run_py([k / "run_log.py", "new"], cwd=wf).data["ok"]
@@ -302,14 +343,14 @@ def test_leftovers_on_main_go_to_a_branch_once_a_run_exists(tmp_path, run_py):
     assert "gates/stray2.py" in git("show", "--name-only", "--format=", "HEAD").stdout
 
 
-def test_replan_critique_and_decisions_wait_for_the_running_wave(tmp_path, run_py):
+def test_resolve_critique_and_decisions_wait_for_the_running_wave(tmp_path, run_py):
     wf, k = ready_agent(tmp_path, run_py, "busy")
     env = {**os.environ, "PI_SUBAGENTS_TEMP_ROOT": str(tmp_path / "pi-subagents")}
     assert run_py([k / "run_log.py", "new"], cwd=wf).data["ok"]
     assert run_py([k / "compile_wave.py"], cwd=wf, env=env).data["ok"]
     assert run_py([k / "run_log.py", "start", "--wave", "w1", "--subagent-run-id", "wf-1"], cwd=wf).data["ok"]
     plan = (wf / "plan.yaml").read_text(encoding="utf-8")
-    for args in (["plan_edit.py", "replan", "--change", '{"note": "x"}'],
+    for args in (["plan_edit.py", "resolve", "--change", '{"note": "x"}'],
                  ["plan_edit.py", "critique", "--result", '{"run_id": "c1", "verdict": "pass"}'],
                  ["run_log.py", "decision", "--stage", "count", "--answer", "true"]):
         assert "running" in errors(run_py([k / args[0], *args[1:]], cwd=wf)), args
@@ -399,7 +440,7 @@ TWO = PLAN + """\
     done_when: counts2.txt holds one number
     gate: "true"
 """
-PAUSED = TWO.replace("    agent: worker\n    writes:\n      - id: counts\n", "    agent: worker\n    pause_after: true\n    writes:\n      - id: counts\n", 1) \
+PAUSED = TWO.replace("    agent: worker\n    writes:\n      - id: counts\n", "    agent: worker\n    pauses_after: true\n    writes:\n      - id: counts\n", 1) \
             .replace("    title: Count the lines again\n", "    title: Count the lines again\n    after: [count]\n", 1)
 
 
@@ -503,7 +544,7 @@ MAP = PLAN.replace("""stages:
 inputs:
   - id: lines
     kind: file
-    location: ${src}
+    path: ${src}
 params:
   src:
     description: a text file, one item per line
@@ -614,3 +655,52 @@ def test_prune_deletes_nothing_outside_the_records_whatever_a_run_names(tmp_path
         "launches: []", "launches:\n  - wave: w1\n    status: done\n    subagent_run_id: ../precious"), encoding="utf-8")
     assert run_py([k / "run_history.py", "prune", "--keep", "0"], cwd=wf).data["ok"]
     assert precious.is_dir()
+
+
+def test_a_wave_whose_every_stage_is_reused_is_recorded_without_a_launch(tmp_path, run_py):
+    # email-summaries run 2026-10-16-6: everything reused, yet the model launched an empty workflow and logged it
+    wf, k = ready_agent(tmp_path, run_py, "again")
+    with (wf / "plan.yaml").open("a", encoding="utf-8") as f:  # a deliverable, named where it lands in the run
+        f.write("outputs:\n  - id: counts\n    kind: file\n    path: counts.txt\n    format: txt\n")
+    run = lambda *args: run_py([k / args[0], *args[1:]], cwd=wf)
+    first = run("run_log.py", "new").data["run"]
+    assert run("compile_wave.py").data["ok"]
+    assert run("run_log.py", "start", "--wave", "w1", "--subagent-run-id", "launch-1").data["ok"]
+    (wf / "runs" / first / "work" / "counts.txt").write_text("3\n")
+    done = json.dumps({"status": "done", "children": {"count": {"status": "completed", "runId": "child-1"}}})
+    assert run("run_log.py", "finish", "--wave", "w1", "--result", done).data["run_status"] == "done"
+
+    second = run("run_log.py", "new").data["run"]
+    r = run("compile_wave.py").data
+    assert r["ok"] and r["launched"] is False and "call" not in r, r  # nothing to hand to the subagent tool
+    assert list(r)[:3] == ["ok", "launched", "recorded"] and "agent_log_finish" in r["recorded"]  # said first, in words
+    assert (r["run_status"], r["wave_status"], r["wave"]) == ("done", "done", "w1"), r
+    assert r["mission_close"] is None  # nothing launched, so no pi-subagents mission was opened to close
+    assert any("reused from run" in n for n in r["notes"])
+    state = read_run_state(wf / "runs" / second)
+    launch = state["launches"][0]
+    assert (launch["status"], launch["launched"], launch["subagent_run_id"]) == ("done", False, None) and state["status"] == "done"
+    assert (wf / "runs" / second / "work" / "counts.txt").read_text() == "3\n"
+    assert r["outputs"] == [{"id": "counts", "path": f"runs/{second}/work/counts.txt", "exists": True}], r["outputs"]
+    assert r["report"]["deliverables"] == [f"runs/{second}/work/counts.txt (present): reused from an earlier run, checked there"]
+    assert "Open nothing" in r["report"]["do"], r["report"]  # code settled it: nothing for the model to reason about
+    assert r["next"]["state"] in ("ready", "branch_review"), r["next"]  # the run is over: nothing waits for a notice
+
+
+def test_a_deliverables_items_are_counted_where_a_program_can_tell(tmp_path):
+    # run 2026-10-17-1: the model read summaries.json four times to count its summaries
+    import sys
+    sys.path.insert(0, str(SKILL / "scripts"))
+    try:
+        from run_log import count_items
+    finally:
+        sys.path.remove(str(SKILL / "scripts"))
+    files = {"a.json": '[{"file": "1.eml"}, {"file": "2.eml"}]', "b.json": '{"not": "a list"}', "c.jsonl": '{"a": 1}\n\n{"a": 2}\n',
+             "d.csv": "from,subject\nada,hi\nalan,yo\n", "e.txt": "three\nlines\nhere\n", "f.json": "[not json"}
+    for name, text in files.items():
+        (tmp_path / name).write_text(text)
+    (tmp_path / "folder" / "sub").mkdir(parents=True)
+    for name in ("x.eml", "sub/y.eml"):
+        (tmp_path / "folder" / name).write_text("x")
+    assert {n: count_items(tmp_path / n) for n in [*files, "folder"]} == {
+        "a.json": 2, "b.json": None, "c.jsonl": 2, "d.csv": 2, "e.txt": None, "f.json": None, "folder": 2}

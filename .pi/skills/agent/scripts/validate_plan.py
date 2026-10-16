@@ -24,6 +24,7 @@ Prints one JSON object {valid, status, errors, warnings, summary} and exits
 Requires typer, pydantic and ruamel.yaml (`uv sync`).
 """
 import ast
+import contextlib
 import hashlib
 import json
 import re
@@ -34,6 +35,8 @@ from typing import Annotated, Any, Literal
 
 import agent_params
 import typer
+from packaging.requirements import InvalidRequirement
+from packaging.utils import canonicalize_name
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -46,7 +49,14 @@ from pydantic import (
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 from runs import active_run, last_run
-from utils import PLAN_FILE, load_yaml, parts_in_plan_file, read_plan, stage_kind
+from utils import (
+    PLAN_FILE,
+    load_yaml,
+    package_name,
+    parts_in_plan_file,
+    read_plan,
+    stage_kind,
+)
 
 
 def plan_digest(plan):
@@ -131,14 +141,14 @@ class Param(M):
 class Input(M):
     id: Str
     kind: Literal["folder", "file", "app", "url", "text"]
-    location: str | None = None
+    path: str | None = None
     access: Literal["read", "read_write"] = "read"
 
 
 class Output(M):
     id: Str
     kind: Literal["file", "app", "message"]
-    location: Str
+    path: Str
     overwrite: StrictBool = False
 
 
@@ -215,8 +225,7 @@ class Stage(M):
     agent: str | None = Field(None, description="the subagent its child runs as")
     resumes: str | None = Field(None, description="an earlier single-child stage whose child it continues")
     context: Context | None = Field(None, description="fresh or fork; only when not the subagent's default")
-    provisional: StrictBool = Field(False, description="an outline, filled in at replan after its resolves_after stage")
-    resolves_after: str | None = Field(None, description="provisional: the discovery stage it is filled in after")
+    resolves_after: Key | None = Field(None, description="an outline until this discovery stage has run; the run then resolves it, writing the stage out in full")
     intent: str | None = Field(None, description="provisional: what it must produce")
     instructions: str | None = Field(None, description="what a model child must do and how, in full: its brief")
     after: list[str] = Field([], description="the stages that must finish first")
@@ -225,7 +234,7 @@ class Stage(M):
     done_when: str | None = Field(None, description="how its result is judged done")
     gate: Any = Field(None, description="a command that checks its output (../gates/<script>), or {command, output: json}")
     review: str | None = Field(None, description="the subagent that reviews its result (adds an <id>-review child)")
-    pause_after: StrictBool = Field(False, description="the user sees its results before the stages after it run")
+    pauses_after: StrictBool = Field(False, description="the user sees its results before the stages after it run")
     map: Map | None = Field(None, description="map / map_reduce: what is split, and how")
     program: Program | None = Field(None, description="its program in scripts/ and the arguments it runs with")
     model: Str | None = Field(None, description="the model its children use (default: models.default, else the subagent's)")
@@ -236,7 +245,7 @@ class Stage(M):
 class Unknown(M):
     id: Str
     text: Str
-    resolve_by: Literal["planner", "probe", "user", "discovery"]
+    resolved_by: Literal["planner", "probe", "user", "discovery"]
     finding: Any = None
     run_id: str | None = None
     question: str | None = None
@@ -295,7 +304,7 @@ class Models(M):
 
 
 class Plan(M):
-    version: Literal[1]
+    format: Literal[1]
     status: Literal["draft", "needs_answers", "ready"]
     revision: Annotated[int, Field(ge=1)] = 1
     request: Str
@@ -371,24 +380,24 @@ def derive_waves(by_key, after, status, first=1):
     - it is a decision, approval or side effect and the needed stage launches a
       child (the parent asks the user before the wave's script starts);
     - that stage is a side effect (its results are reported first) or has
-      `pause_after` (the user reviews it first);
-    - it is provisional and that stage is the discovery it `resolves_after`
-      (the parent replans in between; this counts as `after`).
+      `pauses_after` (the user reviews it first);
+    - it is provisional until that stage, a discovery (the parent resolves in between; this counts
+      as `after`).
     `status` maps keys to running | done (absent = pending).
     Returns ([{id, stages, ends_with}], {key: wave index}); raises CycleError."""
     active = [k for k in by_key if status.get(k) != "done"]
     deps = {k: {d for d in after[k] if d in active} for k in active}
     for k in active:
         st = by_key[k]
-        if st.provisional and st.resolves_after in deps:
+        if st.resolves_after in deps:
             deps[k].add(st.resolves_after)
     level = {}
     for k in TopologicalSorter(deps).static_order():
         st = by_key[k]
         level[k] = max((level[d] + int(bool(
-            by_key[d].kind.value == "side_effect" or by_key[d].pause_after
+            by_key[d].kind.value == "side_effect" or by_key[d].pauses_after
             or (human_first(st) and is_run_stage(by_key[d]))
-            or (st.provisional and d == st.resolves_after)))
+            or d == st.resolves_after))
             for d in deps[k]), default=0)
     waves = []
     for i in range(max(level.values(), default=-1) + 1):
@@ -396,10 +405,10 @@ def derive_waves(by_key, after, status, first=1):
         ends_with = "none"
         if any(by_key[k].kind.value == "side_effect" for k in members):
             ends_with = "approval"
-        if any(by_key[k].pause_after for k in members):
+        if any(by_key[k].pauses_after for k in members):
             ends_with = "review"
-        if any(by_key[p].provisional and by_key[p].resolves_after in members for p in active):
-            ends_with = "replan"
+        if any(by_key[p].resolves_after in members for p in active):
+            ends_with = "resolve"
         waves.append({"id": f"w{first + i}", "stages": members, "ends_with": ends_with})
     return waves, level
 
@@ -425,10 +434,6 @@ IMPORT_PACKAGES = {"yaml": "pyyaml", "bs4": "beautifulsoup4", "PIL": "pillow", "
                    "Crypto": "pycryptodome", "fitz": "pymupdf", "magic": "python-magic"}
 
 
-def norm_package(name):
-    return re.sub(r"[-_.]+", "-", name).lower()
-
-
 def project_packages(root: Path):
     """Normalised names of the packages the agent's pyproject.toml lists, or None if unreadable."""
     try:
@@ -436,7 +441,11 @@ def project_packages(root: Path):
         deps = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
     except (ImportError, OSError, KeyError, TypeError, ValueError):
         return None
-    return {norm_package(re.split(r"[\s<>=!~;\[(]", d, maxsplit=1)[0]) for d in deps if isinstance(d, str)}
+    names = set()
+    for d in deps:
+        with contextlib.suppress(InvalidRequirement, TypeError):
+            names.add(package_name(d))
+    return names
 
 
 def package_problem(script: Path, packages, runs_with_uv: bool):
@@ -458,7 +467,7 @@ def package_problem(script: Path, packages, runs_with_uv: bool):
             names.add(node.module.split(".")[0])
     third_party = sorted(n for n in names if n not in sys.stdlib_module_names and not (script.parent / f"{n}.py").exists())
     if third_party and packages is not None:
-        missing = [n for n in third_party if norm_package(IMPORT_PACKAGES.get(n, n)) not in packages]
+        missing = [n for n in third_party if canonicalize_name(IMPORT_PACKAGES.get(n, n)) not in packages]
         if missing:
             return (f"imports {', '.join(missing)}, which the agent's pyproject.toml does not list: "
                     f"add {' '.join(IMPORT_PACKAGES.get(n, n) for n in missing)} with agent_add_package (the user approves it, so give the reason)")
@@ -596,11 +605,11 @@ class Checker:
             self.err(f"input '{iid}': duplicate id")
         for inp in self.plan.inputs:
             where = f"input '{inp.id}'"
-            if not inp.location and inp.kind != "text":
-                self.err(f"{where}: location is required")
-            self.check_refs(where, inp.location, is_path=inp.kind in ("folder", "file"))
-            if inp.kind in ("folder", "file") and literal_absolute(inp.location):
-                self.warn(f"{where}: absolute location; use a ${{param}} so the agent can be moved")
+            if not inp.path and inp.kind != "text":
+                self.err(f"{where}: path is required")
+            self.check_refs(where, inp.path, is_path=inp.kind in ("folder", "file"))
+            if inp.kind in ("folder", "file") and literal_absolute(inp.path):
+                self.warn(f"{where}: absolute path; use a ${{param}} so the agent can be moved")
 
     def stage_index(self):
         """Stages by id, each output's producer, and child keys that would collide."""
@@ -616,7 +625,7 @@ class Checker:
                     self.err(f"stage '{st.id}': writes '{o.id}', which stage '{self.producer[o.id]}' already writes")
                 else:
                     self.producer[o.id] = st.id
-        self.provisional = {k for k, st in self.by_key.items() if st.provisional}
+        self.provisional = {k for k, st in self.by_key.items() if st.resolves_after}
         for key, st in self.by_key.items():
             reserved = {
                 "map": rf"^{re.escape(key)}-(\d+|split|merge)$",
@@ -664,8 +673,6 @@ class Checker:
         run = is_run_stage(st)
         if run:
             self.keys_summary[key] = child_keys(key, st.pattern)
-        if st.resolves_after is not None:
-            self.err(f"{where}: resolves_after is only for provisional stages")
         eff_agent = self.stage_agent(where, key, st, run)
         is_external = eff_agent in self.external
         structured = self.stage_outputs(where, key, st, run, eff_agent, is_external)
@@ -764,17 +771,15 @@ class Checker:
     def stage_provisional(self, where, st):
         if not st.intent:
             self.err(f"{where}: provisional stages need an intent (what the stage must produce)")
-        ra = st.resolves_after
-        if not ra:
-            self.err(f"{where}: provisional stages need resolves_after (the discovery stage that will fill them in)")
-        elif ra not in self.by_key:
-            self.err(f"{where}: resolves_after unknown stage '{ra}'")
-        elif ra in self.provisional:
-            self.err(f"{where}: resolves_after '{ra}', which is itself provisional")
+        until = st.resolves_after
+        if until not in self.by_key:
+            self.err(f"{where}: resolves_after names unknown stage '{until}'")
+        elif until in self.provisional:
+            self.err(f"{where}: resolves_after '{until}', which is itself provisional")
         if st.resumes is not None:
-            self.err(f"{where}: a provisional stage cannot resume a child; decide that at replan")
+            self.err(f"{where}: a provisional stage cannot resume a child; decide that at resolve")
         if st.gate:
-            self.warn(f"{where}: gate on a provisional stage; it will be re-decided at replan")
+            self.warn(f"{where}: gate on a provisional stage; it will be re-decided at resolve")
 
     def stage_agent(self, where, key, st, run):
         """agent / resumes / context rules; returns the agent the child runs as."""
@@ -879,7 +884,7 @@ class Checker:
             self.err(f"{where}: {pattern} stages need `map.over`: the input or output it reads whose items are split into batches")
         elif over not in st.reads:
             self.err(f"{where}: map.over '{over}' must also be listed in reads")
-        elif over in self.producer and not self.by_key[self.producer[over]].provisional:
+        elif over in self.producer and not self.by_key[self.producer[over]].resolves_after:
             src = next((o for o in self.by_key[self.producer[over]].writes if o.id == over), None)
             if not (src and src.path):
                 self.err(f"{where}: map.over '{over}' must be a file output (with a path) so it can be split")
@@ -915,7 +920,7 @@ class Checker:
         outside = {o.id: o for o in self.plan.outputs if o.kind in ("app", "message")}
         defined = project_subagents(self.agent_root) if self.agent_root else {}
         for key, st in self.by_key.items():
-            targets = [outside[o.id].location for o in st.writes if o.id in outside]
+            targets = [outside[o.id].path for o in st.writes if o.id in outside]
             if st.kind.value != "side_effect" or not targets or not st.agent:
                 continue
             where = f"stage '{key}'"
@@ -932,9 +937,9 @@ class Checker:
     def outputs(self):
         for out in self.plan.outputs:
             where = f"output '{out.id}'"
-            self.check_refs(where, out.location, is_path=out.kind == "file")
-            if out.kind == "file" and literal_absolute(out.location):
-                self.warn(f"{where}: absolute location; use a ${{param}} so the agent can be moved")
+            self.check_refs(where, out.path, is_path=out.kind == "file")
+            if out.kind == "file" and literal_absolute(out.path):
+                self.warn(f"{where}: absolute path; use a ${{param}} so the agent can be moved")
             if out.id not in self.producer:
                 self.err(f"{where}: no stage produces it"); continue
             pkey = self.producer[out.id]
@@ -946,7 +951,7 @@ class Checker:
         err, by_key = self.err, self.by_key
         if "waves" in self.raw:
             err("plans do not list waves: they are derived from the stages (remove `waves`; give a stage "
-                "`pause_after: true` if the user should review it before the stages that need it run)")
+                "`pauses_after: true` if the user should review it before the stages that need it run)")
         for key, st in by_key.items():
             if "status" in (st.model_extra or {}):
                 err(f"stage '{key}': status belongs to the run (runs/<id>/run.yaml), not the plan; remove it")
@@ -964,7 +969,7 @@ class Checker:
         stage_status = {k: v for k, v in stage_status.items() if k in by_key}
         for key, sst in stage_status.items():
             if key in self.provisional:
-                err(f"stage '{key}' is provisional but {sst} in run {run_id}; replan it before it runs")
+                err(f"stage '{key}' is provisional but {sst} in run {run_id}; resolve it before it runs")
             allowed = ("done",) if sst == "done" else ("done", "running")
             for d in self.after[key]:
                 if stage_status.get(d, "pending") not in allowed:
@@ -979,7 +984,7 @@ class Checker:
                 self.waves, level = derive_waves(by_key, self.after, stage_status, first)
             except CycleError as exc:
                 err("resolves_after makes a cycle: " + " -> ".join(reversed(exc.args[1]))
-                    + "; a provisional stage comes after the discovery it resolves after")
+                    + "; a provisional stage comes after the discovery it waits for")
         self.running = [k for k, v in stage_status.items() if v == "running"]
         self.next_wave = self.waves[0] if self.waves and not self.running else None
 
@@ -997,7 +1002,7 @@ class Checker:
         if self.next_wave is not None:
             prov_next = [k for k in self.next_wave["stages"] if k in self.provisional]
             if prov_next and self.plan.status == "ready":
-                err(f"the next wave to run, '{self.next_wave['id']}', has provisional stages {prov_next}; replan before marking the plan ready")
+                err(f"the next wave to run, '{self.next_wave['id']}', has provisional stages {prov_next}; resolve before marking the plan ready")
 
     def unknowns(self):
         err, plan = self.err, self.plan
@@ -1006,25 +1011,25 @@ class Checker:
         for uid in duplicates(u.id for u in plan.unknowns):
             err(f"unknown '{uid}': duplicate id")
         for u in plan.unknowns:
-            where, rb = f"unknown '{u.id}'", u.resolve_by
+            where, rb = f"unknown '{u.id}'", u.resolved_by
             if rb in ("planner", "probe"):
                 if not u.finding:
                     self.unresolved_unknowns.append(u.id)
                     if plan.status in ("needs_answers", "ready"):
-                        err(f"{where}: resolve_by {rb} but no finding; resolve it before asking or finishing")
+                        err(f"{where}: resolved_by {rb} but no finding; resolve it before asking or finishing")
                 if rb == "probe" and u.finding and not u.run_id:
                     self.warn(f"{where}: probe finding has no run_id")
             elif rb == "user":
                 if u.question not in q_ids:
-                    err(f"{where}: resolve_by user needs `question` naming an existing question")
+                    err(f"{where}: resolved_by user needs `question` naming an existing question")
             else:  # discovery
                 sk = u.stage
                 if sk not in self.by_key:
-                    err(f"{where}: resolve_by discovery needs `stage` naming an existing stage")
+                    err(f"{where}: resolved_by discovery needs `stage` naming an existing stage")
                 elif sk in self.provisional:
                     err(f"{where}: discovery stage '{sk}' is provisional")
                 elif not u.finding and not any(self.by_key[p].resolves_after == sk for p in self.provisional):
-                    err(f"{where}: no provisional stage resolves_after '{sk}', so nothing replans on this discovery")
+                    err(f"{where}: no stage has resolves_after '{sk}', so nothing resolves on this discovery")
                 for a in u.affects:
                     if a not in self.by_key:
                         err(f"{where}: affects unknown stage '{a}'")
@@ -1046,7 +1051,7 @@ class Checker:
             self.check_agent_ref("critique", c.agent)
             crev = plan.revision if c.revision is None else c.revision
             if crev != plan.revision:
-                self.warn(f"critique is for revision {crev} but the plan is at revision {plan.revision}; re-run the critic after replanning")
+                self.warn(f"critique is for revision {crev} but the plan is at revision {plan.revision}; re-run the critic after resolving")
             if plan.status == "ready" and (why := check_ready(self.raw)):
                 err(why)
             for fid in duplicates(f.id for f in c.findings):
@@ -1133,7 +1138,7 @@ class Checker:
             ("README.md", "the folder's guide for people"),
             (".pi/APPEND_SYSTEM.md", "the agent's role"),
             (".pi/extensions/agent/index.ts", "the /agent-* commands and agent_* tools"),
-            (".pi/skills/agent/SKILL.md", "the planning skill used at replan"),
+            (".pi/skills/agent/SKILL.md", "the planning skill used at resolve"),
             (".pi/settings.json", "project package declarations"),
             (".pi/agents/batcher.md", "the command runner map stages use"),
             (".pi/skills/agent/scripts/compile_wave.py", "the wave compiler"),
@@ -1165,7 +1170,7 @@ class Checker:
         # Input files and folders live outside the agent; children run in work/, so a
         # relative path would silently point inside the agent.
         for inp in self.plan.inputs:
-            loc = inp.location or ""
+            loc = inp.path or ""
             refs = PARAM_REF_RE.findall(loc)
             if inp.kind not in ("folder", "file") or not refs or any(values.get(r) is None or r not in valid for r in refs):
                 continue  # no param, or not set yet (reported as missing)

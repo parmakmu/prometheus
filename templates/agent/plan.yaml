@@ -1,6 +1,6 @@
 # ── Plan for agent "{{slug}}"
 
-version: 1
+format: 1
 revision: 1
 status: draft
 

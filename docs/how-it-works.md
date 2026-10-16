@@ -19,7 +19,7 @@ It all starts with a single command:
 prometheus asks you a few questions, and when it's done, your request has become a folder:
 
 ```text
-agents/emails-to-excel/
+~/agents/emails-to-excel/
   plan.yaml       the plan: what it does, in sections
   gates/          programs that check what a stage produced
   scripts/        stage programs: the work itself, as plain code
@@ -29,12 +29,12 @@ agents/emails-to-excel/
   uploads/        files attached in the web app's chat (not in git)
 ```
 
-You run that folder whenever the job comes round again. Here's what the difference looked like for emails-to-excel, between a run where models did everything and one where the reviewed programs did the routine work:
+You run that folder whenever the job comes round again. Here's what that looked like for emails-to-excel: a run where models did everything, one where the reviewed programs did the routine work, and one on emails the agent had already seen:
 
-| | Every stage done by a model | Programs run as commands |
-|---|---|---|
-| Model cost | $0.016 | $0.004 |
-| Whole run | under 4 minutes | 77 seconds |
+| | Every stage done by a model | Programs run as commands | The same emails again |
+|---|---|---|---|
+| Model cost | $0.016 | $0.004 | $0 |
+| Whole run | under 4 minutes | 77 seconds | 29 seconds |
 
 The diagram below shows the whole cycle. Don't worry if some of the boxes don't mean much yet; we'll go through each one in turn.
 
@@ -52,10 +52,10 @@ flowchart LR
 
 ## Two agents, two jobs
 
-The first thing to know is that you'll be talking to two different agents, and each one has a single job. You start them in different folders:
+The first thing to know is that you'll be talking to two different agents, and each one has a single job. You start them with the same command:
 
 ```text
-~/prometheus $ pi                              ~/prometheus/agents/emails-to-excel $ pi
+$ prometheus                                $ prometheus emails-to-excel
 > /agent-new <request>                      > /agent-run
 ```
 
@@ -184,7 +184,7 @@ So instead, the plan begins with a **discovery stage**. `discover` is a model wh
 - a reply and a newsletter
 - an empty subject
 
-The run then paused to **replan**: it wrote the details of `read-emails`, and its gate, from what `discover` had actually seen.
+The run then paused to **resolve**: it wrote the details of `read-emails`, and its gate, from what `discover` had actually seen.
 
 ### A second pair of eyes
 
@@ -200,7 +200,7 @@ You might expect a planner to start by quizzing you. prometheus does the opposit
 
 ## Running
 
-With a plan in place, you start the agent and type `/agent-run`. Here's what happens next.
+With a plan in place, you start the agent (`prometheus emails-to-excel`) and type `/agent-run`. Here's what happens next.
 
 ### Waves
 
@@ -212,6 +212,8 @@ The agent doesn't launch the stages one at a time. It groups them into **waves**
   { "id": "w2", "stages": ["build-workbook"],          "ends_with": "approval" }
 ]
 ```
+
+Each wave also records what the agent has to do once it's over (`ends_with`): nothing, resolving provisional stages, a review with you, or an approval.
 
 When the first wave starts, the agent lets you know. From a real run:
 
@@ -269,7 +271,7 @@ Sooner or later a wave will fail. A gate might reject an output, a reviewer migh
 
 ### Changing the plan mid-run
 
-Sometimes, as with `discover`, a run learns something that changes the plan. When that happens it **replans**, filling in the stages that haven't run yet. A replan is deliberately limited, though. It can't touch your request, the goal, what counts as done, the params, the inputs, the outputs or the agents, and it can never quietly turn a side effect into something that no longer needs your approval. If you want a bigger change, that waits until the run is over, and you make it with `/agent-revise`.
+Sometimes, as with `discover`, a run learns something that changes the plan. When that happens it **resolves** the stages that haven't run yet: it writes them out from what it learned. Resolving is deliberately limited, though. It can't touch your request, the goal, what counts as done, the params, the inputs, the outputs or the agents, and it can never quietly turn a side effect into something that no longer needs your approval. If you want a bigger change, that waits until the run is over, and you make it with `/agent-revise`.
 
 ## Reviewing what a run changed
 
@@ -279,7 +281,7 @@ Our answer is: not until you've had a look. Each agent is its own git repository
 
 | Branch | Opened by | Holds |
 |---|---|---|
-| `run/<id>` | a run's first commit | its replans and the programs it wrote |
+| `run/<id>` | a run's first commit | its resolves and the programs it wrote |
 | `revise/<date>-<n>` | `/agent-revise` | a change you asked for |
 | `improve/<date>-<n>` | `/agent-improve` | fixes drawn from earlier runs |
 
@@ -301,17 +303,26 @@ This is the moment the whole design is built around. Here are emails-to-excel's 
 | 3 | the models also wrote the two programs, once | $0.021 | |
 | 4 | the programs reused, but run by a model | $0.0105 | about 2.5 min |
 | later | the programs run as plain commands | $0.004 | 77 s |
-
-| next | `discover` too: same emails, so its report is reused from the last run | $0 | |
+| later, same emails | `discover` too: its report is reused from the last run | $0 | 29 s |
 
 The model cost is the subagents'. The agent's own model, which asks the questions, compiles and records each wave and reports, adds about $0.02 a run on top; the web app shows both.
 
-You'll notice run 3 actually cost more than run 2. That's the investment. Writing a program that can be reused (214 and 129 lines here, taking arguments rather than fixed paths) is more work than doing the job once. But you only pay for it once. After that, each program takes a tenth of a second where a model used to take fifteen or twenty, and the only stage still using a model is `discover`. Even that runs only when the emails change: a model stage with no side effect, whose inputs and instructions match a run that finished it, takes that run's outputs instead of running again (the compiler's notes say which).
+You'll notice run 3 actually cost more than run 2. That's the investment. Writing a program that can be reused (214 and 129 lines here, taking arguments rather than fixed paths) is more work than doing the job once. But you only pay for it once. After that, each program takes a tenth of a second where a model used to take fifteen or twenty, and the only stage still using a model is `discover`.
+
+Even `discover` runs only when the emails change. Its output depends only on its instructions and on what it reads, so when both match a run that already finished it, the agent copies that run's outputs instead of launching it again. The same goes for any model stage without a side effect, and the compiler's notes tell you which stages were reused.
 
 > [!TIP]
 > Once your emails always arrive in the same format, new emails needn't run `discover` either: see [How to drop a discovery stage](how-to.md#how-to-drop-a-discovery-stage-once-the-input-is-stable).
 
 Two other things affect what a run costs, if you're designing your own plans. The agent does its bookkeeping once per wave, so a plan with fewer waves is cheaper than one with fewer stages. And a `map` stage, which splits a large input into batches, launches one child per batch, so its cost grows with the size of the input.
+
+## When the plan has settled: releases
+
+So far you've run the agent by talking to it. Once its plan has settled, with no stage left to discover and every program written and reviewed, the agent can also run with nobody at the keyboard. You make a **release** of it with `prometheus release emails-to-excel`, which tags the current `main` as `v1.0`.
+
+A release can then be run from the shell (`prometheus run emails-to-excel@v1`), from a Python program (`load_agent("emails-to-excel@v1")`), or as a small web service other programs and agents can call (`prometheus serve`). No model decides anything in such a run. Where the plan would ask a person, for an approval or a decision, the caller answers instead, either up front or when the run stops to ask.
+
+The steps are in [How to run an agent from code](how-to.md#how-to-run-an-agent-from-code) and [How to serve an agent over HTTP](how-to.md#how-to-serve-an-agent-over-http). Why releases work the way they do is in [Design decisions](design.md#running-agents-from-code).
 
 ## Words used on this page
 
@@ -329,8 +340,9 @@ Two other things affect what a run costs, if you're designing your own plans. Th
 | **subagent** | a profile a stage runs as (`scout`, `reviewer`, `batcher`, or one the agent defines in `.pi/agents/`) |
 | **child** | one subagent doing a stage, or part of one |
 | **side effect** | a stage that changes something outside the run |
-| **replan** | filling in later stages during a run, from what discovery found |
+| **resolve** | filling in later stages during a run, from what discovery found |
 | **branch** | where a run's or a change's edits wait for your review |
+| **release** | a version of the agent that code can run with nobody deciding anything, tagged `v<major>.<minor>` |
 
 ## Where to go from here
 

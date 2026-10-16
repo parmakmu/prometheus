@@ -1,6 +1,6 @@
 # Tutorial: your first agent
 
-In this tutorial we'll build an agent together that copies a folder of emails into an Excel file. You'll plan it, run it, approve the one step that writes a file, look over what the run taught the agent, and then run it a second time. That second run is the real payoff: it does the same job with almost no model work at all. Finally, you'll change the agent twice: once by asking for a change yourself, and once by letting it suggest improvements from how its runs went.
+In this tutorial we'll build an agent together that copies a folder of emails into an Excel file. You'll plan it, run it, approve the one step that writes a file, look over what the run taught the agent, and then run it a second time. That second run is the real payoff: on the same emails, it does the same job with no model work at all. Finally, you'll change the agent twice: once by asking for a change yourself, and once by letting it suggest improvements from how its runs went.
 
 It takes about fifteen minutes, and you don't need any emails of your own. We'll make three small samples in step 2.
 
@@ -10,8 +10,9 @@ It takes about fifteen minutes, and you don't need any emails of your own. We'll
 
 | You need | Check | Install |
 |---|---|---|
-| Pi 1.0.1 or later (0.99.2 also works) | `pi --version` | `npm install -g @earendil-works/pi-coding-agent` |
-| pi-subagents 0.75.0 or later with Pi 1.0 ([why](troubleshooting.md#every-wave-fails-at-startup)) | `grep version ~/.pi/agent/npm/node_modules/pi-subagents/package.json` | `pi install npm:pi-subagents` |
+| Pi 1.3.0 or later | `pi --version` | `npm install -g @earendil-works/pi-coding-agent` |
+| pi-subagents 0.78.0 or later | `grep version ~/.pi/agent/npm/node_modules/pi-subagents/package.json` | `pi install npm:pi-subagents` |
+| Node 22 or later | `node --version` | [nodejs.org](https://nodejs.org) (Pi needs it too) |
 | Python 3.14 and uv | `uv --version` | [docs.astral.sh/uv](https://docs.astral.sh/uv/) |
 | git | `git --version` | your system's package manager |
 
@@ -26,7 +27,9 @@ uv tool install git+<prometheus repository>
 prometheus init
 ```
 
-`init` asks for two folders: the agents folder (`~/agents` unless you choose another) and the planner's own folder (`~/.prometheus`). It saves them in `~/.config/prometheus/config.toml` and then checks that Pi, pi-subagents, Node, uv and a git identity are there, with the fix for anything missing. Now start the planner, from any folder:
+`init` asks for two folders: the agents folder, where every agent you build will live (`~/agents` unless you choose another), and the planner's own folder (`~/.prometheus`). It saves both in `~/.config/prometheus/config.toml`. Then it checks that Pi, pi-subagents, Node, uv and a git identity are installed and recent enough, and tells you how to fix anything that isn't. You can run the same check again at any time with `prometheus doctor`.
+
+Now start the planner. It doesn't matter which folder you're in:
 
 ```sh
 prometheus
@@ -98,12 +101,12 @@ It won't ask where your emails are. That depends on the machine the agent runs o
 When prometheus says the agent is ready, look at what it made:
 
 ```sh
-ls -an agents/emails-to-excel
+ls -a ~/agents/emails-to-excel
 ```
 
-You should see at least `plan.yaml`, `gates` and `scripts`, plus the agent's own `.pi` and `.git`.
+You should see at least `plan.yaml`, `gates` and `scripts`, plus the agent's own `.pi` and `.git`. (If you chose another agents folder in step 1, look there instead.)
 
-The plan is the part to look at now. Open `agents/emails-to-excel/plan.yaml`: near the top are the goal and what counts as done (*from a real run*):
+The plan is the part to look at now. Open `~/agents/emails-to-excel/plan.yaml`: near the top are the goal and what counts as done (*from a real run*):
 
 ```yaml
 goal: >-
@@ -122,7 +125,9 @@ read-emails      extract the fields from every email
 build-workbook   write the .xlsx
 ```
 
-Yours may name them differently or add a stage, but the shape is the same: look at the input, extract, write. To see what the agent still needs before it can run, type `/agent-list emails-to-excel`.
+Yours may name them differently or add a stage, but the shape is the same: look at the input, extract, write.
+
+To see what the agent still needs before it can run, type `/agent-list emails-to-excel` in the prometheus terminal. Among other things, it lists `email_folder` as a missing value. That's expected: it's the folder the run will ask you for.
 
 ## 4. Start the agent
 
@@ -152,7 +157,7 @@ It then launches the first **wave**: a group of stages handed off together, each
 
 You don't need to do anything while it works. After about a minute the wave ends and the agent picks up by itself.
 
-On a brand-new plan, the agent may also stop after `discover` to fill in the stages that depend on it. This is a **replan**: it writes the details of `read-emails` from what `discover` found in your emails, has the critic check them, and carries on. You may be asked to confirm.
+On a brand-new plan, the agent may also stop after `discover` to fill in the stages that depend on it. This is a **resolve**: it writes the details of `read-emails` from what `discover` found in your emails, has the critic check them, and carries on. You may be asked to confirm.
 
 ### Approve the side effect
 
@@ -164,9 +169,10 @@ The agent then checks each `done_when` line from the plan, and tells you whether
 
 ## 6. Look at the result
 
-The agent now asks you to review what the run changed. Leave that question open for a moment and check the result first. In the agent's folder, the workbook is in the run's `outputs` folder:
+The agent now asks you to review what the run changed. Leave that question open for a moment and check the result first. In your second terminal, go to the agent's folder. Each run has its own folder under `runs/`, and the workbook is in that run's `outputs`:
 
 ```sh
+cd ~/agents/emails-to-excel
 ls runs/*/outputs
 ```
 
@@ -234,20 +240,24 @@ Now see what the merge bought you. Start a second run:
 
 The agent asks whether to start a new run (yes) and whether the input changed (no).
 
-Watch how it differs. `read-emails` and `build-workbook` now run the programs you merged, as plain commands, in about a tenth of a second each, with no model involved. Only `discover` still uses a model. The run writes no programs, so there is no branch to review at the end.
+Watch how it differs. `read-emails` and `build-workbook` now run the programs you merged, as plain commands, in about a tenth of a second each, with no model involved.
 
-*From real runs of this agent:*
+`discover` doesn't run either. It is still a model's job, but it reads the same emails with the same instructions as last time. Paying a model to make the same judgment twice would buy you nothing, so the agent copies the report the first run wrote instead.
 
-| | First run | A later run |
-|---|---|---|
-| Model cost of the children | $0.021 | $0.004 |
-| Stages done by a model | all three | only `discover` |
-| Branch to review | yes | none |
-| Whole run | a few minutes | 77 seconds |
+The run writes no programs this time, so there is no branch to review at the end.
+
+Here is what that looked like in real runs of this agent. The middle column is a run on a different folder of emails, which we'll come back to in the next step:
+
+| | First run | New emails | The same emails again |
+|---|---|---|---|
+| Model cost of the children | $0.021 | $0.004 | $0 |
+| Stages done by a model | all three | only `discover` | none: `discover`'s report is reused |
+| Branch to review | yes | none | none |
+| Whole run | a few minutes | 77 seconds | 29 seconds |
 
 ## 9. Change the plan
 
-Look at that table again: `discover` is now the only stage still using a model. It earned its place on the first run, when nobody knew what your emails looked like. But if your emails always arrive in the same format, it's reading samples just to report what you already know.
+Look at the middle column of that table. Reuse only helps while the input stays the same. Point the agent at next month's emails and `discover` runs again, because its input has changed. It earned its place on the first run, when nobody knew what your emails looked like. But if your emails always arrive in the same format, every new folder pays a model to report what you already know.
 
 So let's take it out. Changing an agent between runs is the job of `/agent-revise`. In the agent, type:
 
@@ -265,7 +275,7 @@ When it's done, it shows you the change and asks you to **merge**, **keep** or *
 git log --oneline main
 ```
 
-The newest commit is your change, and `git tag` shows it has a new revision number. From the next run on, the agent follows the new plan. If the stage programs still pass their gates without the report, no model is called at all; if one needs adjusting, a model is shown the error and fixes the program once, and you review that fix like any other.
+The newest commit is your change, and `git tag` shows it has a new revision number. From the next run on, the agent follows the new plan, and new emails cost no model at all as long as the programs pass their gates. If one needs adjusting, a model is shown the error and fixes the program once, and you review that fix like any other.
 
 > If your emails *do* change format one day, the gate on `read-emails` will catch it, and the run will stop and tell you. You can fix the program then with another `/agent-revise`.
 
@@ -287,7 +297,7 @@ If you applied anything, the changes wait on an `improve/…` branch, and you re
 
 ## What you have done
 
-Well done: that's the whole life of an agent. You planned it with `/agent-new`, ran it with `/agent-run`, approved a side effect, reviewed and merged what the first run wrote, and watched the second run reuse it at a fifth of the cost. Then you changed it twice: once with `/agent-revise`, for a change you had in mind, and once with `/agent-improve`, for the ones the agent found itself. Every change went through a branch you reviewed.
+Well done: that's the whole life of an agent. You planned it with `/agent-new`, ran it with `/agent-run`, approved a side effect, reviewed and merged what the first run wrote, and watched the second run reuse it all at no model cost. Then you changed it twice: once with `/agent-revise`, for a change you had in mind, and once with `/agent-improve`, for the ones the agent found itself. Every change went through a branch you reviewed.
 
 Every agent you build from here works the same way, however different the job.
 

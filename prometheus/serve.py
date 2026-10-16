@@ -10,6 +10,7 @@ one host: one process each, behind a proxy).
     GET    /runs/<id>                  its state; once ended, its result and output links
     GET    /runs/<id>/events           its events as server-sent events, until it ends
     GET    /runs/<id>/outputs/<o>      an output's file (a folder as a zip)
+    GET    /runs/<id>/bundle[?with_files=true]   an ended run's evidence, to fix the agent where it is developed
     DELETE /runs/<id>                  cancel it
     GET    /docs, /openapi.json        the description; the run form is generated from the agent's interface
 
@@ -242,6 +243,21 @@ def make_app(agent: Agent, token: str | None = None, max_runs: int = 4, max_uplo
             archive = shutil.make_archive(str(Path(tmp) / output), "zip", path)
             return FileResponse(archive, filename=f"{output}.zip", background=BackgroundTask(shutil.rmtree, tmp, True))
         return FileResponse(path, filename=path.name)
+
+    @guarded.get("/runs/{run_id}/bundle")
+    def run_bundle(run_id: str, with_files: bool = False):
+        """An ended run's evidence as one file (bundle.py): copy it to where the agent is developed, then
+        /agent-improve <file>. with_files adds the run's inputs, outputs and work: the caller's data."""
+        run = service.get_run(run_id)
+        if run.running:
+            raise HTTPException(409, "the run is still going: bundle it once it ended")
+        tmp = tempfile.mkdtemp()
+        made = run_script("bundle.py", "make", "--run", str(run.dir), "--out", tmp, *(["--with-files"] if with_files else []))
+        if not made.get("ok"):
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise HTTPException(409, made.get("error") or "the bundle could not be made")
+        return FileResponse(made["bundle"], filename=Path(made["bundle"]).name, media_type="application/gzip",
+                            background=BackgroundTask(shutil.rmtree, tmp, True))
 
     @guarded.post("/runs/{run_id}/answer")
     def answer_run(run_id: str, body: Annotated[dict, Body(examples=[{"approve": ["build-workbook"], "decisions": {"pick": "the second"}}])],

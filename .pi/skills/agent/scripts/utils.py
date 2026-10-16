@@ -8,7 +8,10 @@ import re
 import tempfile
 from pathlib import Path
 
+import psutil
 import typer
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
 from ruamel.yaml.error import YAMLError
@@ -125,7 +128,7 @@ PLAN_PARTS = {
 }
 # plan.yaml's sections, in this order, each under a banner (BANNER); keys the plan does not know go last
 PLAN_SECTIONS = (
-    (None, ("version", "revision", "status")),
+    (None, ("format", "revision", "status")),
     ("What you asked for", ("request", "goal", "done_when")),
     ("What it works on", ("params", "inputs", "outputs", "network")),
     ("How it works", ("stages",)),
@@ -164,7 +167,7 @@ def read_plan(agent_dir, default=None, strict=False):
 
 
 def parts_in_plan_file(agent_dir):
-    """The planning parts plan.yaml itself holds (they belong in .plan/): written there by hand, or an older agent."""
+    """The planning parts plan.yaml itself holds (they belong in .plan/): written there by hand."""
     data = read_yaml(Path(agent_dir) / PLAN_FILE, {})
     return [p for p in PLAN_PARTS if isinstance(data, dict) and p in data]
 
@@ -223,6 +226,25 @@ def read_json(path):
         return None
 
 
+# --- what looks like a secret (prometheus's sharing.py before a push; bundle.py) ------
+
+# provider keys and tokens, private keys
+SECRET_PATTERNS = [
+    (re.compile(r"\b(sk-(ant-)?[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{30,}|glpat-[A-Za-z0-9_-]{20,}|"
+                r"xox[abpr]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{35})\b"), "an API key or token"),
+    (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"), "a private key"),
+]
+
+
+# --- the agent ------------------------------------------------------------------------
+
+def agent_name(agent_dir):
+    """The agent's name: its folder's (agents/<slug>), or in an unpacked release (releases/<slug>/<version>, named by
+    version) the one its RELEASE.json records."""
+    release = read_json(Path(agent_dir) / "RELEASE.json")
+    return release.get("agent") if isinstance(release, dict) and release.get("agent") else Path(agent_dir).resolve().name
+
+
 # --- Pi and pi-subagents' records ---------------------------------------------------
 
 def pi_agent_dir():
@@ -265,6 +287,70 @@ def subagent_records(newer_than=None):
             yield path.parent.name, status
 
 
+SUBAGENT_RUN_ID_RE = re.compile(r"^[\w-]+$")  # pi-subagents' run ids; read from files, so nothing like ../..
+
+
+def launch_records(run_id):
+    """What pi-subagents keeps of one launch (`run_id`, a wave's async run), as {"folders", "files"}: its record folder
+    and its children's (named by `runId` or as folders), and the files they name (sessions, transcripts, outputs).
+    Only paths inside pi-subagents' own temporary folders: they are read from its records, and get deleted (prune)."""
+    root, tmp = subagents_runs_root(), Path(tempfile.gettempdir()).resolve()
+
+    def ours(text):
+        try:
+            path = Path(text).resolve()
+        except (OSError, ValueError, RuntimeError):
+            return None
+        inside_tmp = path.is_relative_to(tmp) and len(path.relative_to(tmp).parts) > 1
+        if path.is_relative_to(root.parent) or inside_tmp and path.relative_to(tmp).parts[0].startswith("pi-subagent-session-"):
+            return path
+        return None
+
+    folders, files, todo = [], [], [run_id]
+
+    def visit(value, key=None):
+        if isinstance(value, dict):
+            for k, v in value.items():
+                visit(v, k)
+        elif isinstance(value, list):
+            for v in value:
+                visit(v)
+        elif isinstance(value, str):
+            if key == "runId":
+                todo.append(value)
+            elif value.startswith("/") and (path := ours(value)):
+                if path.parent == root and path.is_dir():
+                    todo.append(path.name)
+                elif path.is_file() and not path.is_relative_to(root) and path not in files:
+                    files.append(path)
+
+    while todo:
+        rid = todo.pop()
+        folder = root / rid
+        if not SUBAGENT_RUN_ID_RE.match(rid) or folder in folders or not folder.is_dir():
+            continue
+        folders.append(folder)
+        visit(read_json(folder / "status.json"))
+        try:
+            lines = (folder / "workflow-children.jsonl").read_text(encoding="utf-8").splitlines()
+        except OSError:
+            lines = []
+        for line in lines:
+            try:
+                visit(json.loads(line))
+            except ValueError:
+                continue
+    return {"folders": folders, "files": files}
+
+
+def subagents_package(agent_dir):
+    """pi-subagents' package.json (its version), project install first, else Pi's; [] when not found."""
+    for root in (Path(agent_dir) / ".pi" / "npm", pi_agent_dir() / "npm"):
+        if (f := root / "node_modules" / "pi-subagents" / "package.json").is_file():
+            return [f]
+    return []
+
+
 def subagent_child(run_id):
     """The child entry ({childId, state, runId, agent}) of a pi-subagents child run, from its
     workflow run's status.json `workflowChildren.children`, or None."""
@@ -275,16 +361,34 @@ def subagent_child(run_id):
     return None
 
 
-def process_alive(pid):
-    """True or False for a process id on this machine; None when it cannot be told."""
+# a process created this long after the one recorded started is another that reused its pid
+PID_REUSE_SLACK_S = 5
+
+
+def process_alive(pid, started=None):
+    """True or False for a process id on this machine; None when it cannot be told. `started` (a Unix time): when
+    the recorded process started; a process with that pid created later is another one, and the recorded one is gone."""
     if not isinstance(pid, int) or pid <= 0:
         return None
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
+        process = psutil.Process(pid)
+        if process.status() == psutil.STATUS_ZOMBIE:  # it ended; its parent hasn't reaped it
+            return False
+        return not (started is not None and process.create_time() > started + PID_REUSE_SLACK_S)
+    except psutil.NoSuchProcess:
         return False
-    except PermissionError:
+    except psutil.AccessDenied:
         return True  # it exists, under another user
-    except OSError:
+    except psutil.Error:
         return None
-    return True
+
+
+def this_process():
+    """This process as a run records its driver: its pid, and when it started (process_alive tells a reused pid)."""
+    return {"pid": os.getpid(), "started": psutil.Process().create_time()}
+
+
+def package_name(requirement):
+    """The normalised name of a requirement (`Pandas[excel]>=2` -> `pandas`); a bare name is normalised too.
+    Raises InvalidRequirement for what isn't one."""
+    return canonicalize_name(Requirement(requirement).name)

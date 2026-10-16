@@ -7,7 +7,7 @@ the scripts commit, never the model.
 
 Branches. `main` holds the reviewed plan and changes only by a merge
 the user chose (or by planning before the first run):
-  run/<run id>        a run's changes (replans, gate scripts written for them);
+  run/<run id>        a run's changes (resolves, gate scripts written for them);
                       created on the run's first commit, so a run that changes
                       nothing has no branch
   revise/<date>-<n>   a change to the plan asked for with /agent-revise
@@ -120,15 +120,14 @@ def commit(agent_dir, message, to=None):
     """Commit every change to the plan, gates and agents; returns (commit or None, note).
 
     `to`: the branch the commit belongs on (a run's run/<id>). When main is checked out, that
-    branch is created for it, so a run never changes main directly. Skipped (with a note) while a
-    wave runs or without git."""
+    branch is created for it, or checked out again if it exists, so a run never changes main
+    directly. Skipped (with a note) while a wave runs or without git."""
     if not available():
         return None, "git not found: the plan was not committed"
     if (run := active_run(agent_dir)) and run.wave_running:
         return head(agent_dir), "a wave is running: not committed now (the next compile commits it)"
     ensure_repo(agent_dir)
-    if conflict := branch_conflict(agent_dir, to):
-        raise RuntimeError(conflict)  # checked before staging: a refused commit leaves nothing staged on main
+    back_to_run_branch(agent_dir, to)  # before staging: a failed switch leaves nothing staged on main
     git(agent_dir, "add", "-A")
     staged = git(agent_dir, "diff", "--cached", "--quiet", check=False).returncode != 0
     if staged or head(agent_dir) is None:
@@ -153,15 +152,41 @@ def review_info(agent_dir):
             "see": f"git diff {MAIN}...{b}"}
 
 
-def branch_conflict(agent_dir, to):
-    """Why a commit cannot create branch `to` from main, or None: an earlier run with the same id
-    left that branch (runs/ is not in git, so deleting its folder frees the id but not the branch)."""
-    if not (to and available() and is_repo(agent_dir) and branch(agent_dir) == MAIN and head(agent_dir) is not None):
+def find_off_branch(agent_dir, to):
+    """{checked_out, home, uncommitted} when a run whose branch is `to` (run/<id>) doesn't have its home checked out:
+    `to`, or main until the run's first commit creates that branch (until then, what the first wave writes waits
+    uncommitted on main); `uncommitted` lists the changed files. None when it does, or git isn't here. A new run skips
+    every id that has a branch (run_log.py new), so an existing run/<id> is this run's own."""
+    if not (to and available() and is_repo(agent_dir)):
         return None
-    if to not in run_branches(agent_dir):
+    home = to if to in run_branches(agent_dir) else MAIN
+    current = branch(agent_dir)
+    if current == home:
         return None
-    return (f"branch {to} already exists from an earlier run with this id, so this run cannot commit to it. "
-            "Stop this run (agent_stop_run), then ask the user to review or delete that branch")
+    dirty = git(agent_dir, "status", "--porcelain").stdout.splitlines()
+    return {"checked_out": current or "a detached HEAD", "home": home, "uncommitted": [line[3:] for line in dirty]}
+
+
+def describe_off_branch(off):
+    """What find_off_branch found, for a person, with what they can do about it."""
+    if not off["uncommitted"]:
+        return (f"{off['checked_out']} is checked out, but the run works on {off['home']}; its next step switches back "
+                "(nothing is uncommitted)")
+    files = ", ".join(off["uncommitted"][:5]) + (", …" if len(off["uncommitted"]) > 5 else "")
+    return (f"{off['checked_out']} is checked out with uncommitted changes ({files}), but the run works on "
+            f"{off['home']}. Commit, stash or undo them there, or switch back with `git switch {off['home']}` "
+            "(git carries them along when it can); then the run goes on")
+
+
+def back_to_run_branch(agent_dir, to):
+    """Make sure a run works on its own branch (find_off_branch). Someone may have checked out another branch by hand
+    mid-run: with nothing uncommitted, switch back; with uncommitted changes, raise RuntimeError naming them, so they
+    are neither moved into the run nor lost."""
+    if not (off := find_off_branch(agent_dir, to)):
+        return
+    if off["uncommitted"]:
+        raise RuntimeError(describe_off_branch(off))
+    git(agent_dir, "switch", "-q", off["home"])
 
 
 def run_branches(agent_dir):
@@ -209,7 +234,7 @@ def begin_change(kind: Annotated[str, typer.Option(help="revise (/agent-revise) 
         refuse(f"kind must be one of {', '.join(CHANGE_KINDS)}")
     agent_dir = Path.cwd()
     if run := active_run(agent_dir):
-        refuse(f"run {run.id} is active: tell the run what to change (it replans on its branch), or stop it first")
+        refuse(f"run {run.id} is active: tell the run what to change (it resolves on its branch), or stop it first")
     if not list_runs(agent_dir):
         if kind == "improve":
             refuse("no run yet, so nothing to improve from: run the agent first (/agent-run), "

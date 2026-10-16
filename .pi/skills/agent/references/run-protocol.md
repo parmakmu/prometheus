@@ -1,26 +1,26 @@
 # Run protocol
 
-How a Pi session in an agent runs, replans and changes it. The agent
+How a Pi session in an agent runs, resolves and changes it. The agent
 root is the current directory; `<skill>` is `.pi/skills/agent/`.
 
 You orchestrate: talk to the user, collect decisions and approvals, read
-results, replan. The agent tools do the bookkeeping (`agent_check`,
+results, resolve. The agent tools do the bookkeeping (`agent_check`,
 `agent_new_run`, `agent_stop_run`, `agent_compile`,
 `agent_record_decision`, `agent_log_start`, `agent_log_finish`,
-`agent_set_params`, `agent_replan`, `agent_record_critique`,
+`agent_set_params`, `agent_resolve`, `agent_record_critique`,
 `agent_merge`); never hand-write a workflow script or edit a compiled one.
 Children never decide scope, approve their own side effects or edit the plan.
 
 Each execution is a run, `runs/<id>/` (`run.yaml`: stage status and
 launches; `work/`: the children's files; `.compiled/`); at most one is
 active. The agent is a git repo whose `main` holds the reviewed plan. A
-run's plan changes (replan, gates, stage programs) go to branch `run/<id>`;
+run's plan changes (resolved stages, gates, stage programs) go to branch `run/<id>`;
 `/agent-revise` works on `revise/<date>-<n>`, `/agent-improve` on `improve/<date>-<n>`. Either reaches `main` only
 through **Reviewing a branch**. The scripts commit; never run git commands
 that change the repo (read-only `log`, `diff`, `show` are fine).
 
 Three parts are in their own files, read only when a route below sends you
-there (not before): **Replanning** is `<skill>/references/replanning.md`;
+there (not before): **Resolving** is `<skill>/references/resolving.md`;
 **Reviewing a branch** and **Changing the plan** are
 `<skill>/references/changing.md`.
 
@@ -51,7 +51,7 @@ tool, ask in chat and end the turn.
 ## Every start
 
 1. `agent_check`. Read `state` first: where the agent stands
-   (`planning`, `planned`, `ready`, `between_waves`, `wave_running`, `replan_draft`,
+   (`planning`, `planned`, `ready`, `between_waves`, `wave_running`, `resolve_draft`,
    `branch_review`, `change_draft`, `change_ready`, `main_draft`), its `hint`
    and the `moves` the scripts accept from it. Every agent tool's result
    carries the same as `next`: when unsure what comes next, pick from
@@ -76,7 +76,7 @@ tool, ask in chat and end the turn.
      `<skill>/SKILL.md` on `main` (skip step 1; the plan file exists; if
      `request` is empty, ask for it and write it verbatim); on a change
      branch → **Changing the plan**
-   - error "the next wave to run … has provisional stages" → **Replanning**
+   - error "the next wave to run … has provisional stages" → **Resolving**
    - `ready`, no active run → **Starting a run**; active run → **Running**
    - any other error → report it and stop
 4. `/agent-status`: report plan status, active run, last and next wave,
@@ -86,10 +86,10 @@ tool, ask in chat and end the turn.
 ## Starting a run
 
 - No earlier runs: `agent_new_run` with the user's note, if any.
-- Earlier runs, all finished: say when the last ran and how it ended
-  (`summary.last_run`), and ask in one call whether to start a new run (from
-  `main`, first wave, empty `work/`) and whether an input changed. For a
-  changed input, ask the value in chat and set it with `agent_set_params`.
+- Earlier runs, all finished: `agent_new_run` without asking; in one line,
+  say when the last ran (`summary.last_run`). Don't ask whether an input
+  changed: the compile compares contents and reuses only what is unchanged.
+  Only a value the user's note changes is set (`agent_set_params`).
 - Start over while a run is active: say what it has done; only after the
   user agrees, `agent_stop_run`, review its branch if any, then start.
 
@@ -99,7 +99,7 @@ tool, ask in chat and end the turn.
 
 `agent_compile`. If `ok`, go to 3. Otherwise handle its `preflight`:
 
-- `plan_errors` — fix the plan (**Replanning** if about provisional
+- `plan_errors` — fix the plan (**Resolving** if about provisional
   stages), or report and stop.
 - `missing_params` — ask each value in plain chat (a value, not a choice):
   what it is for (its `description`); for files and folders an absolute path
@@ -112,7 +112,7 @@ tool, ask in chat and end the turn.
 - `decisions_needed`, `approvals_needed` — step 2.
 - `review_needed` — the last wave ended with a review: summarise its outputs
   (paths, counts) and ask, with the question tool, whether to go on. On a go,
-  compile with `reviewed: true`; otherwise replan or stop as the user says.
+  compile with `reviewed: true`; otherwise resolve or stop as the user says.
 - `budget` — the run spent its cost limit. Tell the user the amount and
   ask (question tool) whether to go on; on a go, ask the new limit and
   compile with `budget: <usd>`; otherwise `agent_stop_run`.
@@ -132,12 +132,17 @@ Everything happens before launch, in one question-tool call.
   `Don't run it`. Only an option naming the stage is an approval.
 
 Then `agent_compile` with `approve: [<keys>]`. If the user declines, the
-wave cannot launch: ask whether to replan without it or stop. Unattended,
+wave cannot launch: ask whether to resolve without it or stop. Unattended,
 never approve: stop and report what waits.
 
 ### 3. Launch
 
-Pass the compiled `call` to the subagent tool exactly as given
+`launched: false` (every stage of the wave reused from an earlier run): the
+wave is already recorded, with nothing launched. Its result is what
+`agent_log_finish` returns: tell the user in one line that it was reused,
+and go on at step 5's outcome, without launching or logging.
+
+Otherwise pass the compiled `call` to the subagent tool exactly as given
 (`workflow` path included; do not open or paste the script). If the wave
 is wrong, fix the plan and recompile. `/agent-run` activates the subagent
 tool; enable it only if missing. No `subagent list` first.
@@ -151,7 +156,10 @@ nothing), and end the turn; Pi wakes the session.
 ### 4. While it runs
 
 Answer `contact_supervisor` requests with `subagent_supervisor`; send the
-user's decisions to the user. Launch nothing else for this wave.
+user's decisions to the user. Launch nothing else for this wave. A notice
+that one child completed while the workflow is still running needs nothing:
+end the turn without a word or a tool call (no `bg_wait`). The workflow's
+own completion notice wakes you for step 5.
 
 ### 5. When the wave finishes
 
@@ -163,10 +171,11 @@ pass `status` and `result` from the completion notice.
 
 - `done` — gates and reviews have checked the outputs: report from the
   summary. Read an output only when the user must see it (`review`) or a
-  `done_when` has no gate or review, and then only counts or a few lines.
+  `done_when` has no gate or review and the result's `outputs` (`items`) or
+  reuse don't settle it, and then only counts or a few lines.
   Record external outcomes (drafts, pages) with `mission.update` receipts.
   Then by `ends_with`: `review` — summarise with paths, wait for the user's
-  go (the next compile asks for it: `review_needed`, then `reviewed: true`); `replan` — **Replanning**, then continue; `approval` — report what the
+  go (the next compile asks for it: `review_needed`, then `reviewed: true`); `resolve` — **Resolving**, then continue; `approval` — report what the
   side effects did; `none` — continue. `run_status: done` → **Finish**.
   To continue: if `next_wave.preflight` lists something, handle it first as
   step 1 says (ask decisions and approvals in one question-tool call), then
@@ -177,7 +186,7 @@ pass `status` and `result` from the completion notice.
   (`stopped_at`, gate or review findings, or `error` and `failure_kind`), then ask:
   relaunch the wave (at most `limits.max_retries`; children that completed and
   are unchanged are not run again, compile's `notes` say which), change the plan
-  (**Replanning**), or stop (`agent_stop_run`, then **Reviewing a
+  (**Resolving**), or stop (`agent_stop_run`, then **Reviewing a
   branch**).
 
 Then compile `next_wave` as above, or after a failure or a new session start
@@ -185,10 +194,10 @@ again at **Every start**.
 
 ## Finish
 
-On `run_status: done`: report each `done_when` criterion it returns as met or
-not, with paths, from what gates and reviews checked. Pass `mission_close`
-to the subagent tool unchanged. Deliverables are at `outputs[].location`
-(relative values inside `runs/<id>/`). If it returns a `review`, go on to
+On `run_status: done`: the result's `report` is the final report, settled by
+code: its `deliverables` (path, items, how each was checked) and `criteria`.
+Do what `report.do` says, nothing more. Pass `mission_close` to the subagent tool unchanged (none when
+nothing was launched: skip it). If it returns a `review`, go on to
 **Reviewing a branch**.
 
 ## Failures
@@ -206,7 +215,7 @@ once nothing else touches the repo.
 
 The plan directly only before the first run (on `main`) or on a change
 branch, with `gates/`, `scripts/`, `.pi/agents/` and packages (`agent_add_package`,
-into `pyproject.toml`). During a run only through the replan tools, plus
-`gates/`, `.pi/agents/` and packages while replanning; stage programs are
+into `pyproject.toml`). During a run only through `agent_resolve` and `agent_record_critique`, plus
+`gates/`, `.pi/agents/` and packages while resolving; stage programs are
 the children's. Params only through `agent_set_params`; `.env` never. Run
 state only through the agent tools. Nothing else.

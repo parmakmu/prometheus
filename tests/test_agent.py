@@ -1,5 +1,5 @@
 """End-to-end regression: scaffold an agent, compile and run it (against the
-pi-subagents mock), replan, review and merge, export it. One continuous
+pi-subagents mock), resolve, review and merge, export it. One continuous
 scenario: state (the run id, its folder, the
 compiled wave...) is built up across the module and later tests depend on
 what earlier ones left on disk. Pytest runs a module's tests in the order
@@ -104,12 +104,8 @@ def test_refresh_keeps_the_lessons_section_of_the_role_file(env):
     role = env.b / ".pi" / "APPEND_SYSTEM.md"
     original = role.read_text(encoding="utf-8")
     role.write_text(original + "\n## Lessons for this agent\n\n- Ask for the folder first.\n", encoding="utf-8")
-    # what an older prometheus left under the old name (Pi would load it): removed
-    (env.b / ".pi" / "extensions" / "workflow").mkdir(parents=True)
-    (env.b / ".pi" / "extensions" / "workflow" / "index.ts").write_text("", encoding="utf-8")
     r = env.run_in(env.prometheus, ["scaffold_agent.py", "invoice-check", "--root", "agents", "--refresh"])
-    assert r.data["ok"] and r.data["removed"] == [".pi/extensions/workflow"]
-    assert not (env.b / ".pi" / "extensions" / "workflow").exists()
+    assert r.data["ok"]
     refreshed = role.read_text(encoding="utf-8")
     assert refreshed.startswith(original.rstrip("\n")) and refreshed.endswith("- Ask for the folder first.\n")
     assert refreshed.count("## Lessons for this agent") == 1
@@ -205,6 +201,7 @@ def test_relative_and_missing_input_paths_refused(env):
 def test_environment_wins_over_dotenv(env):
     r = env.run(["compile_wave.py", "--no-commit"], env={**os.environ, "MAIL_DIR": str(env.tmp / "data" / "nope")})
     assert "does not exist" in " ".join((r.data or {}).get("preflight", {}).get("plan_errors", []))
+    assert not (env.run_dir / ".compiled").exists()  # a refused compile saves no wave
 
 
 def test_compile_w1_from_main_tag_r1(env):
@@ -351,7 +348,14 @@ def test_finish_reads_outcome_and_cost_from_pi_subagents(env):
     assert r.data, r
     env.fin = r.data
     assert (r.data["wave_status"], r.data["run_status"], r.data["ends_with"]) == ("done", "active", "none")
-    assert (env.run_dir / ".compiled" / "w1-result.json").is_file()
+    assert json.loads((env.run_dir / ".compiled" / "w1.json").read_text(encoding="utf-8"))["result"]["status"] == "done"
+    assert sorted(p.name for p in (env.run_dir / ".compiled").iterdir()) == ["w1.js", "w1.json"]
+    # /agent-history reads each stage's outcome from that record
+    shown = env.run(["run_history.py", "show"]).data
+    stages = next(r for r in shown["runs"] if r["id"] == env.rid)["stages"]
+    children = returned["children"]
+    assert stages and all(st[-1]["status"] == children[key]["status"] for key, st in stages.items() if key in children), stages
+    assert any(key in children for key in stages)
     run_yaml = (env.run_dir / "run.yaml").read_text(encoding="utf-8")
     assert "ends_with: none" in run_yaml
     assert "cost_usd: 0.0123" in run_yaml
@@ -442,41 +446,41 @@ def test_every_wave_runs_the_same_runner(env):
     assert ws(env.w1).endswith(runner) and wave(env.w1)["wave"] == "w1"
 
 
-# --- replanning -----------------------------------------------------------------
+# --- resolving -----------------------------------------------------------------
 
-def test_replan_refuses_a_stage_done_in_the_active_run(env):
-    r = env.run(["plan_edit.py", "replan", "--change", '{"stages":[{"id":"find","kind":{"value":"judgment"}}]}'])
+def test_resolve_refuses_a_stage_done_in_the_active_run(env):
+    r = env.run(["plan_edit.py", "resolve", "--change", '{"stages":[{"id":"find","kind":{"value":"judgment"}}]}'])
     assert "history" in (r.data or {}).get("error", "")
 
 
-def test_replan_refuses_waves(env):
-    r = env.run(["plan_edit.py", "replan", "--change", '{"waves":[]}'])
+def test_resolve_refuses_waves(env):
+    r = env.run(["plan_edit.py", "resolve", "--change", '{"waves":[]}'])
     assert "not part of the plan" in (r.data or {}).get("error", "")
 
 
-def test_replan_refuses_to_weaken_a_side_effect(env):
-    r = env.run(["plan_edit.py", "replan", "--change", '{"stages":[{"id":"drafts","kind":{"value":"deterministic"}}]}'])
+def test_resolve_refuses_to_weaken_a_side_effect(env):
+    r = env.run(["plan_edit.py", "resolve", "--change", '{"stages":[{"id":"drafts","kind":{"value":"deterministic"}}]}'])
     assert "its kind must stay side_effect" in (r.data or {}).get("error", "")
 
 
-def test_replan_refuses_to_change_the_goal(env):
-    r = env.run(["plan_edit.py", "replan", "--change", '{"goal":"something else"}'])
+def test_resolve_refuses_to_change_the_goal(env):
+    r = env.run(["plan_edit.py", "resolve", "--change", '{"goal":"something else"}'])
     assert "locked" in (r.data or {}).get("error", "")
 
 
-def test_replan_of_a_pending_stage_commits(env):
+def test_resolve_of_a_pending_stage_commits(env):
     from ruamel.yaml import YAML
     plan = YAML(typ="safe").load((env.b / "plan.yaml").read_text(encoding="utf-8"))
     st = next(s for s in plan["stages"] if s["id"] == "approve-drafts")
     st = json.loads(json.dumps(st, default=str))
-    st["title"] = "Confirm the drafts (replanned)"
+    st["title"] = "Confirm the drafts (resolved)"
     change = {"stages": [st]}
     (env.tmp / "change.json").write_text(json.dumps(change), encoding="utf-8")
-    r = env.run(["plan_edit.py", "replan", "--change", str(env.tmp / "change.json")])
+    r = env.run(["plan_edit.py", "resolve", "--change", str(env.tmp / "change.json")])
     assert r.data, r
     assert (r.data["ok"], r.data["revision"], r.data["status"]) == (True, 2, "draft")
     assert not (env.b / ".pi" / "history").exists()
-    assert env.git("log", "-1", "--format=%s").stdout.strip() == "r2 draft: replan"
+    assert env.git("log", "-1", "--format=%s").stdout.strip() == "r2 draft: resolve"
     assert r.data["commit"] == env.git("rev-parse", "HEAD").stdout.strip()
     assert r.data["previous_commit"] == env.git("rev-parse", "HEAD~1").stdout.strip()
     assert "revision: 1" in env.git("show", "HEAD~1:plan.yaml").stdout.splitlines()
@@ -635,8 +639,8 @@ def test_agent_revise_change_branch_from_main(env):
     assert "status: ready" in (env.b / "plan.yaml").read_text(encoding="utf-8").splitlines()  # untouched until edited
 
 
-def test_replan_needs_an_active_run(env):
-    r = env.run(["plan_edit.py", "replan", "--change", '{"note":"x"}'])
+def test_resolve_needs_an_active_run(env):
+    r = env.run(["plan_edit.py", "resolve", "--change", '{"note":"x"}'])
     assert "no run is active" in (r.data or {}).get("error", "")
 
 
@@ -908,7 +912,7 @@ def test_agent_extension_registers_commands_and_tools(env, ext):
     ]
     report = drive(ext, ext.tmp / ".ext" / "agent.ts", env.b, steps)
     env.agent_ext_report = report
-    assert (len(report["commands"]), len(report["tools"])) == (7, 13)
+    assert (len(report["commands"]), len(report["tools"])) == (8, 13)
 
 
 @skip_extensions
@@ -1012,6 +1016,10 @@ def test_the_coding_assistant_line_is_replaced_and_the_rest_kept(env):
     assert untouched["systemPrompt"] is None  # Pi reworded its line: leave the prompt alone
 
 
+# how pi-subagents' wake message starts (src/shared/parent-wake.js, PARENT_WAKE_TEXT)
+WAKE = "Inspect subagent updates above. Answer pending supervisor requests within your authority."
+
+
 @skip_extensions
 def test_agent_auto_runs_the_waves_without_the_model(ext, tmp_path, run_py):
     # a ready one-wave plan: /agent-auto starts the run, launches its wave through the RPC, records it and hands
@@ -1025,21 +1033,25 @@ def test_agent_auto_runs_the_waves_without_the_model(ext, tmp_path, run_py):
     compile_call = {"toolCall": {"toolName": "agent_compile", "input": {}}}
     report = drive(ext, ext.tmp / ".ext" / "agent.ts", wf, [
         {"cmd": "agent-auto", "background": True}, {"sleep": 3000},
-        # while its wave runs, a completion notice's turn (pi-subagents >= 0.76 wakes with a short message, before with
-        # no prompt): told to do nothing, and its run tools refused
-        {"systemPrompt": "Some other opening.", "prompt": "Subagent updates above."}, finish,
+        # while its wave runs, a completion notice's turn (pi-subagents' wake message): told to do nothing, and its
+        # run tools refused
+        {"systemPrompt": "Some other opening.", "prompt": WAKE}, finish,
         {"wait": True},
         # handed over: the hold is gone at once, even in a turn already under way (the hand-over arrives as a
         # follow-up and starts none of its own: refused agent_compile, a model once stopped after an approval)
         {"systemPrompt": "Some other opening.", "prompt": "Go on."}, compile_call,
         # but the wave's notice arriving after the hand-over needs nothing: w1 is recorded (run 2026-10-09-4)
-        {"systemPrompt": "Some other opening.", "prompt": "Subagent updates above."}, finish,
+        {"systemPrompt": "Some other opening.", "prompt": WAKE}, finish,
+        # a run pi-subagents starts with a message of its own is a notice too; another custom message is not
+        {"systemPrompt": "Some other opening.", "message": {"customType": "subagent-completion-unhandled"}},
+        {"systemPrompt": "Some other opening.", "message": {"customType": "agent"}},
     ], extra_env={"FAKE_SUBAGENTS_RPC": str(HERE / "mock-subagents.mjs"), "FAKE_SUBAGENTS_SLOW": "6000"})
     steps = report["steps"]
     assert "one word" in steps[2]["systemPrompt"] and steps[3]["blocked"], steps[2:4]
     assert steps[5]["systemPrompt"] is None and not steps[6]["blocked"], steps[5:7]
     assert "already recorded wave w1" in steps[7]["systemPrompt"], steps[7]
     assert steps[8]["blocked"] and "already recorded wave w1" in steps[8]["reason"], steps[8]
+    assert "already recorded wave w1" in steps[9]["systemPrompt"] and steps[10]["systemPrompt"] is None, steps[9:]
     out = [o for s in report["steps"] for o in s["out"]]  # a background command's output lands in later steps
     assert [o["status"] for o in out if o["kind"] == "spawn"] == ["done"], out
     (prompt,) = [o["text"] for o in out if o["kind"] == "prompt" and o["deliverAs"] == "followUp"]

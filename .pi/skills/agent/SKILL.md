@@ -30,7 +30,7 @@ edits, never by rewriting the file.
 2. **Record the agents.** `subagent({ action: "list" })`, then fill `agents`
    in `.plan/agents.yaml` (plan-schema "Agents").
 
-3. **List the unknowns** in `.plan/unknowns.yaml`, each with a `resolve_by`, chosen in this order:
+3. **List the unknowns** in `.plan/unknowns.yaml`, each with a `resolved_by`, chosen in this order:
    - `planner` — one or two cheap read-only calls you can make now (list a
      folder, read a header). Do it.
    - `probe` — a child can check it cheaply (a folder only a child reaches, a
@@ -59,7 +59,7 @@ edits, never by rewriting the file.
    concrete and small. A stage whose schema, batch size, agent or gate
    depends on a discovery is **provisional** (`intent`, `resolves_after`, no
    detail): never guess detail to satisfy the validator. Everything outside
-   the agent is a typed param (plan-schema "Params"). `pause_after: true`
+   the agent is a typed param (plan-schema "Params"). `pauses_after: true`
    only if the user must see a result before work builds on it and no
    decision or side effect already pauses there. A stage a model child does
    gets `instructions`: what to do and how, in full (it is the child's brief;
@@ -69,7 +69,7 @@ edits, never by rewriting the file.
 5. **Classify every stage** (`references/classify.md`), provisional ones too.
    Use builtin agents where they fit; when a stage needs a narrower tool set,
    shared domain rules or a specific model, write a subagent (read
-   `references/agent-profiles.md` then, not before). Provisional stages get agents at replan.
+   `references/agent-profiles.md` then, not before). Provisional stages get agents at resolve.
 
 6. **Sort the gaps.** A gap becomes a question only if a wrong guess would:
    - change the stage graph ("extract fixed fields" vs "summarise each email")
@@ -97,7 +97,7 @@ edits, never by rewriting the file.
 8. **Ask, or finish.**
    - Open questions → `status: needs_answers`, check, ask (below). Write each
      answer into its question and update the plan by editing the file (the
-     replan tools work only during a run). Resume the critic only if the
+     resolve tools work only during a run). Resume the critic only if the
      stage graph changed and it ran fewer than two passes this revision; an
      answer that leaves the stages as they were needs no critic.
      After two rounds, remaining gaps become assumptions with
@@ -118,7 +118,7 @@ edits, never by rewriting the file.
 
 If the user says "just do it", finish the plan with defaults and tell them to
 start it; running is not planning. After the first run, plan changes happen
-inside the agent (`references/replanning.md`, `references/changing.md`).
+inside the agent (`references/resolving.md`, `references/changing.md`).
 
 ## Asking
 
@@ -158,8 +158,8 @@ inside the agent (`references/replanning.md`, `references/changing.md`).
 - Cost: programs as commands cost nothing per run; a `reviewer` on every
   stage doubles its children. Review where a wrong output would spread.
   Set `models` (or a stage's `model`) only to models the user named.
-- A pause in the wrong place is fixed with a need, a kind or `pause_after`.
+- A pause in the wrong place is fixed with a need, a kind or `pauses_after`.
 - Only if the schema leaves a field's use unclear, read one example:
   `examples/invoice-check/` (concrete from the start) or
-  `examples/competitor-memo/` (discovery, then replan): each a `plan.yaml`
+  `examples/competitor-memo/` (discovery, then resolve): each a `plan.yaml`
   and its `.plan/`.

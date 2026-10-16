@@ -322,7 +322,7 @@
      "title": "Kind",
      "type": "string"
     },
-    "location": {
+    "path": {
      "anyOf": [
       {
        "type": "string"
@@ -332,7 +332,7 @@
       }
      ],
      "default": null,
-     "title": "Location"
+     "title": "Path"
     },
     "access": {
      "default": "read",
@@ -556,9 +556,9 @@
      "title": "Kind",
      "type": "string"
     },
-    "location": {
+    "path": {
      "minLength": 1,
-     "title": "Location",
+     "title": "Path",
      "type": "string"
     },
     "overwrite": {
@@ -570,7 +570,7 @@
    "required": [
     "id",
     "kind",
-    "location"
+    "path"
    ],
    "title": "Output",
    "type": "object"
@@ -807,15 +807,10 @@
      "description": "fresh or fork; only when not the subagent's default",
      "title": "Context"
     },
-    "provisional": {
-     "default": false,
-     "description": "an outline, filled in at replan after its resolves_after stage",
-     "title": "Provisional",
-     "type": "boolean"
-    },
     "resolves_after": {
      "anyOf": [
       {
+       "pattern": "^[a-z][a-z0-9-]*$",
        "type": "string"
       },
       {
@@ -823,7 +818,7 @@
       }
      ],
      "default": null,
-     "description": "provisional: the discovery stage it is filled in after",
+     "description": "an outline until this discovery stage has run; the run then resolves it, writing the stage out in full",
      "title": "Resolves After"
     },
     "intent": {
@@ -910,10 +905,10 @@
      "description": "the subagent that reviews its result (adds an <id>-review child)",
      "title": "Review"
     },
-    "pause_after": {
+    "pauses_after": {
      "default": false,
      "description": "the user sees its results before the stages after it run",
-     "title": "Pause After",
+     "title": "Pauses After",
      "type": "boolean"
     },
     "map": {
@@ -1036,14 +1031,14 @@
      "title": "Text",
      "type": "string"
     },
-    "resolve_by": {
+    "resolved_by": {
      "enum": [
       "planner",
       "probe",
       "user",
       "discovery"
      ],
-     "title": "Resolve By",
+     "title": "Resolved By",
      "type": "string"
     },
     "finding": {
@@ -1098,7 +1093,7 @@
    "required": [
     "id",
     "text",
-    "resolve_by"
+    "resolved_by"
    ],
    "title": "Unknown",
    "type": "object"
@@ -1106,9 +1101,9 @@
  },
  "additionalProperties": true,
  "properties": {
-  "version": {
+  "format": {
    "const": 1,
-   "title": "Version",
+   "title": "Format",
    "type": "integer"
   },
   "status": {
@@ -1253,7 +1248,7 @@
   }
  },
  "required": [
-  "version",
+  "format",
   "status",
   "request",
   "goal",

@@ -17,7 +17,7 @@ subagent({ async: true, mission: false, workflow: ".pi/skills/agent/references/c
   args: { task: "Critique the plan at <absolute path of the agent's plan.yaml>. Read that file and the files in .plan/ beside it (unknowns, questions, the subagents seen; not critique.yaml, an earlier review) and, if needed, cheap read-only looks at the inputs it names. Return only the structured report." } })
 ```
 
-At replan or on a change branch, add to the task which stages changed. Tell
+At resolve or on a change branch, add to the task which stages changed. Tell
 the user in one line that the critic is reviewing, and end the turn; Pi wakes
 the session when it finishes.
 If the critic fails (for example with no structured output), relaunch it
@@ -39,5 +39,5 @@ last):
 If accepted findings changed the stage graph, resume the critic once:
 a second launch of the same kind with `args: { task: "The plan changed: <summary>. Check only the changes.", resume: "<run_id>" }`
 (`critic.js` passes `resume` through and drops `agent` and the schema then), and set `passes: 2`. A new revision gets a fresh critic, `passes: 1`, except
-during a run: a replan gets two passes in all, even when fixing findings
+during a run: resolving gets two passes in all, even when fixing findings
 bumps the revision.

@@ -8,7 +8,9 @@
  *   /agent-history [n]       the last n runs, and how each stage went in them (no model)
  *   /agent-prune [keep]      delete old finished runs' work/ folders, keeping the newest (default 10; no model)
  *   /agent-revise [change]   change the plan on a branch, for review (no run active; model)
- *   /agent-improve [focus]   propose fixes from the sessions and runs, applied on an improve/ branch (no run active; model)
+ *   /agent-bundle [run] [--with-files]   pack a run's evidence into one file, for /agent-improve where the agent is developed
+ *   /agent-improve [bundle.tgz …] [focus]   propose fixes from the sessions and runs (and released runs' bundles),
+ *                            applied on an improve/ branch (no run active; model)
  *
  * Tools for the model (the mechanical steps of the run protocol)
  *   agent_check            validate the plan and compile-check its waves
@@ -19,7 +21,7 @@
  *   agent_record_decision  write the user's answer for a decision stage
  *   agent_log_start        record a wave launch
  *   agent_log_finish       record a wave result
- *   agent_replan           change pending stages during a run (after discovery, or asked)
+ *   agent_resolve           resolve provisional stages after their discovery (or change pending ones, asked)
  *   agent_record_critique  record a plan-critic result; marks the plan ready if it validates
  *   agent_set_params       set param values in .env (not secrets)
  *   agent_merge            finish the review of a run or change branch: merge, keep or discard
@@ -38,13 +40,13 @@
  * tasks and commands, and only a stage program or gate the batcher runs gets the secrets it names. Every
  * child shares pi's environment and sandbox, and one reading outside content can be told to leak it. Once a run exists, direct edits to runs/<id>/run.yaml are blocked,
  * and plan.yaml may be edited directly only on a change branch with no run active;
- * during a run the plan changes through agent_replan, which refuses to touch what ran,
+ * during a run the plan changes through agent_resolve, which refuses to touch what ran,
  * the goal or a side effect's approval.
  *
  * The logic lives in the skill's Python scripts (.pi/skills/agent/scripts);
  * this file runs them and formats their JSON.
  */
-import { defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { defineTool, type BeforeAgentStartEvent, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type, type Static, type TSchema } from "typebox";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
@@ -54,12 +56,12 @@ import * as path from "node:path";
 // --- prompts sent to the model ------------------------------------------------
 
 const RUN_PROMPT = (note: string) => `Run this agent. Read \`.pi/skills/agent/references/run-protocol.md\`
-and follow it from "Every start": check, then plan, replan or run the next
+and follow it from "Every start": check, then plan, resolve or run the next
 wave, whichever the plan needs.
 
 Use the agent tools for every mechanical step: \`agent_check\`,
 \`agent_new_run\`, \`agent_compile\`, \`agent_record_decision\`,
-\`agent_log_start\`, \`agent_log_finish\`, \`agent_replan\`,
+\`agent_log_start\`, \`agent_log_finish\`, \`agent_resolve\`,
 \`agent_stop_run\` and \`agent_merge\`. The subagent tool is already active: pass
 the \`call\` that \`agent_compile\` returns to it unchanged, without calling
 subagents_enable or listing agents first. Ask every question that has a fixed set of
@@ -69,16 +71,17 @@ Note from the user for this run (may be empty): ${note}`;
 
 /** Starts every /agent-auto hand-over: its turn ends the autopilot's hold on the run tools. */
 const HANDOVER_MARK = "/agent-auto ran";
-/** pi-subagents (>= 0.76) wakes an idle parent with its notices and then this message; before, with no prompt. */
-const PARENT_WAKE = "Subagent updates above.";
-const isNotice = (prompt?: string) => !prompt?.trim() || prompt.trim() === PARENT_WAKE;
+/** pi-subagents wakes an idle parent with its notices, then a user message that starts with this; a run it starts
+ * with a message of its own has a `subagent…` custom type. */
+const PARENT_WAKE = "Inspect subagent updates above.";
+const isNotice = (event: BeforeAgentStartEvent) =>
+  event.messageType === "custom" ? event.message.customType.startsWith("subagent") : event.prompt.startsWith(PARENT_WAKE);
 /** The tools /agent-auto calls itself while it runs; the model's are refused meanwhile. */
 const AUTO_OWNS = new Set(["agent_compile", "agent_log_start", "agent_log_finish", "agent_new_run", "agent_stop_run", "subagent"]);
 
-const FINISH_PROMPT = (result: string) => `${HANDOVER_MARK} this agent's run to the end. Report each \`done_when\`
-criterion below as met or not, with paths, from what the gates and reviews checked; deliverables are at the
-plan's \`outputs[].location\` (relative values inside \`runs/<id>/\`). Pass \`mission_close\` to the subagent tool
-unchanged. Do not start anything else.
+const FINISH_PROMPT = (result: string) => `${HANDOVER_MARK} this agent's run to the end. Its \`report\` below is the final
+report, settled by code (deliverables, how each was checked, criteria): do what \`report.do\` says, nothing more. Pass \`mission_close\` to the subagent tool
+unchanged (none when nothing was launched: skip it). Do not start anything else.
 
 ${result}`;
 
@@ -108,6 +111,16 @@ runs: no need to read every run.yaml, gate and script), read more of a session w
 (show <file> around a failure's \`at\`) only where a finding needs it, and check with \`git branch\`
 any branch you mean to cite.
 
+\`imported\` lists runs from bundles, made somewhere else: a release of this agent (\`kind: release\`) or
+a copy of it run there (\`kind: run\`, with that copy's own sessions in \`agent_sessions\`); \`commit\` is the
+code that ran. Treat them like runs: a failure there is evidence, one that a caller's odd input explains is
+still a one-off. Read a failed child's session, or one of \`agent_sessions\`, with agent_sessions (show <its
+path>); its folder holds the run's records (\`run/\`, \`subagents/\`, and \`run/inputs/\` or \`run/work/\` when
+it came with files). For a release's run, when the branch holds the fix, tell the user they can check it
+before merging with \`prometheus run <slug>@<this branch> --bundle <the bundle file>\` (it runs the
+branch's committed state on the bundle's params and files), and release it after the merge with
+\`prometheus release <slug>\`.
+
 1. Find causes, not symptoms: a gate that rejected correct output, a stage program rewritten or
    failing each run, a stage task that left something out, a question the plan should have
    settled, a refusal the user hit, work the model did by hand that a script could do. Skip
@@ -131,7 +144,7 @@ any branch you mean to cite.
    edits following the "Changing the plan" section of
    \`.pi/skills/agent/references/changing.md\` (critic included when the plan changes; it says what to read).
    Append every proposal, applied or skipped, to \`improvements.yaml\` (a list; create it if missing):
-   \`{date: <the digest's \`now\`>, target: <file>, proposal: <one line>, evidence: <session or run>,
+   \`{date: <the digest's \`now\`>, target: <file>, proposal: <one line>, evidence: <session, run or imported folder>,
    decision: applied | rejected, note: <the user's reason, if given>}\`. Write it even when nothing
    was accepted; it marks these sessions as reviewed. Write it once, when the decisions are final,
    not before the critic: agent_merge commits leftover files, so never call agent_record_critique
@@ -395,7 +408,7 @@ export default function agentExtension(pi: ExtensionAPI) {
     if ((event.toolName === "bash" || event.toolName === "powershell") && GIT_WRITE.test(input.command ?? ""))
       return {
         block: true,
-        reason: "The skill scripts commit this agent's git repo (compile, replan, critique); do not run git commands that change it. Read-only git (log, diff, show, status) is fine.",
+        reason: "The skill scripts commit this agent's git repo (compile, resolve, critique); do not run git commands that change it. Read-only git (log, diff, show, status) is fine.",
       };
     // a session's JSONL has lines too long for the read tool, so a model writes a parser: point it at the tool
     if (SESSION_FILES.test(input.path ?? "") || ((event.toolName === "bash" || event.toolName === "powershell") && SESSION_FILES.test(input.command ?? "")))
@@ -448,7 +461,7 @@ export default function agentExtension(pi: ExtensionAPI) {
         block: true,
         reason: planOpen
           ? "Run state changes only through the agent tools (agent_new_run, agent_log_start/finish), and the critic's record (.plan/critique.yaml) only through agent_record_critique. Read the files with the read tool."
-          : "A run exists, so the plan changes only through the agent tools: during a run agent_replan and agent_record_critique; otherwise /agent-revise (a change branch). Run state: agent_new_run, agent_log_start/finish. Read the files with the read tool.",
+          : "A run exists, so the plan changes only through the agent tools: during a run agent_resolve and agent_record_critique; otherwise /agent-revise (a change branch). Run state: agent_new_run, agent_log_start/finish. Read the files with the read tool.",
       };
   });
 
@@ -461,10 +474,10 @@ export default function agentExtension(pi: ExtensionAPI) {
   pi.on("before_agent_start", (event, ctx) => {
     if (!findRoot(ctx.cwd)) return;
     let systemPrompt = event.systemPrompt.replace(PI_PREAMBLE, ROLE_PREAMBLE);
-    if (autopilot && event.prompt?.includes(HANDOVER_MARK)) autopilot = false;
-    // pi-subagents wakes the model with each wave's completion notice (no prompt of its own); /agent-auto records
-    // the wave itself, and its run tools are refused meanwhile (tool_call)
-    else if ((autopilot || autoRecorded.size) && isNotice(event.prompt))
+    if (autopilot && event.messageType === "user" && event.prompt.includes(HANDOVER_MARK)) autopilot = false;
+    // pi-subagents wakes the model with each wave's completion notice; /agent-auto records the wave itself, and its
+    // run tools are refused meanwhile (tool_call)
+    else if ((autopilot || autoRecorded.size) && isNotice(event))
       systemPrompt += `\n\n/agent-auto ${autopilot ? "is running the waves and records them itself" : `already recorded wave ${[...autoRecorded].join(", ")} itself`}: answer a completion notice with one word and call no tools.`;
     return systemPrompt === event.systemPrompt ? undefined : { systemPrompt };
   });
@@ -472,7 +485,7 @@ export default function agentExtension(pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     const root = findRoot(ctx.cwd);
     if (!root) return;
-    const probe = () => pi.exec(pythonFor(root), ["-c", "import dotenv, pydantic, pydantic_settings, ruamel.yaml, typer"], { cwd: root, timeout: 10_000 });
+    const probe = () => pi.exec(pythonFor(root), ["-c", "import dotenv, packaging, psutil, pydantic, pydantic_settings, ruamel.yaml, typer"], { cwd: root, timeout: 10_000 });
     let r = await probe();
     // First start: no .venv yet. Create it from this agent's pyproject.toml and uv.lock, as the gates and
     // programs' `uv run` would (skipped when $PI_AGENT_PYTHON names the Python to use).
@@ -520,7 +533,7 @@ export default function agentExtension(pi: ExtensionAPI) {
       const requestId = randomUUID();
       const timer = setTimeout(() => {
         off();
-        reject(new Error(`pi-subagents did not answer ${method} (needs a pi-subagents with its RPC, >= 0.74)`));
+        reject(new Error(`pi-subagents did not answer ${method} (is it installed and loaded?)`));
       }, timeoutMs);
       const off = pi.events.on(`subagents:rpc:v1:reply:${requestId}`, (reply: any) => {
         clearTimeout(timer);
@@ -592,26 +605,29 @@ export default function agentExtension(pi: ExtensionAPI) {
     for (;;) {
       const c = await step("compile_wave.py", []);
       if (!c.ok) return handOver("the next wave needs something first", c);
-      ctx.ui.setStatus("agent-auto", `agent-auto: wave ${c.wave} running`);
       // one line in the chat per wave start and end: with no model turn, nothing else shows the run moving
       const started = Date.now();
-      show(`Wave ${c.wave} started`, `${c.stages.join(", ")}${c.notes?.length ? ` (${c.notes.join("; ")})` : ""}`);
-      let launched: any;
-      try {
-        launched = await rpc("spawn", { ...c.call, cwd: root });
-      } catch (e: any) {
-        return handOver(`launching wave ${c.wave} failed: ${e.message}`, { wave: c.wave });
+      show(`Wave ${c.wave} ${c.launched === false ? "reused" : "started"}`, `${c.stages.join(", ")}${c.notes?.length ? ` (${c.notes.join("; ")})` : ""}`);
+      let f: any = c; // every stage reused: compile_wave recorded the wave, with agent_log_finish's result, and launched nothing
+      if (c.launched !== false) {
+        ctx.ui.setStatus("agent-auto", `agent-auto: wave ${c.wave} running`);
+        let launched: any;
+        try {
+          launched = await rpc("spawn", { ...c.call, cwd: root });
+        } catch (e: any) {
+          return handOver(`launching wave ${c.wave} failed: ${e.message}`, { wave: c.wave });
+        }
+        const id = launched?.details?.runId ?? launched?.details?.asyncId;
+        const dir = launched?.details?.asyncDir;
+        const recorded = await step("run_log.py", ["start", "--wave", c.wave, "--subagent-run-id", String(id)]);
+        if (!recorded.ok || !dir) return handOver(`wave ${c.wave} launched as ${id} but not recorded`, recorded);
+        const end = await waveEnd(dir);
+        if (end === "lost") return handOver(`pi-subagents' runner for wave ${c.wave} stopped without recording how it ended (run ${id}); check the run before relaunching`, { wave: c.wave, subagent_run_id: id });
+        if (end === "paused") return handOver(`a child of wave ${c.wave} asked a question (pi-subagents run ${id})`, { wave: c.wave, subagent_run_id: id });
+        f = await step("run_log.py", ["finish", "--wave", c.wave]);
+        if (!f.ok) return handOver(`recording wave ${c.wave} failed`, f);
+        autoRecorded.add(c.wave);
       }
-      const id = launched?.details?.runId ?? launched?.details?.asyncId;
-      const dir = launched?.details?.asyncDir;
-      const recorded = await step("run_log.py", ["start", "--wave", c.wave, "--subagent-run-id", String(id)]);
-      if (!recorded.ok || !dir) return handOver(`wave ${c.wave} launched as ${id} but not recorded`, recorded);
-      const end = await waveEnd(dir);
-      if (end === "lost") return handOver(`pi-subagents' runner for wave ${c.wave} stopped without recording how it ended (run ${id}); check the run before relaunching`, { wave: c.wave, subagent_run_id: id });
-      if (end === "paused") return handOver(`a child of wave ${c.wave} asked a question (pi-subagents run ${id})`, { wave: c.wave, subagent_run_id: id });
-      const f = await step("run_log.py", ["finish", "--wave", c.wave]);
-      if (!f.ok) return handOver(`recording wave ${c.wave} failed`, f);
-      autoRecorded.add(c.wave);
       const took = Math.round((Date.now() - started) / 1000);
       show(`Wave ${c.wave} ${f.wave_status === "done" ? "done" : "did not complete"}`,
         `${took >= 60 ? `${Math.floor(took / 60)}m ${took % 60}s` : `${took}s`}${typeof f.cost_usd === "number" ? ` · $${f.cost_usd.toFixed(4)}` : ""}` +
@@ -661,10 +677,15 @@ export default function agentExtension(pi: ExtensionAPI) {
       const keep = opt("--keep", args.trim());
       const dry = (await runScript(pi, root, "run_history.py", ["prune", "--dry-run", ...keep])).data;
       if (!dry?.ok) return ctx.ui.notify(dry?.error ?? "run_history.py failed", "error");
-      if (!dry.pruned.length) return ctx.ui.notify("Nothing to prune.", "info");
-      if (!(await ctx.ui.confirm("Prune runs", `Delete the work folders of ${dry.pruned.length} runs (${dry.freed_mb} MB): ${dry.pruned.join(", ")}?`))) return;
+      if (!dry.pruned.length && !dry.empty_session_folders) return ctx.ui.notify("Nothing to prune.", "info");
+      const what = [
+        ...(dry.pruned.length ? [`the work folders of ${dry.pruned.length} runs (${dry.freed_mb} MB): ${dry.pruned.join(", ")}`] : []),
+        ...(dry.empty_session_folders ? [`${dry.empty_session_folders} empty launch folders in .pi/sessions`] : []),
+      ];
+      if (!(await ctx.ui.confirm("Prune runs", `Delete ${what.join(", and ")}?`))) return;
       const r = (await runScript(pi, root, "run_history.py", ["prune", ...keep])).data;
-      ctx.ui.notify(r?.ok ? `Pruned ${r.pruned.length} runs, ${r.freed_mb} MB freed.` : (r?.error ?? "prune failed"), r?.ok ? "info" : "error");
+      ctx.ui.notify(r?.ok ? `Pruned ${r.pruned.length} runs, ${r.freed_mb} MB freed, ${r.empty_session_folders} empty launch folders removed.`
+        : (r?.error ?? "prune failed"), r?.ok ? "info" : "error");
     },
   });
 
@@ -708,27 +729,69 @@ export default function agentExtension(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("agent-improve", {
-    description: "Propose improvements from this agent's sessions and runs, applied on an improve/ branch you review (no run active): /agent-improve [focus]",
+    description: "Propose improvements from this agent's sessions and runs, applied on an improve/ branch you review (no run active): /agent-improve [bundle.tgz …] [focus]",
     handler: async (args, ctx) => {
       const root = findRoot(ctx.cwd);
       if (!root) {
         ctx.ui.notify("Not inside an agent folder (no plan.yaml).", "error");
         return;
       }
+      // bundles first (a released run that failed elsewhere: prometheus bundle), then the rest is the focus
+      const words = args.trim().split(/\s+/).filter(Boolean);
+      const isBundle = (w: string) => /\.tgz$/.test(w) && fs.existsSync(path.resolve(ctx.cwd, w));
+      for (const file of words.filter(isBundle)) {
+        const added = await runScript(pi, root, "bundle.py", ["add", path.resolve(ctx.cwd, file), "--agent", root]);
+        if (!added.data?.ok) {
+          ctx.ui.notify(added.data?.error ?? `bundle.py failed: ${(added.stderr || added.stdout).trim().slice(0, 500)}`, "error");
+          return;
+        }
+        ctx.ui.notify(`Imported ${file}: run ${added.data.run} of ${added.data.version}, ${added.data.state}` +
+          `${added.data.already ? " (already imported)" : ""}${(added.data.warnings ?? []).map((w: string) => `\nwarning: ${w}`).join("")}`, "info");
+      }
+      const focus = words.filter((w) => !isBundle(w)).join(" ");
       // the digest first: with nothing new to learn from, no branch is opened (and none left to review)
       const d = await runScript(pi, root, "session_digest.py", ["--agent", root]);
       if (!d.data?.ok) {
         ctx.ui.notify(d.data?.error ?? `session_digest.py failed: ${(d.stderr || d.stdout).trim().slice(0, 500)}`, "error");
         return;
       }
-      if (!d.data.sessions?.length && !d.data.runs?.length && !args.trim() && currentBranch(root) === "main") {
+      if (!d.data.sessions?.length && !d.data.runs?.length && !d.data.imported?.length && !focus && currentBranch(root) === "main") {
         ctx.ui.notify("Nothing new since the last /agent-improve: no unreviewed sessions or runs. Give a focus to improve anyway: /agent-improve <focus>.", "info");
         return;
       }
       const change = await beginChange(ctx, "improve");
       if (!change) return;
       activateSubagent(pi); // the critic
-      pi.sendUserMessage(IMPROVE_PROMPT(args.trim(), change.branch, JSON.stringify(d.data)));
+      pi.sendUserMessage(IMPROVE_PROMPT(focus, change.branch, JSON.stringify(d.data)));
+    },
+  });
+
+  pi.registerCommand("agent-bundle", {
+    description: "Pack a run's evidence into one file for whoever develops this agent (changes nothing): /agent-bundle [run id] [--with-files]",
+    handler: async (args, ctx) => {
+      const root = findRoot(ctx.cwd);
+      if (!root) {
+        ctx.ui.notify("Not inside an agent folder (no plan.yaml).", "error");
+        return;
+      }
+      const words = args.trim().split(/\s+/).filter(Boolean);
+      const run = words.find((w) => !w.startsWith("--"));
+      const res = await runScript(pi, root, "bundle.py", [
+        "make", ...(run ? ["--run", path.join(root, "runs", path.basename(run))] : ["--agent", root]),
+        "--out", path.join(root, "runs"), ...(words.includes("--with-files") ? ["--with-files"] : []),
+      ]);
+      const b = res.data ?? {};
+      if (!b.ok) {
+        ctx.ui.notify(b.error ?? `bundle.py failed: ${(res.stderr || res.stdout).trim().slice(0, 500)}`, "error");
+        return;
+      }
+      show("Bundle", [
+        `\`${b.bundle}\` (${b.size_mb} MB, ${b.files} files${b.with_files ? ", with the run's work folder" : ""})`,
+        "",
+        "Copy it to where this agent is developed and run `/agent-improve <file>` there.",
+        ...(b.redacted?.length ? [`The values of ${b.redacted.join(", ")} were replaced by \${NAME}.`] : []),
+        ...(b.warnings ?? []).map((w: string) => `- **Check before you send it:** ${w}`),
+      ].join("\n"));
     },
   });
 
@@ -749,7 +812,7 @@ export default function agentExtension(pi: ExtensionAPI) {
       const s = chk.summary ?? {};
       const pf = next.data?.preflight ?? {};
       // only what the page and the workspace don't show already: what comes next, what waits for the person, problems
-      const ends: Record<string, string> = { approval: ", needs your approval", review: ", then your review", replan: ", then a replan" };
+      const ends: Record<string, string> = { approval: ", needs your approval", review: ", then your review", resolve: ", then the run resolves stages" };
       const waves = (s.waves ?? []).map((w: any) => `${w.id} (${w.stages.join(", ")}${ends[w.ends_with] ?? ""})`).join(", then ");
       const comingUp = b.active_run
         ? `run ${b.active_run}: ${b.stages_done}/${b.stages_total} stages done${b.next_wave ? `, wave ${b.next_wave} next` : ""}`
@@ -767,7 +830,8 @@ export default function agentExtension(pi: ExtensionAPI) {
       const problems = [
         ...chk.errors,
         ...Object.entries(chk.compile_errors as Record<string, string[]>).flatMap(([w, es]) => es.map((e) => `${w}: ${e}`)),
-        ...(b.active_run && !next.data?.ok && next.data?.error ? [next.data.error] : []),
+        ...(b.off_branch ? [`run ${b.active_run}: ${b.off_branch}`] : []),
+        ...(b.active_run && !b.off_branch && !next.data?.ok && next.data?.error ? [next.data.error] : []),
       ];
       show(
         `Agent ${path.basename(root)}`,
@@ -851,14 +915,14 @@ export default function agentExtension(pi: ExtensionAPI) {
     name: "agent_sessions",
     label: "Sessions",
     description:
-      "Read this agent's earlier Pi sessions (their JSONL files have lines too long for the read tool). action list: the sessions, newest first. action show: a bounded transcript of one (file from list): per record its number i, time, role, text, tool calls and results, each clipped. One line per record: number, time, U (user) / A (assistant, then -> tool(args)) / R (result; R! failed). Select records with from/to (record numbers) or around (a timestamp, e.g. a failure's `at` in the improve digest; window records each side); it stops at a size cap and ends with [more: next_from N].",
+      "Read this agent's earlier Pi sessions (their JSONL files have lines too long for the read tool). action list: the sessions, newest first. action show: a bounded transcript of one (file from list, or a failed child's `session` in the improve digest's imported runs): per record its number i, time, role, text, tool calls and results, each clipped. One line per record: number, time, U (user) / A (assistant, then -> tool(args)) / R (result; R! failed). Select records with from/to (record numbers) or around (a timestamp, e.g. a failure's `at` in the improve digest; window records each side); it stops at a size cap and ends with [more: next_from N].",
     promptSnippet: "List or read this agent's earlier sessions",
     promptGuidelines: [
       "To look into an earlier session, use agent_sessions; do not read the session JSONL files with read or bash, or write a parser for them.",
     ],
     parameters: Type.Object({
       action: Type.Union([Type.Literal("list"), Type.Literal("show")]),
-      file: Type.Optional(Type.String({ description: "show: a session file name from list, or the start of one" })),
+      file: Type.Optional(Type.String({ description: "show: a session file name from list, or the start of one, or an imported child's session (runs/imported/…)" })),
       from: Type.Optional(Type.Integer({ description: "show: first record number" })),
       to: Type.Optional(Type.Integer({ description: "show: last record number" })),
       around: Type.Optional(Type.String({ description: "show: a timestamp to centre the window on" })),
@@ -927,7 +991,7 @@ export default function agentExtension(pi: ExtensionAPI) {
     name: "agent_compile",
     label: "Compile wave",
     description:
-      "Compile the active run's next wave into the exact pi-subagents call. Returns {ok, run, wave, stages, ends_with, call, children} when it can launch, or {ok: false, preflight} listing params to set (missing_params), secrets the user must add to .env (missing_secrets), decisions to collect, approvals to get, and review_needed when the last wave ended with a review the user has not answered yet. Only the launched wave's plan is committed; children that completed in a failed launch of the same wave, unchanged since, are not run again (notes say which).",
+      "Compile the active run's next wave into the exact pi-subagents call. Returns {ok, run, wave, stages, ends_with, call, children} when it can launch; {ok, launched: false, ...} when every stage was reused from an earlier run, the wave already recorded with nothing launched (what agent_log_finish returns: go on from it, launch and log nothing); or {ok: false, preflight} listing params to set (missing_params), secrets the user must add to .env (missing_secrets), decisions to collect, approvals to get, and review_needed when the last wave ended with a review the user has not answered yet. Only the launched wave's plan is committed; children that completed in a failed launch of the same wave, unchanged since, are not run again (notes say which).",
     promptSnippet: "Compile the next agent wave into a subagent call",
     promptGuidelines: [
       "Never write a wave script by hand; use agent_compile and pass its `call` to the subagent tool unchanged. `call.workflow` is a script path (pi-subagents reads it itself): pass it as-is, do not open the file or paste its contents into the tool call.",
@@ -977,7 +1041,7 @@ export default function agentExtension(pi: ExtensionAPI) {
     name: "agent_log_finish",
     label: "Log wave result",
     description:
-      "Record a finished wave in the active run. Pass only the wave: the outcome (the workflow script's return value, status, cost) is read from pi-subagents. `done` marks its stages done (and the run done after the last wave); failed, blocked or stopped put them back to pending so the wave can be fixed and relaunched. Commits files the wave wrote into the agent on the run's branch. Returns the wave's ends_with (what to do next), a summary of its children, next_wave (with `preflight`: the decisions, approvals, params or secrets its compile needs first, to ask for before compiling) and, when the run is done, its branch for review, the plan's `done_when` for the final report, and `mission_close` (pass it to the subagent tool unchanged).",
+      "Record a finished wave in the active run. Pass only the wave: the outcome (the workflow script's return value, status, cost) is read from pi-subagents. `done` marks its stages done (and the run done after the last wave); failed, blocked or stopped put them back to pending so the wave can be fixed and relaunched. Commits files the wave wrote into the agent on the run's branch. Returns the wave's ends_with (what to do next), a summary of its children, next_wave (with `preflight`: the decisions, approvals, params or secrets its compile needs first, to ask for before compiling) and, when the run is done, its branch for review, the plan's `done_when` for the final report, `outputs` (each deliverable's path in this run, whether it exists, and its `items` count when one can be read), and `mission_close` (pass it to the subagent tool unchanged).",
     promptGuidelines: [
       "After a wave's completion notice, call agent_log_finish with just the wave; do not look up the run's status or assemble its result yourself.",
     ],
@@ -1003,14 +1067,14 @@ export default function agentExtension(pi: ExtensionAPI) {
   });
 
   scriptTool({
-    name: "agent_replan",
-    label: "Replan",
+    name: "agent_resolve",
+    label: "Resolve",
     description:
-      "Change pending work in plan.yaml: replace or add stages (full definitions), remove pending stages, record unknowns' findings, add questions or record answers. Waves follow from the stages. Refuses changes to stages that are done or running in the active run, the request, goal, done_when, params, inputs, outputs and agents, and any weakening of a side effect. Commits the agent (git keeps the previous revision), bumps revision, sets status draft and clears the critique.",
-    promptSnippet: "Change pending stages of the agent plan",
+      "Resolve provisional stages once their discovery has run: give each in full, without `resolves_after`, and record the unknowns' findings. Also changes other pending stages when the user asks the run for a change: replace or add stages (full definitions), remove pending stages, add questions or record answers. Waves follow from the stages. Refuses changes to stages that are done or running in the active run, the request, goal, done_when, params, inputs, outputs and agents, and any weakening of a side effect. Commits the agent (git keeps the previous revision), bumps revision, sets status draft and clears the critique.",
+    promptSnippet: "Resolve provisional stages (or change pending ones the user asks about) in the agent plan",
     promptGuidelines: [
-      "Use agent_replan for every plan change after a wave has run; direct edits to plan.yaml are blocked.",
-      "Give each changed stage in full, as it should read in the plan; omit `provisional` and `resolves_after` to make a provisional stage concrete.",
+      "Use agent_resolve for every plan change after a wave has run; direct edits to plan.yaml are blocked.",
+      "Give each changed stage in full, as it should read in the plan; omit `resolves_after` to make a provisional stage concrete.",
     ],
     parameters: Type.Object({
       stages: Type.Optional(Type.Array(Type.Any(), { description: "full stage definitions (plan-schema.md, Stages)" })),
@@ -1021,7 +1085,7 @@ export default function agentExtension(pi: ExtensionAPI) {
       note: Type.Optional(Type.String({ description: "one line: why" })),
     }),
     script: "plan_edit.py",
-    args: (p) => ["replan", "--change", JSON.stringify(p)],
+    args: (p) => ["resolve", "--change", JSON.stringify(p)],
   });
 
   scriptTool({

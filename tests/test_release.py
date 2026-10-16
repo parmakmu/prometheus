@@ -11,7 +11,7 @@ sys.path.insert(0, str(SCRIPTS))
 import release as release_py
 
 PLAN = """\
-version: 1
+format: 1
 revision: 1
 status: ready
 request: "count the lines"
@@ -27,7 +27,7 @@ params:
 outputs:
   - id: count_file
     kind: file
-    location: ${report}
+    path: ${report}
     format: txt
 agents:
   checked: test

@@ -7,9 +7,11 @@ import os
 import shutil
 import subprocess
 import sys
+import time
+from pathlib import Path
 
 import pytest
-from conftest import SKILL, stamp
+from conftest import SKILL, git_in, stamp
 from test_release import commit, make_agent
 
 from prometheus import frozen
@@ -20,7 +22,7 @@ pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 @pytest.fixture
 def released(tmp_path, run_py, monkeypatch):
     """The counter agent released as v1.0, and a cache of the test's own."""
-    monkeypatch.setenv("PROMETHEUS_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setenv("PROMETHEUS_RELEASES", str(tmp_path / "releases"))
     (tmp_path / "agents").mkdir()
     folder = make_agent(tmp_path / "agents", run_py)
     assert run_py([SKILL / "scripts" / "release.py", "tag", "--agent", folder]).data["version"] == "v1.0"
@@ -41,8 +43,13 @@ def test_a_release_is_picked_newest_first_by_major_or_exactly():
 def test_load_agent_unpacks_the_release_once_named_like_the_agent(released, tmp_path):
     agent = frozen.load_agent(f"{released}@v1")
     assert (agent.name, agent.version, agent.side_effects) == ("counter", "v1.0", ["save"])
-    assert agent.folder.name == "counter" and agent.folder.is_relative_to(tmp_path / "cache")
+    assert agent.folder == tmp_path / "releases" / "counter" / "v1.0"
     assert (agent.folder / "plan.yaml").is_file() and (agent.folder / ".git").is_dir()  # pi-subagents' writer checks need a repo
+    assert not (agent.folder / ".pi" / "extensions").exists()  # no agent commands there: a release isn't changed in place
+    assert (released / ".pi" / "extensions" / "agent" / "index.ts").is_file()  # the agent itself keeps them
+    told = json.loads((agent.folder / "RELEASE.json").read_text())
+    commit = git_in(released)("rev-parse", "v1.0^{commit}").stdout.strip()
+    assert (told["agent"], told["version"], told["commit"]) == ("counter", "v1.0", commit) and "/agent-improve" in told["note"]
     (released / "scripts" / "count.py").write_text("changed after the release\n")
     again = frozen.load_agent(str(released))
     assert again.folder == agent.folder and "changed" not in (again.folder / "scripts" / "count.py").read_text()
@@ -65,7 +72,7 @@ def fake_launch(agent, run_dir, wave):
     """pi running a compiled wave, without pi: each program stage's command runs as the batcher would (`uv run` as this
     Python), and the runner's events and pi-subagents' record are written as they would be. A stage fails when its
     program does; the wave stops there."""
-    spec = json.loads((run_dir / ".compiled" / f"{wave}.wave.json").read_text())
+    spec = frozen.cli.import_script("runs").read_wave_spec(run_dir, wave)
     status = run_dir / "pi-subagents" / wave
     status.mkdir(parents=True)
     events, children, failed = [{"event": "launched", "wave": wave, "status_dir": str(status)}], {}, []
@@ -157,7 +164,7 @@ def test_a_paused_run_can_be_canceled_and_a_failing_program_fails_the_run(releas
 
 
 JUDGE = """\
-version: 1
+format: 1
 revision: 1
 status: ready
 request: "describe the file"
@@ -170,7 +177,7 @@ params:
 inputs:
   - id: source_file
     kind: file
-    location: ${source}
+    path: ${source}
 agents:
   checked: test
   available: [worker, reviewer, {name: plan-critic, source: project}]
@@ -193,7 +200,7 @@ stages:
 
 
 def test_a_judgment_made_on_the_same_input_is_reused_by_the_next_call(tmp_path, run_py, monkeypatch, fake_pi):
-    monkeypatch.setenv("PROMETHEUS_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setenv("PROMETHEUS_RELEASES", str(tmp_path / "releases"))
     (tmp_path / "agents").mkdir()
     folder = make_agent(tmp_path / "agents", run_py, slug="describer")
     shutil.rmtree(folder / ".plan")  # the counter plan's planning record: this plan brings its own
@@ -206,8 +213,11 @@ def test_a_judgment_made_on_the_same_input_is_reused_by_the_next_call(tmp_path, 
     first = agent.run(params={"source": str(tmp_path / "in.txt")}, timeout=30)
     second = agent.run(params={"source": str(tmp_path / "in.txt")}, timeout=30)
     assert first.ok and second.ok
-    reused = json.loads((second.run_dir / ".compiled" / "all-result.json").read_text())["children"]["describe"]
-    assert reused["reused"] and "describe-review" not in json.loads((second.run_dir / ".compiled" / "all-result.json").read_text())["children"]
+    briefs = json.dumps(frozen.cli.import_script("runs").read_wave_spec(first.run_dir, "all"))
+    assert 'Agent \\"describer\\", stage \\"describe\\"' in briefs  # its name, from RELEASE.json: not its folder's, v1.0
+    children = json.loads((second.run_dir / ".compiled" / "all.json").read_text())["result"]["children"]
+    assert children["describe"]["reused"] and "describe-review" not in children
+    assert second.record["launches"][0]["launched"] is False and second.cost_usd == 0  # nothing left to launch: recorded only
     assert (second.run_dir / "work" / "notes.md").read_text() == f"judged by a model in {first.run_dir.name}\n"  # copied
     (tmp_path / "in.txt").write_text("changed\n")
     third = agent.run(params={"source": str(tmp_path / "in.txt")}, timeout=30)
@@ -276,10 +286,19 @@ def test_a_run_whose_driver_died_ends_as_an_error_and_its_events_end(released, f
     agent, run = paused_run(released, tmp_path)
     gone = subprocess.Popen(["true"])
     gone.wait()
-    run.write_state(state="running", driver=gone.pid)  # a server stopped mid-run
+    run.write_state(state="running", driver={"pid": gone.pid, "started": time.time()})  # a server stopped mid-run
     reopened = frozen.Run.reopen(agent, run.id)
     assert not reopened.running and reopened.wait().error == frozen.INTERRUPTED
     assert list(reopened.events())[-1]["event"] == "end"  # a stream of it ends instead of waiting forever
+
+
+def test_a_driver_pid_another_process_reused_counts_as_dead(released, fake_pi, tmp_path):
+    agent, run = paused_run(released, tmp_path)
+    # this process holds the pid now, but started after the driver recorded under it: not the driver
+    run.write_state(state="running", driver={"pid": os.getpid(), "started": time.time() - 3600 * 24 * 365})
+    assert frozen.Run.reopen(agent, run.id).wait().error == frozen.INTERRUPTED
+    run.write_state(state="running", error=None, driver=frozen.cli.import_script("utils").this_process())
+    assert frozen.Run.reopen(agent, run.id).state == "running"  # the driver itself: alive
 
 
 def test_a_second_answer_is_refused_and_a_cancel_during_the_compile_launches_nothing(released, fake_pi, tmp_path, monkeypatch):
@@ -305,3 +324,94 @@ def test_a_file_name_cannot_leave_or_be_its_folder(released):
     folder = agent.prepare_params(run_dir, {"source": {"..": b"a", "../x": b"b"}})["source"]
     assert sorted(p.name for p in frozen.Path(folder).iterdir()) == ["source-0", "x"]
     assert agent.prepare_params(run_dir, {"source": ("", b"c")})["source"] == str(run_dir / "inputs" / "source" / "source-0")
+
+
+def test_a_bundled_run_runs_again_on_a_branch_with_its_files_and_approvals(released, fake_pi, tmp_path, run_py):
+    # a release counts blank lines too; the fix, on a branch, is checked on the bundled run's own file before a release
+    agent = frozen.load_agent(str(released))
+    run = agent.start(params={"source": b"a\n\nb\n"}, approve=["save"], in_run={"report"})  # as serve calls it
+    assert run.wait(30).outputs["count_file"].read_text() == "3\n"
+    made = run_py([SKILL / "scripts" / "bundle.py", "make", "--run", run.dir, "--out", tmp_path, "--with-files"])
+    assert run.bundle(tmp_path / "api").name == made.data["bundle"].rsplit("/", 1)[-1]  # the same from Python
+    bare = run_py([SKILL / "scripts" / "bundle.py", "make", "--run", run.dir, "--out", tmp_path / "bare"])
+    git = git_in(released)
+    git("switch", "-q", "-c", "improve/2026-10-16-1")
+    (released / "scripts" / "count.py").write_text(
+        "import json, sys\njson.dump(len([x for x in open(sys.argv[1]).read().splitlines() if x]), open(sys.argv[2], 'w'))\n")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "count only lines with text")
+
+    build = frozen.load_agent(f"{released}@improve/2026-10-16-1")
+    assert build.version == "build" and build.side_effects == ["save"] and build.folder != agent.folder
+    values, approve, in_run, missing = frozen.read_bundle_call(Path(made.data["bundle"]), build)
+    assert (approve, in_run, missing) == (["save"], {"report"}, [])  # report named the old run's outputs: the new run's now
+    assert Path(values["source"]).read_text() == "a\n\nb\n"
+    again = build.start(params=values, approve=approve, in_run=in_run).wait(30)
+    assert again.ok and again.outputs["count_file"].read_text() == "2\n" and again.run_dir.parent.parent == build.folder
+    assert frozen.read_bundle_call(Path(bare.data["bundle"]), build)[3] == ["source"]  # no files: the caller's file is missing
+    with pytest.raises(frozen.PrometheusError, match="no release or commit 'nope'"):
+        frozen.load_agent(f"{released}@nope")
+    from typer.testing import CliRunner
+
+    from prometheus import cli
+    said = CliRunner().invoke(cli.app, ["run", f"{released}@improve/2026-10-16-1", "--bundle", bare.data["bundle"]])
+    assert said.exit_code != 0 and "has no files for source" in str(said.exception or said.output), said.output
+
+
+def test_the_runner_machine_lists_runs_shows_one_and_checks_a_release(released, fake_pi, tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from prometheus import cli
+    monkeypatch.setenv("PROMETHEUS_AGENTS", str(released.parent))
+    (tmp_path / "in.txt").write_text("a\n")
+    agent = frozen.load_agent(str(released))
+    done = agent.start(params={"source": str(tmp_path / "in.txt")}, approve=["save"])
+    done.wait(30)
+    failing = agent.start(params={"source": str(tmp_path / "missing.txt")}, approve=["save"])
+    failing.wait(30)
+
+    listed = cli.list_released_runs("counter")
+    assert [(r["run"], r["version"], r["state"]) for r in listed] == [(done.id, "v1.0", "complete"), (failing.id, "v1.0", "failed")]
+    assert "stage count failed" in listed[1]["error"]
+    table = CliRunner().invoke(cli.app, ["runs", "counter"], terminal_width=200)
+    assert table.exit_code == 0 and done.id in table.output and "failed" in table.output, table.output
+    one = CliRunner().invoke(cli.app, ["runs", "counter", failing.id], terminal_width=200)
+    assert one.exit_code == 0 and "stage count failed" in one.output and "wave all" in one.output, one.output
+    assert f"prometheus bundle counter {failing.id}" in one.output  # where to go from here
+    assert "running" not in [r["state"] for r in cli.list_released_runs("counter")]  # showing changed nothing
+
+    checked = CliRunner().invoke(cli.app, ["doctor", "counter"], terminal_width=200)
+    assert "counter v1.0" in checked.output and "model stages" in checked.output and "none: no model key needed" in checked.output
+    assert "git identity" not in checked.output  # a machine that only runs releases commits nothing
+    assert ("uv.lock installs here" in checked.output) or ("uv sync --locked --dry-run" in checked.output), checked.output
+
+
+def test_a_release_installed_frozen_runs_without_the_agents_repository(released, fake_pi, tmp_path, monkeypatch):
+    from prometheus import cli, sharing
+    monkeypatch.setenv("PROMETHEUS_AGENTS", str(tmp_path / "runner-agents"))  # a machine that only runs it: no repository
+    seen = []
+    assert pytest.raises(frozen.PrometheusError, sharing.install, f"{released}@v1", confirm=lambda info: seen.append(info) or False)
+    assert [f for f, _ in seen[0]["own_code"]] == ["scripts/count.py", "scripts/save.py"]  # its own code, for review
+    assert not (tmp_path / "releases" / "counter" / "v1.0").exists()  # declined: nothing kept
+    with pytest.raises(frozen.PrometheusError, match="no agent 'counter'.*prometheus install"):
+        frozen.load_agent("counter@v1")
+
+    folder = sharing.install(f"{released}@v1")
+    assert folder == tmp_path / "releases" / "counter" / "v1.0"
+    record = json.loads((folder / "RELEASE.json").read_text())
+    assert (record["version"], record["source"], record["interface"]["side_effects"]) == ("v1.0", str(released), ["save"])
+    assert not (folder / ".pi" / "extensions").exists() and not (tmp_path / "runner-agents" / "counter").exists()
+    assert git_in(folder)("log").returncode != 0  # no history: an empty repository, for pi-subagents' checks
+    assert sharing.install(f"{released}@v1.0") == folder  # here already
+
+    (tmp_path / "in.txt").write_text("a\nb\n")
+    agent = frozen.load_agent("counter@v1")
+    assert (agent.version, agent.folder, agent.side_effects) == ("v1.0", folder, ["save"])
+    assert agent.run(params={"source": str(tmp_path / "in.txt")}, approve=["save"], timeout=30).ok
+    assert [r["version"] for r in cli.list_released_runs("counter")] == ["v1.0"]
+
+    git = git_in(released)  # someone moves the tag: the installed v1.0 stays what it was
+    (released / "scripts" / "count.py").write_text("print('moved')\n")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "moved")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "tag", "-f", "-a", "v1.0", "-m", git("tag", "-l", "--format=%(contents)", "v1.0").stdout)
+    with pytest.raises(frozen.PrometheusError, match="a release never changes"):
+        sharing.install(f"{released}@v1.0")

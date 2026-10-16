@@ -6,7 +6,7 @@ Usage: export_agent.py AGENT DEST_FOLDER [--keep-state] [--name SLUG]
 Creates DEST_FOLDER/<slug>/ (or DEST_FOLDER/<SLUG>).
 
 Fresh export (default): a clean start. Copies the plan (as
-refined by any merged replan), agents, gates, prompts, settings and skill; leaves
+refined by any merged resolve), agents, gates, prompts, settings and skill; leaves
 out the runs (runs/), the git history (.git; the copy starts its own repo
 with one commit), pi-subagents runtime state (.pi/subagents/) and the conversations
 (.pi/sessions/).
@@ -63,8 +63,6 @@ def main(
         rel = str(Path(dirpath).relative_to(src))
         if rel == ".":
             skip |= {".venv", agent_params.ENV_FILE} & set(names)  # per machine; `uv sync` recreates .venv
-        if rel == ".pi":
-            skip |= {"params.yaml"} & set(names)  # values before .env
         if rel == ".pi":
             skip |= {"npm"} & set(names)      # Pi's project package install; reinstalled on the new machine
         return skip

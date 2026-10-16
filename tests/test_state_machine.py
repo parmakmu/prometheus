@@ -85,7 +85,7 @@ def invoke(wf, move):
             "agent_new_run": (run_log.app, ["new"]),
             "agent_compile": (COMPILE, []),
             "agent_record_decision": (run_log.app, ["decision", "--stage", "count", "--answer", "true"]),
-            "agent_replan": (plan_edit.app, ["replan", "--change", '{"note": "walk"}']),
+            "agent_resolve": (plan_edit.app, ["resolve", "--change", '{"note": "walk"}']),
             "agent_stop_run": (run_log.app, ["stop"]),
             "agent_merge:merge": (agent_git.app, ["merge", "--action", "merge"]),
             "agent_merge:keep": (agent_git.app, ["merge", "--action", "keep"]),
@@ -104,7 +104,7 @@ def invoke(wf, move):
 
 
 MOVES = ["agent_new_run", "agent_compile", "agent_log_start", "agent_log_finish", "agent_record_decision",
-         "agent_replan", "agent_record_critique", "agent_stop_run", "agent_merge:merge", "agent_merge:keep",
+         "agent_resolve", "agent_record_critique", "agent_stop_run", "agent_merge:merge", "agent_merge:keep",
          "agent_merge:discard", "/agent-revise", "/agent-improve", "edit plan.yaml"]
 
 

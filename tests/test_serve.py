@@ -17,7 +17,7 @@ from prometheus.cli import PrometheusError
 @pytest.fixture
 def agent(tmp_path, run_py, monkeypatch, fake_pi):  # noqa: F811
     """The counter agent released and loaded; its runs count the uploaded file's lines."""
-    monkeypatch.setenv("PROMETHEUS_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setenv("PROMETHEUS_RELEASES", str(tmp_path / "releases"))
     (tmp_path / "agents").mkdir()
     folder = make_agent(tmp_path / "agents", run_py)
     assert run_py([SKILL / "scripts" / "release.py", "tag", "--agent", folder]).data["ok"]
@@ -56,6 +56,21 @@ def test_a_run_from_an_upload_ends_with_its_output_to_download(agent):
     assert shown["outputs"] == {"count_file": {"url": f"/runs/{run_id}/outputs/count_file", "ready": True}}
     assert c.get(shown["outputs"]["count_file"]["url"]).content == b"3\n"
     assert (agent.folder / "runs" / run_id / "inputs" / "source" / "lines.txt").read_bytes() == b"a\nb\nc\n"
+
+
+def test_an_ended_run_is_bundled_with_the_callers_files_only_when_asked(agent):
+    import io
+    import tarfile
+    c = client(agent)
+    run_id = start(c).json()["id"]
+    for with_files, has_input in ((False, False), (True, True)):
+        r = c.get(f"/runs/{run_id}/bundle", params={"with_files": with_files})
+        assert r.status_code == 200 and r.headers["content-disposition"].endswith(f'counter-v1.0-{run_id}.tgz"'), r.text
+        with tarfile.open(fileobj=io.BytesIO(r.content)) as tar:
+            names = tar.getnames()
+        assert "bundle.json" in names and "run/state.json" in names
+        assert ("run/inputs/source/lines.txt" in names) is has_input, names
+    assert c.get("/runs/nope/bundle").status_code == 404
 
 
 def test_a_run_waits_for_its_side_effect_to_be_approved(agent):

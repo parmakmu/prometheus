@@ -19,7 +19,7 @@ def make_sessions(tmp_path):
     """An agent and its conversations, in its own .pi/sessions."""
     agent_dir = tmp_path / "wf"
     agent_dir.mkdir()
-    (agent_dir / "plan.yaml").write_text("version: 1\n")
+    (agent_dir / "plan.yaml").write_text("format: 1\n")
     folder = agent_dir / ".pi" / "sessions"
     folder.mkdir(parents=True)
     rows = [line(type="session", timestamp="2026-01-01T10:00:00Z"),

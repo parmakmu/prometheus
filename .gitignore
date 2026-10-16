@@ -4,7 +4,7 @@ __pycache__/
 build/
 scratch/
 # agents are per-user; keep the folder (the extension looks for it), not its contents
-agents/*
+agents/
 !agents/.gitkeep
 .venv/
 .DS_Store

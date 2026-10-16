@@ -6,6 +6,7 @@ name = "prometheus"
 version = "0.1.0"
 requires-python = ">=3.14"
 dependencies = ["typer>=0.12", "rich>=13", "pydantic>=2.7", "pydantic-settings>=2.4", "python-dotenv>=1.0", "ruamel.yaml>=0.18",
+                "packaging>=24", "psutil>=6",
                 "fastapi>=0.115", "uvicorn>=0.30", "python-multipart>=0.0.9"]  # the last three: `prometheus serve`
 
 [project.scripts]

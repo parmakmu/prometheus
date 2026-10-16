@@ -31,12 +31,12 @@ prometheus is not set up: run `prometheus init` (or set PROMETHEUS_AGENTS)
 ### No agent with that name
 
 ```text
-no agent '<slug>' in <folder>: `prometheus` starts the planner, /agent-list lists the agents
+no agent '<slug>' in <folder>: `prometheus list` lists the agents
 ```
 
 **Cause.** `prometheus <word>` opens the agent `<word>` in the agents folder, and there is none: a typo, another agents folder (check `PROMETHEUS_AGENTS`), or a command the version you have doesn't know yet.
 
-**Fix.** Run `prometheus` and `/agent-list` for the names, or `prometheus --help` for the commands.
+**Fix.** Run `prometheus list` for the names, or `prometheus --help` for the commands.
 
 ### A slug that is a command
 
@@ -52,9 +52,12 @@ no agent '<slug>' in <folder>: `prometheus` starts the planner, /agent-list list
 
 ```text
 pi is not installed: see `prometheus doctor`
+pi-subagents is not installed (<file> is missing): pi install npm:pi-subagents
 ```
 
-**Fix.** Install Pi (`npm install -g @earendil-works/pi-coding-agent`); `prometheus doctor` lists anything else missing.
+**Cause.** `prometheus` starts Pi, and a release's run (`prometheus run`, `load_agent`, `prometheus serve`) also loads pi-subagents from Pi's folder.
+
+**Fix.** Install Pi (`npm install -g @earendil-works/pi-coding-agent`) and pi-subagents (`pi install npm:pi-subagents`); `prometheus doctor` lists anything else missing.
 
 ### Python package missing
 
@@ -100,9 +103,9 @@ The model says it has no `subagent` tool.
 Background children require the host npm package (@earendil-works/pi-coding-agent) with its dependencies; … does not provide …
 ```
 
-**Cause.** The installed Pi and pi-subagents don't match. pi-subagents starts each background child with packages it expects Pi to provide, so when Pi stops providing one, every wave fails on its first child. With pi-subagents 0.74.0 this happened on Pi 1.0, which dropped `@earendil-works/pi-agent-core/node`; pi-subagents 0.75.0 works with Pi 1.0.1.
+**Cause.** The installed Pi and pi-subagents don't match. pi-subagents starts each background child with packages it expects Pi to provide, so when Pi stops providing one, every wave fails on its first child.
 
-**Fix.** Update pi-subagents (`pi update`, or `pi install npm:pi-subagents`) to a release that supports your Pi (0.75.0 or later for Pi 1.0), or install a Pi it supports. Then run `/agent-run`, and the active run relaunches the failed wave.
+**Fix.** Update both (`npm install -g @earendil-works/pi-coding-agent`, then `pi update`), and check them with `prometheus doctor`. Then run `/agent-run`, and the active run relaunches the failed wave.
 
 ## Starting a run
 
@@ -132,9 +135,9 @@ the plan is <status>, not ready: finish it first
 the critic's result for this plan was not recorded with agent_record_critique, which checks the critic ran and ties its result to the plan
 ```
 
-**Cause.** The plan says `status: ready`, but its critique wasn't recorded by `agent_record_critique`, which stamps the plan with a fingerprint of itself (`critique.plan_digest`). A model wrote the critique or the status by hand. Before 2026-10-05, prometheus planned new agents this way.
+**Cause.** The plan says `status: ready`, but its critique wasn't recorded by `agent_record_critique`, which stamps the plan with a fingerprint of itself (`critique.plan_digest`). Someone, a person or a model, wrote the critique or the status by hand, so nothing shows the critic really reviewed this plan.
 
-**Fix.** Run `/agent-run` in the agent: it runs the critic and records it. An agent planned before 2026-10-05 was stamped once when this rule came in.
+**Fix.** Run `/agent-run` in the agent. It runs the critic and records its result.
 
 ### A run is already active
 
@@ -202,7 +205,7 @@ a wave is running (stages <…>); check its run before launching again
 a wave of run <id> is running: …
 ```
 
-You see this after asking for a replan, a critique, a decision or a stop while a wave runs.
+You see this after asking the run to change its plan, or for a critique, a decision or a stop, while a wave runs.
 
 **Cause.** These steps wait until the running wave is recorded as finished, so the plan and the answers for the next wave don't change underneath it.
 
@@ -222,9 +225,9 @@ run <id> is still <state> in pi-subagents: wait for its completion notice
 
 The agent shows you a wave's results and asks whether to go on.
 
-**Cause.** The plan puts a review after that wave (`pause_after`), and until you answer, compiling the next wave returns `review_needed`.
+**Cause.** The plan puts a review after that wave (`pauses_after`), and until you answer, compiling the next wave returns `review_needed`.
 
-**Fix.** Say go on, ask for a change (a replan), or stop the run.
+**Fix.** Say go on, ask for a change (the run then resolves its pending stages anew), or stop the run.
 
 ### A wave failed
 
@@ -232,7 +235,7 @@ The agent reports a failed wave and offers three options.
 
 **Cause.** A gate rejected an output, a review found a blocking problem, or the wave failed before its script returned, in which case the agent reports the `failure_kind`, such as `timeout` or `validation`.
 
-**Fix.** Choose one of the options: relaunch the wave, which skips children that completed and haven't changed; change the plan with a replan; or stop the run.
+**Fix.** Choose one of the options: relaunch the wave, which skips children that completed and haven't changed; change the plan, which the run does by resolving its pending stages anew; or stop the run.
 
 ### The run reached its budget
 
@@ -254,9 +257,9 @@ A wave fails with "no result within 600 s (limits.command_timeout_s)".
 
 `/agent-auto` says pi-subagents did not answer.
 
-**Cause.** The installed pi-subagents has no in-process RPC, or is not loaded in this session. In the web app before 2026-10-05, no package loaded in a sandbox at all (Pi couldn't lock `trust.json` in a read-only folder).
+**Cause.** pi-subagents is not installed, or not loaded in this session.
 
-**Fix.** Update pi-subagents (0.74 or later) and restart Pi, or use `/agent-run`. In the web app, restart the router.
+**Fix.** Install or update it (`pi install npm:pi-subagents`; `prometheus doctor` checks the version) and restart Pi, or use `/agent-run`. In the web app, restart the router.
 
 ### The subagent tool returned an error
 
@@ -265,6 +268,18 @@ The agent stops and reports an error from the `subagent` tool, with a run id.
 **Cause.** An infrastructure problem: the wave failed to launch, an extension failed to load, or a child failed to start. The agent is designed to report the exact error and stop, not to work around it by doing the stage itself or writing its own scripts, unless you tell it to.
 
 **Fix.** Fix the cause, then run `/agent-run` again.
+
+### The run's branch isn't checked out
+
+```text
+run <id>: <branch> is checked out with uncommitted changes (<files>), but the run works on run/<id>. Commit, stash or undo them there, or switch back with `git switch run/<id>` …
+```
+
+**Cause.** A run reads its plan, gates and programs from whatever is checked out in the agent's folder, and commits on its own branch, `run/<id>` (or on `main`, until its first commit creates that branch). Someone checked out another branch by hand during the run and changed files there. With nothing uncommitted, the run would simply have switched back. With changes, it stops instead, so your edits are neither moved into the run nor lost.
+
+**Fix.** Decide where your changes belong. Commit them on that branch, stash them (`git stash`), or undo them; or switch back with `git switch run/<id>` to take them into the run, where you'll review them with it. Then tell the agent to go on.
+
+`/agent-status` reports the same thing before the run gets there, and so does the agent's next tool result (`next.off_branch`), so the agent can tell you first.
 
 ### Staged index changed
 
@@ -282,9 +297,9 @@ Staged index changed after launch
 
 The agent was blocked from editing `plan.yaml`, or from running a shell command that names it, even a read-only one such as `git diff -- plan.yaml`.
 
-**Cause.** Once an agent has a run, its plan changes only through the replan tools during a run or through a change between runs, so that every edit is checked and reviewed. The guard can't tell a shell command that reads the plan from one that writes it, so outside a `/agent-revise` branch it blocks any that names `plan.yaml`.
+**Cause.** Once an agent has a run, its plan changes only through `agent_resolve` during a run or through a change between runs, so that every edit is checked and reviewed. The guard can't tell a shell command that reads the plan from one that writes it, so outside a `/agent-revise` branch it blocks any that names `plan.yaml`.
 
-**Fix.** To read the plan, the agent uses its read tool, or `git diff main...<branch>` without naming the file; it usually recovers by itself. To change the plan during a run, ask the agent and it replans with its tools. Between runs, use `/agent-revise`.
+**Fix.** To read the plan, the agent uses its read tool, or `git diff main...<branch>` without naming the file; it usually recovers by itself. To change the plan during a run, ask the agent and it resolves with its tools. Between runs, use `/agent-revise`.
 
 ### A plan edited by hand doesn't check
 
@@ -297,13 +312,13 @@ stage '<id>': kind: Value error, kind is a mapping: {value: <kind>, reason: <why
 
 **Fix.** Use the stage fields in `references/plan-schema.md` (in the agent's `.pi/skills/agent/`): `id`, `title`, `kind: {value, reason}`, `after`, `reads`, `writes`, `instructions`, `done_when`, `gate`, `review`, `program: {file, args}`, `map: {over, glob, batch}` and the others listed there. Then `prometheus check <slug>`; an editor with a YAML language server marks these as you type ([How to edit a plan by hand](how-to.md#how-to-edit-a-plan-by-hand)).
 
-### Locked in a replan
+### Locked while resolving
 
 ```text
-a replan cannot change [<fields>] … locked
+resolving cannot change [<fields>] … locked
 ```
 
-**Cause.** A replan during a run can't change the request, goal, `done_when`, params, inputs, outputs, agents, stages that already ran, or a side effect's approval.
+**Cause.** Resolving stages during a run can't change the request, goal, `done_when`, params, inputs, outputs, agents, stages that already ran, or a side effect's approval.
 
 **Fix.** Make those changes with `/agent-revise` once the run has finished or been stopped.
 
@@ -315,7 +330,7 @@ main is checked out and no run is active: gates, scripts, agents and packages ch
 
 **Cause.** After the first run, `main` changes only by a reviewed merge. The message usually means the checked-out branch was switched, from a terminal or an editor, while a change was in progress.
 
-**Fix.** Switch back to the branch you were working on (`git switch revise/…`) and tell the agent to continue. To start something new, use `/agent-revise`.
+**Fix.** Switch back to the branch you were working on (`git switch revise/…`) and tell the agent to continue. To start something new, use `/agent-revise`. During a run, see [The run's branch isn't checked out](#the-runs-branch-isnt-checked-out).
 
 ### Critique on `main`
 
@@ -335,7 +350,7 @@ run <id> is active: tell the run what to change … or stop it first
 
 **Cause.** `/agent-revise` and `/agent-improve` work only while no run is active.
 
-**Fix.** Ask the run itself for the change: it replans on the run's branch, which you review at the end. Or stop the run first.
+**Fix.** Ask the run itself for the change: it resolves on the run's branch, which you review at the end. Or stop the run first.
 
 ### Another change is open
 
@@ -387,16 +402,6 @@ main has moved and <branch> conflicts with it
 
 **Fix.** Resolve the conflict by hand, or discard the branch.
 
-### Branch exists from an earlier run
-
-```text
-branch run/<id> already exists from an earlier run with this id
-```
-
-**Cause.** `runs/` isn't in git, so deleting a run's folder frees its id but leaves the branch that run created. New runs skip ids that still have a branch, so only a run started by an older version of prometheus can collide.
-
-**Fix.** Stop the run, then either review the old branch (`git switch run/<id>`, then `/agent-run`) or delete it (`git branch -D run/<id>`).
-
 ### Merged with git by hand
 
 You merged a branch with git yourself instead of choosing merge in the review.
@@ -437,13 +442,17 @@ destination is inside the agent
 
 **Fix.** Pick another destination, or pass a different name.
 
+## Releases and released runs
+
+These come from `prometheus release`, `prometheus run`, `prometheus serve` and `load_agent`: a released agent, run by code with nobody at the keyboard.
+
 ### A release is refused
 
 ```text
 can't release: <reasons>
 ```
 
-**Cause.** A release runs with no model to decide anything, so `prometheus release` refuses a plan that would need one: a provisional stage (its run would replan), a stage program not written yet (a released run never writes code), uncommitted changes, an active run or another branch checked out, or a plan that isn't ready. (Decisions and side effects are fine: a released run asks its caller there.)
+**Cause.** A release runs with no model to decide anything, so `prometheus release` refuses a plan that would need one: a provisional stage (its run would resolve), a stage program not written yet (a released run never writes code), uncommitted changes, an active run or another branch checked out, or a plan that isn't ready. (Decisions and side effects are fine: a released run asks its caller there.)
 
 **Fix.** Each reason says what to do: run the agent until its plan is settled and its programs are written and merged, or commit and go back to `main`. Then run `prometheus release <slug>` again.
 
@@ -456,6 +465,27 @@ this release can break callers (<changes>): release it with --breaking, so the m
 **Cause.** Since the last release a param was removed, retyped or made required, an output changed or went away, or a side effect was added that callers must now approve.
 
 **Fix.** If that's intended, run `prometheus release <slug> --breaking`: the version becomes `v<major+1>.0`, and callers pinned to the old major keep the old release. Otherwise undo the change with `/agent-revise`.
+
+### Already released
+
+```text
+this commit is already released as <version>
+```
+
+**Cause.** `main` hasn't changed since the last release.
+
+**Fix.** Nothing to do: that version is the release. Change the agent and merge the change to release again.
+
+### No release
+
+```text
+the agent has no release yet: `prometheus release <slug>` makes one
+no release <version>; releases: <versions>
+```
+
+**Cause.** A released agent was asked for by name, but it has no release yet, or none matching the version asked for.
+
+**Fix.** Release the agent with `prometheus release <slug>`, or ask for one of the versions listed (`@v1` is the newest 1.x).
 
 ### A release can't run
 
@@ -474,6 +504,118 @@ The run's state is `input_required` (A2A: `TASK_STATE_INPUT_REQUIRED`), and it l
 **Cause.** It reached a side effect the call didn't approve, or a decision. Nothing of that stage has run.
 
 **Fix.** Answer it: in a terminal `prometheus run` asks; in Python `run.answer(approve=[...], decisions={...})`; over HTTP `POST /runs/<id>/answer`; over A2A a message with the task's `taskId` and a data part `{"approve": [...], "decisions": {...}}`. Cancel the run to decline. To never stop there, approve the side effect up front.
+
+### Not waiting for an answer
+
+```text
+run <id> is <state>, not waiting for an answer
+```
+
+**Cause.** An answer was sent to a run that isn't stopped at a question: it is still going, or it has ended.
+
+**Fix.** Nothing to answer: the run is going, or has ended. Read its state first.
+
+### A run stopped with its server
+
+```text
+the process running it stopped before it ended: start it again
+```
+
+**Cause.** The process driving a released run (`prometheus serve`, `prometheus run` or your code) stopped mid-run, for example a server restart. Its waves don't resume on their own.
+
+**Fix.** Start the run again. Model stages that finished on the same inputs are reused, so little is paid twice.
+
+### A released run failed
+
+```text
+stage <key> failed: see <run folder> and pi-subagents' record <folder>
+```
+
+**Cause.** A stage's program or gate failed, and its `fix` child (a model, which can repair a program but not change the release) couldn't make it pass. The run stopped there: stages after it didn't run.
+
+**Fix.** If the input was the problem, call again with a corrected one. Otherwise bundle the run where it failed, fix the agent where it is developed with `/agent-improve <bundle>`, check the fix on the same call and release again: [How to fix a released agent after a failed run](how-to.md#how-to-fix-a-released-agent-after-a-failed-run).
+
+### A run can't be bundled
+
+```text
+no run '<run>' of a release of <slug> in <releases folder>
+run <run> is still running: bundle it once it ended (or cancel it)
+a wave of run <run> is running: bundle it once the wave ended
+<agent> has no run to bundle yet
+<folder> is not a run (no run.yaml, nor a release's state.json and call.json)
+```
+
+**Cause.** `prometheus bundle` looks for a release's run in the releases folder of the machine it runs on, and `/agent-bundle` for one of the agent's own runs in its `runs/`. Neither bundles a run while it's still working: a release's run until it ended, an agent's run while a wave runs.
+
+**Fix.** Bundle on the machine where the run ran: a release's run with `prometheus bundle` and its id as `prometheus run` or `serve` gave it (with the same `PROMETHEUS_RELEASES` if that was set), an agent's own run with `/agent-bundle` in the agent. Wait for the run or the wave to end, or cancel it first. Behind `serve`, `GET /runs/<id>/bundle` answers 409 for the same reasons.
+
+### A bundle isn't imported
+
+```text
+cannot read <bundle>: <reason>
+<bundle> is a run of <agent>, not <this agent>
+<bundle> is a bundle of format <n>; this agent reads format <m>: refresh it
+```
+
+**Cause.** `/agent-improve` (`bundle.py add`) imports only a bundle of this agent that it can read. A file that isn't a bundle, or one that names a path outside its folder, can't be read.
+
+**Fix.** Run `/agent-improve` in the agent the bundle came from. For a newer format, refresh the agent (`prometheus refresh <slug>`). For anything else, make the bundle again with `prometheus bundle`.
+
+The import also warns when the commit that ran isn't in the agent's repository, or isn't on `main`: the agent here isn't the code that ran. Pull it first (`prometheus pull <slug>`) if it was installed from elsewhere, so the fix starts from what failed. A copy made with `/agent-export` has no history, so its commits are never found here: compare its revision instead.
+
+### A bundle has no files
+
+```text
+<bundle> has no files for <params> (the caller sent them): bundle the run with --with-files, or give them with --param <param>=<path>
+```
+
+**Cause.** `prometheus run --bundle` reruns a bundled call, but that call's files came from its caller, and the bundle was made without them.
+
+**Fix.** Make the bundle again with `--with-files` where the run is (or `?with_files=true` from `serve`), or pass each file yourself with `--param <name>=<path>`.
+
+### No agent or release here
+
+```text
+no agent '<slug>': not in <agents folder>, and no release of it installed in <releases folder> (`prometheus install <source>@v1` installs one)
+```
+
+**Cause.** `load_agent`, `prometheus run`, `serve` and `doctor` look for the agent's repository in the agents folder, then for its releases installed on this machine, and found neither.
+
+**Fix.** On a machine that only runs the agent, install its release: `prometheus install <git url>@v1`. Where it's developed, check the slug with `prometheus list`, or set the agents folder (`PROMETHEUS_AGENTS`).
+
+### A release's tag moved
+
+```text
+<slug> <version> here is commit <a>, but its tag now names <b>: a release never changes; release the change as a new version
+```
+
+**Cause.** The release was already unpacked here from one commit, and its tag was since moved to another (deleted and made again). Unpacking over it would silently change what that version does, and its runs.
+
+**Fix.** Release the change as a new version (`prometheus release <slug>`), and move the tag back to where it was. To really drop the old copy, delete its folder under the releases folder; its runs go with it.
+
+### No release or commit
+
+```text
+<agent> has no release or commit '<ref>': a release is v<major>[.<minor>]; a branch, tag or commit runs as a build
+```
+
+**Cause.** After `@`, `prometheus run` and `load_agent` take a release (`v1`, `v1.2`) or any branch, tag or commit of the agent's repository, and found neither.
+
+**Fix.** Check the name with `git branch` or `git log` in the agent's folder. A build runs only what is committed, so commit the change on its branch first.
+
+### Serving needs a token
+
+```text
+serving on <host> needs a token (--token or PROMETHEUS_SERVE_TOKEN): anyone who reaches it could run the agent
+```
+
+**Cause.** `prometheus serve` listens on an address other machines can reach, and without a token anyone who reaches it could run the agent with its secrets.
+
+**Fix.** Pass `--token` (or set `PROMETHEUS_SERVE_TOKEN`) with a long random value, and give it to the callers; or serve on `127.0.0.1` only, for callers on the same machine.
+
+## Calls between agents
+
+These come from a stage with `pattern: a2a`, which calls another agent over A2A. The batcher runs it, with no model, so nothing in the wave can answer a question the other agent asks.
 
 ### A called agent stopped to ask
 
@@ -502,44 +644,13 @@ the agent at <url> ended task <id> as failed: <its message>
 <method> <url>: HTTP <code>: <message>
 ```
 
+**Cause.** The called agent refused the call, or its run failed.
+
 **Fix.** Read the called agent's message: a missing param (add it to `a2a.params` or `a2a.files`), a wrong or missing token (HTTP 401: check the secret param's variable), an address that doesn't answer, or a run that failed on its side (ask its owner, with the task id).
 
-### Not waiting for an answer
+## Sharing agents
 
-```text
-run <id> is <state>, not waiting for an answer
-```
-
-**Fix.** Nothing to answer: the run is going, or has ended. Read its state first.
-
-### No release
-
-```text
-the agent has no release yet: `prometheus release <slug>` makes one
-no release <version>; releases: <versions>
-```
-
-**Fix.** Release the agent with `prometheus release <slug>`, or ask for one of the versions listed (`@v1` is the newest 1.x).
-
-### A run stopped with its server
-
-```text
-the process running it stopped before it ended: start it again
-```
-
-**Cause.** The process driving a released run (`prometheus serve`, `prometheus run` or your code) stopped mid-run, for example a server restart. Its waves don't resume on their own.
-
-**Fix.** Start the run again. Model stages that finished on the same inputs are reused, so little is paid twice.
-
-### A released run failed
-
-```text
-stage <key> failed: see <run folder> and pi-subagents' record <folder>
-```
-
-**Cause.** A stage's program or gate failed, and its `fix` child (a model, which can repair a program but not change the release) couldn't make it pass. The run stopped there: stages after it didn't run.
-
-**Fix.** Look at the run folder's `work/` and pi-subagents' record for the error. If the input was the problem, call again with a corrected one. If the program was, run the agent interactively on that input (`prometheus <slug>`, `/agent-run`), review and merge the fix, and release again.
+These come from `prometheus share`, `install`, `pull` and `propose`, which share agents through plain git.
 
 ### Sharing refused: it may contain secrets
 
@@ -561,7 +672,21 @@ cannot clone <url>: <git's message>
 '<slug>' can't name an agent: pass another with --as
 ```
 
+**Cause.** The install would overwrite an agent you already have, the source isn't an agent, git couldn't clone it, or its name is one of the `prometheus` command's own words.
+
 **Fix.** As the message says: pull to update an agent you already have, `--as` for a second copy or a name that is taken by a command, and check the URL (and your access to it) when the clone fails.
+
+### Pull or share refused: main isn't clean
+
+```text
+<slug> has <branch> checked out: <pull or share> works on main (merge, keep or discard it first)
+<slug> has uncommitted changes: <pull or share> needs them committed or discarded
+<slug> has an active run (<id>): <pull or share> after it ends
+```
+
+**Cause.** `pull` moves `main` and `share` pushes it, so both need `main` checked out, with nothing uncommitted and no run going.
+
+**Fix.** In the agent, finish the run, then merge, keep or discard the branch it shows you. Commit or discard any change you made by hand. Then run the command again.
 
 ### Pull refused: local commits
 
@@ -577,27 +702,14 @@ cannot clone <url>: <git's message>
 
 ```text
 <slug> has <branch> checked out: propose a change branch (/agent-revise or /agent-improve)
+<slug> has uncommitted changes: finish the change first
 the change isn't ready to propose: <why>
 <slug> has no upstream (origin): it was not installed or shared
 ```
 
+**Cause.** A proposal is a finished change branch pushed to the agent's upstream, so it needs a change branch checked out, ready to merge, and an upstream to push to.
+
 **Fix.** Make the change with `/agent-revise` or `/agent-improve` and finish it (the critic recorded, when the plan changed) before proposing it; an agent you created yourself needs `prometheus share` first.
-
-### Serving needs a token
-
-```text
-serving on <host> needs a token (--token or PROMETHEUS_SERVE_TOKEN): anyone who reaches it could run the agent
-```
-
-**Fix.** Pass `--token` (or set `PROMETHEUS_SERVE_TOKEN`) with a long random value, and give it to the callers; or serve on `127.0.0.1` only, for callers on the same machine.
-
-### Already released
-
-```text
-this commit is already released as <version>
-```
-
-**Fix.** Nothing to do: that version is the release. Change the agent and merge the change to release again.
 
 ## Web app
 
@@ -634,6 +746,7 @@ With `SANDBOX=podman`, a stage fails with "Tunnel connection failed: 403 Forbidd
 `POST /a/<agent>/api/runs` answers 400 or 409, or a key gets 403.
 
 **Cause.** The call is checked against what the agent takes before it queues:
+
 - 409 "the agent's plan isn't ready to run": its plan is a draft or changed since the critic.
 - 400 "params the agent doesn't take": a name its plan doesn't declare, or a secret (secrets are set on the agent, in its `.env`, never sent).
 - 400 "approve": a stage that doesn't ask for approval.
@@ -670,9 +783,9 @@ You may see these messages go by. Each is a guard doing its job, and the agent k
 
 `agent_check` reports "secret '…' reaches only what the batcher runs".
 
-**Cause.** A secret is referenced somewhere a model would see it: a model stage's gate, an input's location, an intent. Models never get secrets.
+**Cause.** A secret is referenced somewhere a model would see it: a model stage's gate, an input's path, an intent. Models never get secrets.
 
-**Fix.** The agent makes that stage a program (`program: {file, args}`), which gets the secret as an argument, or moves the call to a connector.
+**What the agent does.** It makes that stage a program (`program: {file, args}`), which gets the secret as an argument, or moves the call to a connector.
 
 ### A wave recorded twice
 
@@ -682,7 +795,7 @@ wave <wave> of run <id> is already recorded (done; the run is done): nothing to 
 
 **Cause.** A wave's completion notice reached the model after the wave was recorded, usually by `/agent-auto`, which records waves itself.
 
-**Fix.** None: the run is recorded. The agent answers the notice with nothing to do.
+**What the agent does.** Nothing: the run is already recorded, so it answers the notice and moves on.
 
 ### Plan changed after the critique
 
@@ -718,7 +831,7 @@ wave <w> was already launched as pi-subagents run <id> … and not recorded
 <why the plan is not ready>. No wave was compiled from this plan, so none can have launched
 ```
 
-**Cause.** The agent tried to record a launch while the plan wasn't ready, typically after a replan the critic hasn't passed yet. Compiling refuses a plan that isn't ready, so no wave can have launched from it.
+**Cause.** The agent tried to record a launch while the plan wasn't ready, typically after resolving stages the critic hasn't passed yet. Compiling refuses a plan that isn't ready, so no wave can have launched from it.
 
 **What the agent does.** The agent records the critic's result first, then compiles and launches the wave.
 
@@ -742,13 +855,13 @@ cannot read pi-subagents' record of run <id>
 
 **What the agent does.** The agent records the wave from the completion notice, passing its status and result.
 
-### Replan without a run
+### Resolve without a run
 
 ```text
-no run is active: the replan tools work only during a run
+no run is active: agent_resolve works only during a run
 ```
 
-**Cause.** The agent tried to replan outside a run.
+**Cause.** The agent tried to resolve outside a run.
 
 **What the agent does.** Before the first run, or on a change branch, the agent edits `plan.yaml` directly; after a run has finished, use `/agent-revise`.
 

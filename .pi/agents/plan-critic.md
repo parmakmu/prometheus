@@ -61,7 +61,7 @@ Check, in this order:
    assumption covers (an assumption with `confirm: true` covers its gap).
    Also questions that do not meet that bar.
 
-When the task says the plan was replanned, focus on the stages it names and
+When the task says the plan was resolved, focus on the stages it names and
 on whether the discovery results support them.
 
 You may take cheap read-only looks at inputs the plan names (list a folder,

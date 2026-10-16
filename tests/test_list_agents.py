@@ -37,7 +37,7 @@ def test_a_run_waits_for_what_its_last_finished_wave_ended_with():
     done = lambda ends: {"launches": [{"status": "done", "ends_with": ends}]}
     assert list_agents.waiting_for(done("approval"), "w2") == "approval"
     assert list_agents.waiting_for(done("review"), "w2") == "review"
-    assert list_agents.waiting_for(done("replan"), "w2") == "replan"
+    assert list_agents.waiting_for(done("resolve"), "w2") == "resolve"
     assert list_agents.waiting_for(done("none"), "w2") is None
     assert list_agents.waiting_for(done("review"), None) is None  # no next wave: the run is over
     assert list_agents.waiting_for({"launches": [{"status": "running", "ends_with": "review"}]}, "w2") is None

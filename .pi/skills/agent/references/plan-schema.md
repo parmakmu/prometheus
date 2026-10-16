@@ -1,4 +1,4 @@
-# Plan schema (version 1)
+# Plan schema (format 1)
 
 `<agent>/plan.yaml`: what the agent does, for people to read. How it was
 planned lives beside it in `<agent>/.plan/`, one file per section, each
@@ -9,7 +9,7 @@ enforces every **rule**; *warnings* do not fail it. The plan is reusable
 and holds no run state: each execution is a run, `runs/<id>/`.
 
 The scripts write plan.yaml in sections, each under a `# ── …` banner:
-version and status; what you asked for (request, goal, done_when); what it
+format, revision and status; what you asked for (request, goal, done_when); what it
 works on (params, inputs, outputs, network); how it works (stages); assumptions;
 limits and models. Keep that order when you edit it.
 
@@ -21,8 +21,8 @@ scripts write the same way.
 
 | field | required | meaning |
 |---|---|---|
-| `version` | yes | `1` |
-| `revision` | no (1) | raised by the scripts (a replan, a recorded critique); not part of what the critic reviews |
+| `format` | yes | `1`: the version of this plan format (not the plan's `revision`, nor a release's `v1.0`) |
+| `revision` | no (1) | raised by the scripts (resolving a stage, a recorded critique); not part of what the critic reviews |
 | `status` | yes | `draft` \| `needs_answers` \| `ready` |
 | `request` | yes | the user's words, verbatim |
 | `goal` | yes | one sentence: the outcome, not the steps |
@@ -66,7 +66,7 @@ params:
 | `text` | a table, URL, id | the value |
 | `secret` | a key or token | `${ENV_NAME}`, expanded by the child's shell; never written down |
 
-Use `${name}` in input and output `location`, `writes` paths, a program's
+Use `${name}` in input and output `path`s, `writes` paths, a program's
 `args` and gate commands. A secret only a tool reads from the environment need not be
 referenced; declaring it makes the run check it is set. Relative `writes`
 paths resolve in `runs/<id>/work/`, the children's `cwd`.
@@ -75,7 +75,7 @@ paths resolve in `runs/<id>/work/`, the children's `cwd`.
 - **rule** a `writes` path is never a literal absolute path (`/…`, `~…`, `C:\…`).
 - **rule** a path param starts its path (`${out_dir}/x.xlsx`, never
   `../${out_dir}/x.xlsx`): it compiles to an absolute path.
-- *warning* a literal absolute path in a `location` or gate command.
+- *warning* a literal absolute path in an input or output `path` or a gate command.
 - **rule** a param's variable is a valid name, not a system or tool one
   (`PATH`, `HOME`, `PI_…`), and not shared with another param.
 - **rule** a secret has no `default` and is never part of a path.
@@ -87,14 +87,14 @@ paths resolve in `runs/<id>/work/`, the children's `cwd`.
 inputs:
   - id: mail              # unique across inputs and stage outputs
     kind: folder          # folder | file | app | url | text
-    location: ${mail_dir}
+    path: ${mail_dir}
     format: eml
     access: read          # read | read_write
     note: 1,240 files observed
 outputs:                  # final deliverables
   - id: variance_report
     kind: file            # file | app | message
-    location: ${report_dir}/Q3-variance.xlsx
+    path: ${report_dir}/Q3-variance.xlsx
     format: xlsx
     overwrite: false
 ```
@@ -139,18 +139,18 @@ In `.plan/unknowns.yaml`, under `unknowns:`:
 ```yaml
 - id: u1
   text: which competitors matter and where their pricing is published
-  resolve_by: discovery      # planner | probe | user | discovery
+  resolved_by: discovery      # planner | probe | user | discovery
   stage: discover            # discovery: the stage that finds out
   affects: [analyse, memo]   # optional
   finding: null
 - id: u2
   text: whether the export has attachments
-  resolve_by: probe
+  resolved_by: probe
   finding: 300 of 1,240 files carry PDF attachments
   run_id: <scout run id>     # *warning* if missing
 - id: u3
   text: the audience of the memo
-  resolve_by: user
+  resolved_by: user
   question: q1
 ```
 
@@ -188,7 +188,7 @@ In `.plan/unknowns.yaml`, under `unknowns:`:
   # gate: {command: …, output: json, schema?, timeout_ms?}    # typed gate
   review: reviewer             # adds an <id>-review child
   done_when: every invoice id appears once
-  pause_after: false           # the user sees its results before the stages after it
+  pauses_after: false           # the user sees its results before the stages after it
   context: fork                # only when not the agent's default
   resumes: null                # an earlier single-child stage to continue
   model: null                  # its children's model (default: models.default, else the subagent's)
@@ -200,7 +200,7 @@ In `.plan/unknowns.yaml`, under `unknowns:`:
 A `side_effect` stage always asks before it runs: the user approves it (in a
 released run, the caller), so there is nothing to set for that.
 
-A provisional stage is an outline filled in at replan:
+A provisional stage is an outline, written out in full when the run resolves it:
 
 ```yaml
 - id: analyse
@@ -217,7 +217,7 @@ A provisional stage is an outline filled in at replan:
     - id: comparison           # ids may be declared now; paths and schemas later
 ```
 
-**Gates** live in `gates/`, written while planning or at replan, never by
+**Gates** live in `gates/`, written while planning or when the run resolves a stage, never by
 the stage they check; commands call them as `uv run ../gates/<script>`
 (children run in `work/`; `python3` is fine for a standard-library gate).
 Every package a gate or program imports is in the agent's
@@ -341,11 +341,11 @@ wave its `after` allows, and starts a later wave when:
 
 - it is a `decision`, `approval` pattern or `side_effect` and a stage it runs
   after launches a child (a decision may share a wave with the side effect after it);
-- a stage it runs after is a `side_effect` or has `pause_after: true`;
+- a stage it runs after is a `side_effect` or has `pauses_after: true`;
 - it is provisional and its `resolves_after` stage has not run.
 
-`ends_with` (what the parent does after the wave): `replan` (a provisional
-stage resolves after it) > `review` (a `pause_after` stage) > `approval` (it
+`ends_with` (what the parent does after the wave): `resolve` (a provisional
+stage resolves after it) > `review` (a `pauses_after` stage) > `approval` (it
 had side effects: report them) > `none`.
 
 - **rule** no `waves` field and no stage `status` (status belongs to the run).

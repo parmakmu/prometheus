@@ -14,7 +14,7 @@ def run(agent_dir, *args):
 
 @pytest.fixture
 def agent_dir(tmp_path):
-    (tmp_path / "plan.yaml").write_text("version: 1\n", encoding="utf-8")
+    (tmp_path / "plan.yaml").write_text("format: 1\n", encoding="utf-8")
     (tmp_path / "pyproject.toml").write_text('[project]\nname = "w"\nversion = "0"\nrequires-python = ">=3.14"\ndependencies = []\n', encoding="utf-8")
     git = git_in(tmp_path)
     git("init", "-q", "-b", "main")
@@ -23,10 +23,23 @@ def agent_dir(tmp_path):
     return tmp_path
 
 
-@pytest.mark.parametrize("bad", ["pandas; rm -rf /", "git+https://x/y", "a b", "../x"])
+@pytest.mark.parametrize("bad", ["pandas; rm -rf /", "git+https://x/y", "a b", "../x", "x @ https://example.test/x.whl"])
 def test_only_requirements_are_accepted(agent_dir, bad):
     r = run(agent_dir, bad, "--reason", "because")
     assert r["ok"] is False and "not a package requirement" in r["error"]
+
+
+def test_options_are_not_requirements():
+    # typer refuses them as options before the check; the check refuses them too
+    sys.path.insert(0, str(SKILL / "scripts"))
+    from add_package import is_requirement
+    assert not any(is_requirement(x) for x in ("-e .", "--index-url=https://example.test", "./pkg", ""))
+
+
+@pytest.mark.parametrize("good", ["openpyxl", "Pandas[excel]>=2,<3", "httpx[http2]~=0.27", "tzdata; sys_platform == 'win32'"])
+def test_a_pep_508_requirement_is_accepted(agent_dir, good):
+    # accepted: it gets as far as the reason
+    assert "why the agent needs" in run(agent_dir, good)["error"]
 
 
 def test_a_reason_is_required(agent_dir):
