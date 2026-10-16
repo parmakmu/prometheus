@@ -39,7 +39,11 @@ DEFAULTS = {"agents": "~/agents", "home": "~/.prometheus"}
 COMMANDS = {"init", "doctor", "help", "release", "run", "list", "install", "pull", "share", "propose", "catalog",
             "refresh", "upgrade", "serve", "prune", "check", "bundle", "runs"}  # scaffold_agent.RESERVED holds these (a test checks)
 console = Console()
-app = typer.Typer(add_completion=False, help=__doc__, rich_markup_mode=None)
+app = typer.Typer(add_completion=False, rich_markup_mode=None, help=(
+    "Builds agents and runs them.\n\n"
+    "prometheus starts the planner (/agent-new plans an agent); prometheus <slug> starts that agent. "
+    "Settings come from a flag, the environment (PROMETHEUS_AGENTS, PROMETHEUS_HOME), "
+    "~/.config/prometheus/config.toml (written by init), or the default."))
 
 
 def find_files() -> Path:
@@ -169,7 +173,7 @@ def start_agent(slug: str, args: list[str]):
     start_pi(folder, args, {"PROMETHEUS_AGENTS": str(folder.parent)})
 
 
-@app.command()
+@app.command(short_help="choose the agents folder and the planner's folder", rich_help_panel="Setup")
 def init(
     agents_flag: Annotated[str | None, typer.Option("--agents", help="folder for the agents (env PROMETHEUS_AGENTS)")] = None,
     home_flag: Annotated[str | None, typer.Option("--home", help="the planner's folder (env PROMETHEUS_HOME)")] = None,
@@ -281,7 +285,7 @@ def check_release(agent: str) -> bool:
     return print_checks(rows)
 
 
-@app.command()
+@app.command(short_help="check what prometheus needs; with <slug>, whether its release can run here", rich_help_panel="Setup")
 def doctor(agent: Annotated[str | None, typer.Argument(help="a release to check as well: <slug>[@v1 or @v1.2]")] = None):
     """Check what prometheus needs (Pi, pi-subagents, Node, uv, a git identity, the agents folder) and, given an agent,
     whether its release can run here (its secrets, its packages, the models it needs)."""
@@ -292,7 +296,7 @@ def doctor(agent: Annotated[str | None, typer.Argument(help="a release to check 
     raise typer.Exit(0 if ok else 1)
 
 
-@app.command()
+@app.command(short_help="tag a version of an agent that code can run", rich_help_panel="Releases")
 def release(
     slug: Annotated[str, typer.Argument(help="the agent")],
     breaking: Annotated[bool, typer.Option("--breaking", help="the release can break callers: raise the major version")] = False,
@@ -326,7 +330,7 @@ def release(
     console.print(f"Released {slug} {tagged['version']} ({tagged['commit'][:8]}).")
 
 
-@app.command()
+@app.command(short_help="check an agent's plan.yaml", rich_help_panel="Agents")
 def check(slug: Annotated[str, typer.Argument(help="the agent")]):
     """Check the agent's plan.yaml, after editing it by hand: its errors and warnings, and the waves it would run."""
     out = run_script("validate_plan.py", str(get_agent(slug) / "plan.yaml"))
@@ -360,7 +364,7 @@ def ask_needs(needs: dict) -> tuple[list[str], dict]:
     return approve, decisions
 
 
-@app.command("run")
+@app.command("run", short_help="run a release: <slug>[@v1], -p name=value, -a stage", rich_help_panel="Releases")
 def run_release(
     agent: Annotated[str, typer.Argument(help="the agent: a slug or a folder, with @v1 (newest 1.x) or @v1.2 (exactly), or "
                                               "@<branch or commit> to run that commit as a build")],
@@ -451,7 +455,7 @@ def ask_or_yes(yes: bool, verb: str):
     return (lambda info: True) if yes else (lambda info: show_review(info, verb))
 
 
-@app.command("list")
+@app.command("list", short_help="the agents and where each stands, and releases installed here", rich_help_panel="Agents")
 def list_agents():
     """The agents and where each one stands, and the releases installed here (`prometheus install <source>@v1`)."""
     agents, _ = get_setting("agents")
@@ -472,7 +476,7 @@ def list_agents():
         console.print(releases)
 
 
-@app.command()
+@app.command(short_help="install an agent from git, or one release of it (@v1)", rich_help_panel="Sharing")
 def install(
     source: Annotated[str, typer.Argument(help="a git URL or folder, or a name from `prometheus catalog`; with @v1 or @v1.2, "
                                                "that release, frozen, for a machine that only runs it")],
@@ -491,7 +495,7 @@ def install(
     console.print(f"Installed {folder.name} in {folder}: `prometheus {folder.name}` starts it.")
 
 
-@app.command()
+@app.command(short_help="take an installed agent's upstream changes", rich_help_panel="Sharing")
 def pull(slug: Annotated[str, typer.Argument(help="the agent")],
          yes: Annotated[bool, typer.Option("--yes", "-y", help="take the changes without asking")] = False):
     """Bring an installed agent up to its upstream's main, after showing what changed."""
@@ -501,7 +505,7 @@ def pull(slug: Annotated[str, typer.Argument(help="the agent")],
     raise typer.Exit(0 if out["updated"] or not out.get("declined") else 1)
 
 
-@app.command()
+@app.command(short_help="push an agent and its releases for others", rich_help_panel="Sharing")
 def share(slug: Annotated[str, typer.Argument(help="the agent")],
           remote: Annotated[str, typer.Argument(help="where to push: a git URL (on GitLab, a new project is created on push if allowed)")],
           yes: Annotated[bool, typer.Option("--yes", "-y", help="push without asking")] = False):
@@ -514,7 +518,7 @@ def share(slug: Annotated[str, typer.Argument(help="the agent")],
                   "to list it by name, add it to prometheus's catalog.yaml with a merge request.")
 
 
-@app.command()
+@app.command(short_help="push a change branch upstream (a merge request on GitLab)", rich_help_panel="Sharing")
 def propose(slug: Annotated[str, typer.Argument(help="the agent, with its change branch checked out")]):
     """Propose the agent's change branch to its upstream (a merge request on GitLab)."""
     from prometheus import sharing
@@ -523,7 +527,7 @@ def propose(slug: Annotated[str, typer.Argument(help="the agent, with its change
                                                 " Open a merge request into main on the upstream."))
 
 
-@app.command()
+@app.command(short_help="agents others shared by name", rich_help_panel="Sharing")
 def catalog():
     """The agents shared by name: `prometheus install <name>` installs one."""
     from prometheus import sharing
@@ -533,7 +537,7 @@ def catalog():
     console.print(table if table.rows else "The catalog is empty: share an agent, then add it to catalog.yaml with a merge request.")
 
 
-@app.command()
+@app.command(short_help="bring agents up to this prometheus's skill and template", rich_help_panel="Agents")
 def refresh(target: Annotated[str | None, typer.Argument(help="an agent's slug")] = None,
             every: Annotated[bool, typer.Option("--all", help="every agent whose skill is older than this prometheus's")] = False):
     """Bring agents up to this prometheus's skill and template (each commits on its own main)."""
@@ -546,13 +550,13 @@ def refresh(target: Annotated[str | None, typer.Argument(help="an agent's slug")
         console.print(f"{slug}: " + ("current" if out.get("skipped") else "refreshed" if out.get("ok") else f"[red]{out.get('error')}[/]"))
 
 
-@app.command()
+@app.command(short_help="update prometheus itself", rich_help_panel="Setup")
 def upgrade():
     """Update prometheus itself to the newest on its channel (uv tool upgrade); agents refresh separately."""
     raise typer.Exit(subprocess.run(["uv", "tool", "upgrade", "prometheus"], check=False).returncode)
 
 
-@app.command()
+@app.command(short_help="serve a release over HTTP and A2A", rich_help_panel="Releases")
 def serve(
     agent: Annotated[str, typer.Argument(help="the agent: a slug or a folder, with @v1 or @v1.2 to pin a release")],
     host: Annotated[str, typer.Option(help="the address to listen on (off loopback, a token is required)")] = "127.0.0.1",
@@ -575,7 +579,7 @@ def serve(
     uvicorn.run(app, host=host, port=port, access_log=False, log_level="warning")
 
 
-@app.command()
+@app.command(short_help="delete old runs' files, keeping their history", rich_help_panel="Agents")
 def prune(
     slug: Annotated[str, typer.Argument(help="the agent")],
     keep: Annotated[int, typer.Option(help="finished runs to keep whole, in the agent and in each of its releases")] = 10,
@@ -622,7 +626,7 @@ def list_released_runs(slug: str) -> list[dict]:
     return sorted(found, key=lambda r: r["started"])
 
 
-@app.command("runs")
+@app.command("runs", short_help="a release's runs here, or how one went", rich_help_panel="Releases")
 def show_runs(
     slug: Annotated[str, typer.Argument(help="the agent")],
     run_id: Annotated[str | None, typer.Argument(help="a run: show how it went")] = None,
@@ -676,7 +680,7 @@ def show_runs(
                       highlight=False)
 
 
-@app.command()
+@app.command(short_help="pack a failed run for /agent-improve where the agent is developed", rich_help_panel="Releases")
 def bundle(
     slug: Annotated[str, typer.Argument(help="the agent")],
     run_id: Annotated[str, typer.Argument(help="the released run (its id, as `prometheus runs` lists it)")],
