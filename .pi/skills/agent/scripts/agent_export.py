@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Copy an agent to another folder so it can run there.
 
-Usage: export_agent.py AGENT DEST_FOLDER [--keep-state] [--name SLUG]
+Usage: agent_export.py AGENT DEST_FOLDER [--keep-state] [--name SLUG]
 
 Creates DEST_FOLDER/<slug>/ (or DEST_FOLDER/<SLUG>).
 
@@ -28,8 +28,8 @@ import sys
 from pathlib import Path
 from typing import Annotated
 
-import agent_git
 import agent_params
+import agent_repo
 import typer
 from utils import read_yaml as load
 from utils import refuse
@@ -83,9 +83,9 @@ def main(
             return skip
         shutil.copytree(src, dst, ignore=ignore)
         cleared = ["runs/", ".git history", ".pi/subagents/", ".pi/sessions/"]
-        source = agent_git.head(src)
+        source = agent_repo.head(src)
         try:
-            agent_git.commit(dst, f"Exported from {slug}" + (f" at {source[:12]}" if source else ""))
+            agent_repo.commit(dst, f"Exported from {slug}" + (f" at {source[:12]}" if source else ""))
         except RuntimeError as exc:
             cleared.append(f"(not committed: {exc})")
 
@@ -95,7 +95,7 @@ def main(
     cleared.append(".env values")
 
     check = subprocess.run(
-        [sys.executable, str(dst / ".pi" / "skills" / "agent" / "scripts" / "validate_plan.py"),
+        [sys.executable, str(dst / ".pi" / "skills" / "agent" / "scripts" / "plan_validate.py"),
          str(dst / "plan.yaml")],
         capture_output=True, text=True, check=False,
     )

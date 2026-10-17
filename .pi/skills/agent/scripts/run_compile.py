@@ -3,11 +3,11 @@
 pi-subagents call that runs it.
 
 Usage:
-  compile_wave.py [--agent DIR] [--approve key,key] [--out FILE] [--check]
+  run_compile.py [--agent DIR] [--approve key,key] [--out FILE] [--check]
 
-The wave runs in the active run's folder (runs/<id>/, see validate_plan.py):
+The wave runs in the active run's folder (runs/<id>/, see plan_validate.py):
 children work in runs/<id>/work/, and relative param values resolve against
-runs/<id>/. A launchable wave is saved in runs/<id>/.compiled/ (runs.py says how).
+runs/<id>/. A launchable wave is saved in runs/<id>/.compiled/ (run_folders.py says how).
 Gate commands name their scripts as ../gates/<script>; the compiler points
 that at the agent's gates/ folder.
 
@@ -16,10 +16,10 @@ A model stage an earlier run finished on the same inputs is not launched again:
 its outputs are copied from that run (reuse_earlier; fingerprints in the
 `inputs` of runs/<id>/.compiled/<wave>.json).
 Before compiling, it commits pending changes to the agent's plan
-(agent_git.py) and returns the commit, so the launch is reproducible; that is
+(agent_repo.py) and returns the commit, so the launch is reproducible; that is
 the only change it makes to the agent. Git is required.
 
-Waves are not written in the plan: validate_plan.derive_waves groups the stages
+Waves are not written in the plan: plan_validate.derive_waves groups the stages
 that are not done, each as early as its `after` allows, and starts a new wave
 wherever the parent must act (a decision or approval, a side effect's report,
 a user review, resolving provisional stages).
@@ -28,7 +28,7 @@ a user review, resolving provisional stages).
 --approve   side-effect stage ids the user approved for this launch
 --out       also write the result JSON to FILE
 --check     planning check: compile every concrete pending wave (no run needed)
---frozen    a released agent's run (release.py), in this folder, with --params and --approve from
+--frozen    a released agent's run (agent_release.py), in this folder, with --params and --approve from
             the caller and no active run, commit or .env: the next wave after the stages its
             state.json records as done, or the whole plan as one (`all`) when nothing in it asks
             anyone; a decision or an unapproved side effect is in "preflight", for the caller
@@ -62,11 +62,13 @@ from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from typing import Annotated
 
-import agent_git
 import agent_params
+import agent_repo
+import agent_state
 import typer
+from plan_validate import agent_tools, check_ready, project_subagents, validate
 from ruamel.yaml.error import YAMLError
-from runs import (
+from run_folders import (
     RUNS,
     active_run,
     list_released_runs,
@@ -87,7 +89,6 @@ from utils import (
     subagent_records,
     subagents_package,
 )
-from validate_plan import agent_tools, check_ready, project_subagents, validate
 
 HERE = Path(__file__).resolve().parent
 PARAM_RE = re.compile(r"\$\{([^}]*)\}")
@@ -99,7 +100,7 @@ RUNNER = HERE / "wave_runner.js"  # appended to every compiled wave
 
 def unrecorded_launch(run_dir, state, wave_id):
     """(pi-subagents run id, its state) of a launch of the wave's compiled script that run.yaml does
-    not record, or None. The wave is launched between compile and agent_log_start (which needs
+    not record, or None. The wave is launched between compile and agent_start_wave (which needs
     the launch's id): a session that ends in between leaves a launch nobody recorded, which a
     recompile would launch again. pi-subagents keeps the sha256 of each workflow run's script
     (status.json `workflow.scriptDigest`); the compiled file holds the script that was passed."""
@@ -429,7 +430,7 @@ class Compiler:
                "params": {k: self.resolve_text(v) if isinstance(v, str) else v for k, v in (call.get("params") or {}).items()},
                "approve": list(call.get("approve") or []), **self.batcher_gate(st)}
         if call.get("token"):
-            req["token"] = self.resolve_text(str(call["token"]))  # "${ENV}": batch_tool reads it from its environment
+            req["token"] = self.resolve_text(str(call["token"]))  # "${ENV}": batcher reads it from its environment
         if timeout := call.get("timeout_s") or self.timeout:
             req["timeout"] = timeout
         req.update(self.secrets_for(req))
@@ -437,7 +438,7 @@ class Compiler:
                 "task": "BATCH_TOOL_REQUEST " + json.dumps(req)}
 
     def batcher_gate(self, st):
-        """{gate, gate_json} for batch_tool, which runs the stage's gate itself (no acceptance on a command runner)."""
+        """{gate, gate_json} for batcher, which runs the stage's gate itself (no acceptance on a command runner)."""
         gate = st.get("gate")
         if gate is None:
             return {}
@@ -447,7 +448,7 @@ class Compiler:
     def secrets_for(self, req):
         """{secrets, env_file} for a batcher request whose command or gate names secrets (`"${ENV}"`): the batcher adds
         just those to that command's environment, read from .env then. Pi's own environment holds none, so no model
-        child sees one (validate_plan allows secrets only here)."""
+        child sees one (plan_validate allows secrets only here)."""
         secret_envs = {agent_params.env_name(n, s) for n, s in self.params.items() if agent_params.kind(s) == "secret"}
         named = sorted(set(re.findall(r"\$\{(\w+)\}", f"{req.get('command') or ''} {req.get('gate') or ''} {req.get('token') or ''}")) & secret_envs)
         return {"secrets": named, "env_file": str(self.agent_dir / agent_params.ENV_FILE)} if named else {}
@@ -617,7 +618,7 @@ class Compiler:
         if not fp:
             return None
         self.fingerprints[key] = fp
-        # an agent's runs, or a release's (prometheus/frozen.py): the same judgment, made once across calls too
+        # an agent's runs, or a release's (prometheus/run_release.py): the same judgment, made once across calls too
         for rid, d in reversed(list_runs(self.agent_dir) + list_released_runs(self.agent_dir)):
             if rid == self.run_id or key not in stages_done(d):
                 continue
@@ -802,7 +803,7 @@ class Compiler:
         reused_items = [it for step in steps for it in step.get("layer") or []]
         if steps and all("layer" in step for step in steps) and all("reuse" in it for it in reused_items):
             # every stage is reused: nothing to launch. What the runner would have returned, so the wave is recorded
-            # without one (run_log.record_without_launch; frozen.Run for a released run)
+            # without one (run_steps.record_without_launch; run_release.Run for a released run)
             result["nothing_to_launch"] = True
             result["outcome"] = {"wave": wid, "revision": revision, "status": "done", "children": {
                 it["key"]: {**{k: it["reuse"].get(k) for k in ("runId", "outputReference", "structuredOutput")},
@@ -885,16 +886,18 @@ def save_wave(run_dir, result, compiler):
 
 
 def record_reused_wave(agent_dir, plan, run, result):
-    """A wave every stage of which is reused, recorded as it is compiled (run_log.record_without_launch): nothing is
-    launched, and the result is what agent_log_finish would have returned, with `launched: false`."""
-    import run_log  # here, not at the top: run_log imports this module
-    os.chdir(agent_dir)  # run_log works on the agent in the current folder
+    """A wave every stage of which is reused, recorded as it is compiled (run_steps.record_without_launch): nothing is
+    launched, and the result is what agent_finish_wave would have returned, with `launched: false`."""
+    from run_steps import (
+        record_without_launch,  # here, not at the top: run_steps.py imports this module
+    )
+    os.chdir(agent_dir)  # run_steps.py works on the agent in the current folder
     nxt = {"id": result["wave"], "stages": result["stages"], "ends_with": result["ends_with"]}
-    recorded = run_log.record_without_launch(plan, run, nxt, result["outcome"], result.get("approved") or [])
-    # first, and in words: a model that saw only a finished wave's result called agent_log_finish too (run 2026-10-16-7)
+    recorded = record_without_launch(plan, run, nxt, result["outcome"], result.get("approved") or [])
+    # first, and in words: a model that saw only a finished wave's result called agent_finish_wave too (run 2026-10-16-7)
     return {"ok": True, "launched": False,
             "recorded": f"wave {result['wave']} is already recorded: every stage was reused, nothing was launched. Do not "
-                        "launch it or call agent_log_start or agent_log_finish: go on from this result as from agent_log_finish's",
+                        "launch it or call agent_start_wave or agent_finish_wave: go on from this result as from agent_finish_wave's",
             **recorded, "wave": result["wave"], "stages": result["stages"], "notes": result.get("notes"), "commit": result.get("commit")}
 
 
@@ -930,12 +933,14 @@ def main(
         launchable = result.get("ok") and not result.get("done")
         emit(save_wave(frozen, result, compiler) if launchable else result, 0 if result.get("ok") else 1)
     report_state(agent_dir)
+    if not check:
+        agent_state.require(agent_dir, agent_state.compile_wave)
     if not check and (run := active_run(agent_dir)):
         # the plan, gates and programs are read from what is checked out: the run's own branch
-        if no_commit and (off := agent_git.find_off_branch(agent_dir, run.branch)):
-            refuse(f"run {run.id}: {agent_git.describe_off_branch(off)}")  # a report switches nothing
+        if no_commit and (off := agent_repo.find_off_branch(agent_dir, run.branch)):
+            refuse(f"run {run.id}: {agent_repo.describe_off_branch(off)}")  # a report switches nothing
         try:
-            agent_git.back_to_run_branch(agent_dir, run.branch)
+            agent_repo.back_to_run_branch(agent_dir, run.branch)
         except RuntimeError as exc:
             refuse(f"run {run.id}: {exc}. Tell the user; do not change branches or files yourself")
     try:
@@ -965,18 +970,14 @@ def main(
     if errors:
         emit({"ok": False, "preflight": {"plan_errors": errors}}, 1)
 
-    if run is None:
-        refuse("no active run: start one with agent_new_run (run_log.py new)")
-    if run.wave_running:
-        refuse(f"a wave is running (stages {summary['running']}); check its run before launching again")
     waves = summary.get("waves") or []
     if not waves:
         refuse("no wave to run: every stage is done")
     wave = waves[0]
     if launched := unrecorded_launch(run.dir, run.state, wave["id"]):
         refuse(f"wave {wave['id']} was already launched as pi-subagents run {launched[0]} ({launched[1]}) and not "
-               f"recorded: do not launch it again. Record it with agent_log_start (subagent_run_id {launched[0]}), "
-               "then wait for it or, if it has ended, agent_log_finish")
+               f"recorded: do not launch it again. Record it with agent_start_wave (subagent_run_id {launched[0]}), "
+               "then wait for it or, if it has ended, agent_finish_wave")
     last = (run.state.get("launches") or [None])[-1]
     if isinstance(last, dict) and last.get("status") == "done" and last.get("ends_with") == "review" and not reviewed:
         # the plan put a user review here: the next wave waits for the user's go, recorded by --reviewed
@@ -986,7 +987,7 @@ def main(
     if budget is not None:
         run.state["max_cost_usd"] = budget
         run.save()
-    if not agent_git.available():
+    if not agent_repo.available():
         refuse("git is required: pi-subagents checks each writer child's staged index with git, and the agent's plan is versioned in its own repo. Ask the user to install git.")
 
     # approved now, or for the whole run when it started (an API call's `approve`)
@@ -996,8 +997,8 @@ def main(
     if result.get("ok"):
         # committed only for a launch: a refused compile (params, approvals) leaves the branch alone
         try:
-            result["commit"] = (agent_git.head(agent_dir) if no_commit else
-                                agent_git.commit(agent_dir, f"r{plan.get('revision', 1)}: plan for run {run.id}, wave {wave['id']}", to=run.branch)[0])
+            result["commit"] = (agent_repo.head(agent_dir) if no_commit else
+                                agent_repo.commit(agent_dir, f"r{plan.get('revision', 1)}: plan for run {run.id}, wave {wave['id']}", to=run.branch)[0])
         except RuntimeError as exc:
             refuse(f"cannot commit the plan: {exc}")
         if not no_commit:  # a report writes nothing

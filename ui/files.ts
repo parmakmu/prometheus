@@ -142,12 +142,12 @@ export function saveAgentFile(user: string, cwd: string, rel: string, req: Incom
   });
   req.on("end", () => {
     if (size > MAX_EDIT) return send(res, 413, "larger than 1 MB");
-    void skillScript(cwd, "agent_git.py", ["--agent", cwd, "begin-change"]).then((r) => {
+    void skillScript(cwd, "agent_repo.py", ["--agent", cwd, "begin-change"]).then((r) => {
       let out: { ok?: boolean; error?: string; branch?: string; mode?: string } = {};
       try {
         out = JSON.parse(r.out);
       } catch {}
-      if (r.code && !out.error) return send(res, 500, r.err || "agent_git.py failed");
+      if (r.code && !out.error) return send(res, 500, r.err || "agent_repo.py failed");
       if (out.error) return send(res, 409, out.error);
       writeFileSync(f, Buffer.concat(chunks));
       send(res, 200, { ok: true, branch: out.branch, mode: out.mode });
@@ -225,12 +225,12 @@ export function discardBranch(user: string, cwd: string, name: string, res: Serv
   if (runActive(cwd)) return send(res, 409, "a run is active: discard branches once it has finished");
   void baseOf(cwd).then(({ branch }) => {
     if (branch !== name) return void gitIn(cwd, ["branch", "-q", "-D", name]).then((r) => (r.code ? send(res, 409, r.err) : send(res, 200, { ok: true })));
-    void skillScript(cwd, "agent_git.py", ["--agent", cwd, "merge", "--action", "discard"]).then((r) => {
+    void skillScript(cwd, "agent_repo.py", ["--agent", cwd, "merge", "--action", "discard"]).then((r) => {
       let out: { error?: string } = {};
       try {
         out = JSON.parse(r.out);
       } catch {}
-      if (out.error || (r.code && !r.out)) return send(res, 409, out.error ?? (r.err || "agent_git.py failed"));
+      if (out.error || (r.code && !r.out)) return send(res, 409, out.error ?? (r.err || "agent_repo.py failed"));
       send(res, 200, { ok: true });
     });
   });

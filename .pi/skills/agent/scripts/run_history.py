@@ -14,10 +14,10 @@ prune  deletes the work/ folders of finished runs beyond the newest N (default 1
        children's, their sessions and outputs), and its mission files once none of their
        launches is kept. run.yaml and .compiled/ stay, so the history stays; an earlier run
        whose work/ is gone is no longer reused from (compile_wave, reuse_earlier). The active
-       run is never touched. On a release's folder (prometheus/frozen.py) it prunes its runs the
+       run is never touched. On a release's folder (prometheus/run_release.py) it prunes its runs the
        same way, with their inputs/ and outputs/ (state.json and events.jsonl stay); a run that
        waits for an answer is not finished, and the newest --keep-failed failed ones (default 10)
-       stay whole on top of --keep: they are what a bundle (bundle.py) is made from. It also removes
+       stay whole on top of --keep: they are what a bundle (run_bundle.py) is made from. It also removes
        pi-subagents' empty per-launch folders in the agent's own session folder
        (.pi/sessions/<session>/<launch>/: one per launch, left empty, since the children's sessions
        are in the run's work/), except while a wave runs.
@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-from runs import active_run, list_released_runs, list_runs, read_run, read_wave
+from run_folders import active_run, list_released_runs, list_runs, read_run, read_wave
 from utils import (
     SUBAGENT_RUN_ID_RE,
     emit,
@@ -86,7 +86,7 @@ def prune(agent_dir: AGENT = ".", keep: Annotated[int, typer.Option(help="finish
     finished = [(rid, d, read_run(d).get("launches") or [], ["work"]) for rid, d in list_runs(root)
                 if read_run(d).get("status") in ("done", "stopped")]
     failed = []
-    for rid, d in list_released_runs(root):  # a release's runs: state.json (prometheus/frozen.py)
+    for rid, d in list_released_runs(root):  # a release's runs: state.json (prometheus/run_release.py)
         state = read_json(d / "state.json") or {}
         if state.get("state") in ("complete", "failed", "stopped", "error"):
             (failed if state["state"] in ("failed", "error") else finished).append((rid, d, state.get("launches") or [], ["work", "inputs", "outputs"]))

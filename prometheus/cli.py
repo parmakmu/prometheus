@@ -4,7 +4,7 @@
     prometheus <slug> [args]    that agent: pi in its folder (args go to pi)
     prometheus init             where the agents and the planner's folder are (asks in a terminal)
     prometheus doctor           what prometheus needs, and what is missing
-    prometheus release <slug>   tag a version of the agent that code can run (see release.py)
+    prometheus release <slug>   tag a version of the agent that code can run (see agent_release.py)
     prometheus run <slug>[@v]   run a release with no one to ask: --param name=value, --approve stage
     prometheus list             the agents and where each stands
     prometheus install <url>    an agent from git (or the catalog's name for it), reviewed before it stays
@@ -37,7 +37,7 @@ from rich.table import Table
 
 DEFAULTS = {"agents": "~/agents", "home": "~/.prometheus"}
 COMMANDS = {"init", "doctor", "help", "release", "run", "list", "install", "pull", "share", "propose", "catalog",
-            "refresh", "upgrade", "serve", "prune", "check", "bundle", "runs"}  # scaffold_agent.RESERVED holds these (a test checks)
+            "refresh", "upgrade", "serve", "prune", "check", "bundle", "runs"}  # agent_scaffold.RESERVED holds these (a test checks)
 console = Console()
 app = typer.Typer(add_completion=False, rich_markup_mode=None, help=(
     "Builds agents and runs them.\n\n"
@@ -216,7 +216,7 @@ def find_pi_subagents() -> str | None:
 
 
 # the versions prometheus is built and tested on: older ones wake the agent differently (notice turns, before_agent_start)
-MIN_VERSIONS = {"pi": "1.3.0", "pi-subagents": "0.78.0"}
+MIN_VERSIONS = {"pi": "1.3.0", "pi-subagents": "0.79.0"}
 
 
 def check_version(name: str, found: str | None) -> tuple[str | None, str | None]:
@@ -262,7 +262,7 @@ def print_checks(rows: list[tuple[str, str | None, str]]) -> bool:
 
 def check_release(agent: str) -> bool:
     """Print whether a release can run here: its secrets in the environment, its packages, the models it needs."""
-    from prometheus.frozen import load_agent
+    from prometheus.run_release import load_agent
     loaded = load_agent(agent)
     plan = import_script("utils").read_plan(loaded.folder, {}) or {}
     agent_params = import_script("agent_params")
@@ -279,7 +279,7 @@ def check_release(agent: str) -> bool:
     except (OSError, subprocess.TimeoutExpired) as exc:
         problem = [str(exc)]
     rows.append(("packages", not problem and "uv.lock installs here", f"uv sync --locked --dry-run: {' '.join(problem)}"))
-    model = import_script("release").model_stages(plan)
+    model = import_script("agent_release").model_stages(plan)
     default = (plan.get("models") or {}).get("default") or "Pi's default model"
     rows.append(("model stages", f"{', '.join(model)}: a login or key for {default}" if model else "none: no model key needed", ""))
     return print_checks(rows)
@@ -304,7 +304,7 @@ def release(
 ):
     """Release the agent's current commit on main: check it, show its interface and what changed, then tag it."""
     folder = get_agent(slug)
-    out = run_script("release.py", "check", "--agent", str(folder), *(["--breaking"] if breaking else []))
+    out = run_script("agent_release.py", "check", "--agent", str(folder), *(["--breaking"] if breaking else []))
     face = out["interface"]
     params = ", ".join(f"{n} ({s['type']}{', required' if s['required'] else ''})" for n, s in face["params"].items())
     console.print(f"{slug}, plan revision {out['revision']}; last release: {out['last_release'] or 'none'}")
@@ -324,7 +324,7 @@ def release(
         raise typer.Exit(1)
     if not yes and not (sys.stdin.isatty() and Confirm.ask(f"Tag {out['next_version']}?", console=console)):
         raise typer.Exit(1)
-    tagged = run_script("release.py", "tag", "--agent", str(folder), *(["--breaking"] if breaking else []))
+    tagged = run_script("agent_release.py", "tag", "--agent", str(folder), *(["--breaking"] if breaking else []))
     if not tagged.get("ok"):
         raise SystemExit(tagged.get("error"))
     console.print(f"Released {slug} {tagged['version']} ({tagged['commit'][:8]}).")
@@ -333,7 +333,7 @@ def release(
 @app.command(short_help="check an agent's plan.yaml", rich_help_panel="Agents")
 def check(slug: Annotated[str, typer.Argument(help="the agent")]):
     """Check the agent's plan.yaml, after editing it by hand: its errors and warnings, and the waves it would run."""
-    out = run_script("validate_plan.py", str(get_agent(slug) / "plan.yaml"))
+    out = run_script("plan_validate.py", str(get_agent(slug) / "plan.yaml"))
     for error in out["errors"]:
         console.print(f"[red]error[/]: {error}", highlight=False)
     for warning in out["warnings"]:
@@ -375,7 +375,7 @@ def run_release(
                                                      "approvals and (bundled --with-files) files; --param overrides")] = None,
 ):
     """Run a released agent from start to end, with no one to ask and no model deciding anything."""
-    from prometheus.frozen import load_agent, read_bundle_call
+    from prometheus.run_release import load_agent, read_bundle_call
     values = {}
     for item in param or []:
         name, sep, value = item.partition("=")
@@ -456,10 +456,10 @@ def ask_or_yes(yes: bool, verb: str):
 
 
 @app.command("list", short_help="the agents and where each stands, and releases installed here", rich_help_panel="Agents")
-def list_agents():
+def agent_list():
     """The agents and where each one stands, and the releases installed here (`prometheus install <source>@v1`)."""
     agents, _ = get_setting("agents")
-    found = run_script("list_agents.py", "--root", str(agents))
+    found = run_script("agent_list.py", "--root", str(agents))
     table = Table("Agent", "State", "Runs", "Last run", "Skill")
     for a in found if isinstance(found, list) else []:
         last = a.get("last_run")
@@ -467,7 +467,7 @@ def list_agents():
                       str(a.get("runs", 0)), f"{last['id']} {last['status']}" if last else "-",
                       "update: prometheus refresh" if a.get("stale") else "current")
     console.print(table if table.rows else f"No agents in {agents}.")
-    from prometheus.frozen import get_releases, list_installed
+    from prometheus.run_release import get_releases, list_installed
     releases = Table("Release", "Versions here", "Runs")
     for slug in sorted(p.name for p in get_releases().glob("*") if p.is_dir()):
         if installed := list_installed(slug):
@@ -485,8 +485,8 @@ def install(
 ):
     """Install an agent: clone it, replace what prometheus owns with your copy, then review its own code. Or, with
     @<version>, install one release of it, frozen: no repository, run as released (`prometheus run`, `serve`)."""
-    from prometheus import sharing
-    folder = sharing.install(source, name, ask_or_yes(yes, "Keep it"))
+    from prometheus import share
+    folder = share.install(source, name, ask_or_yes(yes, "Keep it"))
     if (folder / "RELEASE.json").is_file():
         record = json.loads((folder / "RELEASE.json").read_text(encoding="utf-8"))
         console.print(f"Installed {folder.name} {record['version']} ({record['commit'][:12]}), frozen, in {folder}: "
@@ -499,8 +499,8 @@ def install(
 def pull(slug: Annotated[str, typer.Argument(help="the agent")],
          yes: Annotated[bool, typer.Option("--yes", "-y", help="take the changes without asking")] = False):
     """Bring an installed agent up to its upstream's main, after showing what changed."""
-    from prometheus import sharing
-    out = sharing.pull(slug, ask_or_yes(yes, "Take these changes"))
+    from prometheus import share
+    out = share.pull(slug, ask_or_yes(yes, "Take these changes"))
     console.print(f"{slug}: " + ("updated." if out["updated"] else "kept as it was." if out.get("declined") else "already up to date."))
     raise typer.Exit(0 if out["updated"] or not out.get("declined") else 1)
 
@@ -510,8 +510,8 @@ def share(slug: Annotated[str, typer.Argument(help="the agent")],
           remote: Annotated[str, typer.Argument(help="where to push: a git URL (on GitLab, a new project is created on push if allowed)")],
           yes: Annotated[bool, typer.Option("--yes", "-y", help="push without asking")] = False):
     """Share an agent: check it for secrets, show what goes out, push main and its releases."""
-    from prometheus import sharing
-    out = sharing.share(slug, remote, ask_or_yes(yes, f"Push {slug} to {remote}"))
+    from prometheus import share
+    out = share.share(slug, remote, ask_or_yes(yes, f"Push {slug} to {remote}"))
     if not out["shared"]:
         raise typer.Exit(1)
     console.print(f"Shared {slug} ({', '.join(out['releases']) or 'no releases yet'}). Others: `prometheus install {remote}`; "
@@ -521,8 +521,8 @@ def share(slug: Annotated[str, typer.Argument(help="the agent")],
 @app.command(short_help="push a change branch upstream (a merge request on GitLab)", rich_help_panel="Sharing")
 def propose(slug: Annotated[str, typer.Argument(help="the agent, with its change branch checked out")]):
     """Propose the agent's change branch to its upstream (a merge request on GitLab)."""
-    from prometheus import sharing
-    out = sharing.propose(slug)
+    from prometheus import share
+    out = share.propose(slug)
     console.print(f"Pushed {out['branch']}." + (f" Merge request: {out['merge_request']}" if out["merge_request"] else
                                                 " Open a merge request into main on the upstream."))
 
@@ -530,9 +530,9 @@ def propose(slug: Annotated[str, typer.Argument(help="the agent, with its change
 @app.command(short_help="agents others shared by name", rich_help_panel="Sharing")
 def catalog():
     """The agents shared by name: `prometheus install <name>` installs one."""
-    from prometheus import sharing
+    from prometheus import share
     table = Table("Name", "Description", "Source")
-    for a in sharing.read_catalog():
+    for a in share.read_catalog():
         table.add_row(a["name"], a.get("description") or "", a["url"])
     console.print(table if table.rows else "The catalog is empty: share an agent, then add it to catalog.yaml with a merge request.")
 
@@ -546,7 +546,7 @@ def refresh(target: Annotated[str | None, typer.Argument(help="an agent's slug")
     agents, _ = get_setting("agents")
     slugs = sorted(p.parent.name for p in agents.glob("*/plan.yaml")) if every else [target]
     for slug in slugs:
-        out = run_script("scaffold_agent.py", slug, "--root", str(agents), "--refresh", *(["--if-stale"] if every else []))
+        out = run_script("agent_scaffold.py", slug, "--root", str(agents), "--refresh", *(["--if-stale"] if every else []))
         console.print(f"{slug}: " + ("current" if out.get("skipped") else "refreshed" if out.get("ok") else f"[red]{out.get('error')}[/]"))
 
 
@@ -571,7 +571,7 @@ def serve(
     import uvicorn
 
     from prometheus import serve as service
-    from prometheus.frozen import load_agent
+    from prometheus.run_release import load_agent
     service.check_host(host, token)
     loaded = load_agent(agent)
     console.print(f"Serving {loaded.name} {loaded.version} on http://{host}:{port} (/docs describes it)")
@@ -587,7 +587,7 @@ def prune(
     dry_run: Annotated[bool, typer.Option("--dry-run", help="say what would go; delete nothing")] = False,
 ):
     """Delete the files of old finished runs (work, inputs, outputs, pi-subagents' records); their history stays."""
-    from prometheus.frozen import get_releases
+    from prometheus.run_release import get_releases
     agents, _ = get_setting("agents")
     folders = [f for f in [agents / slug, *sorted((get_releases() / slug).glob("*"))] if (f / "plan.yaml").is_file()]
     if not folders:
@@ -603,7 +603,7 @@ def prune(
 
 def find_released_run(slug: str, run_id: str) -> Path:
     """A release's run folder, whichever release it ran."""
-    from prometheus.frozen import get_releases
+    from prometheus.run_release import get_releases
     found = [d for d in (get_releases() / slug).glob(f"*/runs/{run_id}") if (d / "state.json").is_file()]
     if not found:
         raise PrometheusError(f"no run {run_id!r} of a release of {slug} in {get_releases() / slug}")
@@ -613,11 +613,11 @@ def find_released_run(slug: str, run_id: str) -> Path:
 def list_released_runs(slug: str) -> list[dict]:
     """Every run of every release of `slug` here, oldest first: id, version (the one it was called as), state, start,
     cost, error."""
-    from prometheus.frozen import get_releases
-    runs, read_json = import_script("runs"), import_script("utils").read_json
+    from prometheus.run_release import get_releases
+    run_folders, read_json = import_script("run_folders"), import_script("utils").read_json
     found = []
     for folder in (get_releases() / slug).glob("*"):
-        for run_id, run_dir in runs.list_released_runs(folder):
+        for run_id, run_dir in run_folders.list_released_runs(folder):
             state, call = read_json(run_dir / "state.json") or {}, read_json(run_dir / "call.json") or {}
             started = (run_dir / "call.json").stat().st_mtime if (run_dir / "call.json").exists() else 0
             found.append({"run": run_id, "version": call.get("version"), "state": state.get("state"), "started": started,
@@ -654,9 +654,9 @@ def show_runs(
                           r["started"][:16].replace("T", " "), f"${r['cost_usd']:.4f}", (r["error"] or "")[:80])
         console.print(table)
         return
-    shown = run_script("bundle.py", "show", "--run", str(find_released_run(slug, run_id)))
+    shown = run_script("run_bundle.py", "show", "--run", str(find_released_run(slug, run_id)))
     if not shown.get("ok"):
-        raise PrometheusError(shown.get("error") or "bundle.py failed")
+        raise PrometheusError(shown.get("error") or "run_bundle.py failed")
     if as_json:
         print(json.dumps(shown, indent=1))
         return
@@ -688,10 +688,10 @@ def bundle(
     out: Annotated[Path, typer.Option(help="folder to write the bundle in")] = Path("."),
 ):
     """Pack a released run's evidence into one file, to fix the agent where it is developed (/agent-improve <bundle>)."""
-    made = run_script("bundle.py", "make", "--run", str(find_released_run(slug, run_id)), "--out", str(out),
+    made = run_script("run_bundle.py", "make", "--run", str(find_released_run(slug, run_id)), "--out", str(out),
                       *(["--with-files"] if with_files else []))
     if not made.get("ok"):
-        raise PrometheusError(made.get("error") or "bundle.py failed")
+        raise PrometheusError(made.get("error") or "run_bundle.py failed")
     console.print(f"{made['bundle']} ({made['size_mb']} MB, {made['files']} files"
                   f"{', with the run' + chr(39) + 's files' if with_files else ''})", highlight=False)
     if made.get("redacted"):

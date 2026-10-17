@@ -6,7 +6,7 @@ A release is the tag v<major>.<minor> on a commit of main, made only when the pl
   - it is ready (the critic recorded for this plan), on main, with nothing uncommitted and no active run;
   - no stage is provisional (its run would resolve: that is editing the plan, which only the agent's own runs do);
   - every stage program (`script:`) exists (a released run never writes code);
-  - every wave compiles as a released run compiles it (compile_wave.compile_frozen). A decision or a side effect
+  - every wave compiles as a released run compiles it (run_compile.compile_frozen). A decision or a side effect
     is fine: the run asks its caller there (A2A's input-required), and goes on with the answer.
 Its interface is what a caller depends on: the params (type, required or not), the outputs (kind, format) and the
 side effects a caller approves. Against the last release, a change that can break a caller (a param removed, retyped
@@ -14,22 +14,22 @@ or newly required, an output removed or changed, a side effect added) needs --br
 version; anything else raises the minor. The tag's message holds the revision, the interface and whether it broke.
 
 Usage:
-  release.py check [--agent DIR]               whether HEAD can be released, its interface and the changes
-  release.py tag [--agent DIR] [--breaking]    tag it
-  release.py list [--agent DIR]                the releases, newest first
+  agent_release.py check [--agent DIR]               whether HEAD can be released, its interface and the changes
+  agent_release.py tag [--agent DIR] [--breaking]    tag it
+  agent_release.py list [--agent DIR]                the releases, newest first
 """
 import json
 import re
 from pathlib import Path
 from typing import Annotated
 
-import agent_git
 import agent_params
+import agent_repo
 import typer
 from agent_state import state
-from compile_wave import compile_frozen
+from plan_validate import check_ready, validate
+from run_compile import compile_frozen
 from utils import emit, read_plan, refuse, stage_kind
-from validate_plan import check_ready, validate
 
 TAG_RE = re.compile(r"^v(\d+)\.(\d+)$")
 app = typer.Typer(add_completion=False)
@@ -84,10 +84,10 @@ def compare(old, new):
 
 def releases(agent_dir):
     """[{version, commit, revision, breaking, interface}], newest first."""
-    if not agent_git.is_repo(agent_dir):
+    if not agent_repo.is_repo(agent_dir):
         return []
     # three NUL-ended fields per tag: name, the commit it points at, its message
-    out = agent_git.git(agent_dir, "for-each-ref", "refs/tags/v*", "--format=%(refname:short)%00%(*objectname)%00%(contents)%00",
+    out = agent_repo.git(agent_dir, "for-each-ref", "refs/tags/v*", "--format=%(refname:short)%00%(*objectname)%00%(contents)%00",
                         check=False).stdout.split("\x00")
     found = []
     for i in range(0, len(out) - 2, 3):
@@ -108,9 +108,9 @@ def problems_with(agent_dir, plan):
     agent_dir = Path(agent_dir)
     found = []
     where = state(agent_dir)
-    if where["state"] not in ("ready", "planned"):  # planned: ready, and no run yet
+    if where["state"] not in ("main_ready", "plan_ready"):  # plan_ready: no run yet
         found.append(f"the agent is {where['state']} ({where['hint']}): release from main with a ready plan and no active run")
-    if agent_git.is_repo(agent_dir) and agent_git.git(agent_dir, "status", "--porcelain").stdout.strip():
+    if agent_repo.is_repo(agent_dir) and agent_repo.git(agent_dir, "status", "--porcelain").stdout.strip():
         found.append("there are uncommitted changes: a release is a commit, so commit or discard them first")
     if why := check_ready(plan):
         found.append(why)
@@ -165,7 +165,7 @@ def report(agent_dir, breaking_flag=False):
     found = problems_with(agent_dir, plan)
     face = interface(plan)
     last = next(iter(releases(agent_dir)), None)
-    head = agent_git.head(agent_dir)
+    head = agent_repo.head(agent_dir)
     if last:
         breaking, other = compare(last.get("interface") or {"params": {}, "outputs": {}, "side_effects": []}, face)
         major, minor = map(int, TAG_RE.match(last["version"]).groups())
@@ -199,8 +199,8 @@ def tag(agent_dir: Annotated[str, typer.Option("--agent", help="agent root")] = 
                "so the major version goes up and pinned callers keep the old one", changes=out["changes"])
     message = json.dumps({"revision": out["revision"], "breaking": bool(out["changes"]["breaking"]) or breaking, "interface": out["interface"]})
     root = Path(agent_dir).resolve()
-    agent_git.git(root, *agent_git.identity(root), "tag", "-a", out["next_version"], "-m", message)
-    emit({"ok": True, "version": out["next_version"], "commit": agent_git.head(root), "changes": out["changes"],
+    agent_repo.git(root, *agent_repo.identity(root), "tag", "-a", out["next_version"], "-m", message)
+    emit({"ok": True, "version": out["next_version"], "commit": agent_repo.head(root), "changes": out["changes"],
           "interface": out["interface"], "model_stages": out["model_stages"]})
 
 

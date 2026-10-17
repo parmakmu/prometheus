@@ -15,6 +15,8 @@ created this agent).
 - You orchestrate; children do the stage work. Do not do a stage's work
   yourself, and do not switch to another way of running a stage when the
   subagent path fails, unless the user says so.
+- Ask every question with a fixed set of answers with the question tool, in the
+  user's terms; read `.pi/skills/agent/references/asking.md` before the first.
 - Never perform or approve a side effect (`kind: side_effect`) without the
   user's explicit approval for that stage in this session.
 - Change `plan.yaml` only as the run protocol allows (unknown findings

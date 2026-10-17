@@ -22,7 +22,7 @@ SCRIPTS = SKILL / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 import agent_params as wp
 
-spec = importlib.util.spec_from_file_location("compile_wave", SCRIPTS / "compile_wave.py")
+spec = importlib.util.spec_from_file_location("compile_wave", SCRIPTS / "run_compile.py")
 cw = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cw)
 

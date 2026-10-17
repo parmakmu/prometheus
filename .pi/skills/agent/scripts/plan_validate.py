@@ -4,10 +4,10 @@ pi-subagents constraints it will be compiled into, and (when the plan lives in
 an agent) the agent's portability.
 
 Usage:
-  validate_plan.py PLAN.yaml [--agents a,b,c] [--external x,y] [--agent DIR]
+  plan_validate.py PLAN.yaml [--agents a,b,c] [--external x,y] [--agent DIR]
 
 In an agent, stage status comes from the active run (runs/<id>/run.yaml; see
-runs.py): the plan is reusable, each run is one execution of it.
+run_folders.py): the plan is reusable, each run is one execution of it.
 
 --agents    agent names from subagent({ action: "list" }); overrides the
             plan's `agents.available` list
@@ -48,7 +48,7 @@ from pydantic import (
 )
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
-from runs import active_run, last_run
+from run_folders import active_run, last_run
 from utils import (
     PLAN_FILE,
     load_yaml,
@@ -1141,10 +1141,10 @@ class Checker:
             (".pi/skills/agent/SKILL.md", "the planning skill used at resolve"),
             (".pi/settings.json", "project package declarations"),
             (".pi/agents/batcher.md", "the command runner map stages use"),
-            (".pi/skills/agent/scripts/compile_wave.py", "the wave compiler"),
+            (".pi/skills/agent/scripts/run_compile.py", "the wave compiler"),
         ):
             if not (root / rel).exists():
-                self.warn(f"agent: {rel} is missing ({what}); re-run scaffold_agent.py --refresh")
+                self.warn(f"agent: {rel} is missing ({what}); re-run agent_scaffold.py --refresh")
         packages = project_packages(root)
         for where, script, with_uv in self.gate_scripts:
             if not (root / "gates" / script).exists():

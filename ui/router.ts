@@ -4,7 +4,7 @@
  * stopping it when idle. Each worker is its own process: one Pi session, one folder, one `.env`.
  *
  *   GET  /me                     who you are
- *   GET  /agents              your agents (list_agents.py; no model involved)
+ *   GET  /agents              your agents (agent_list.py; no model involved)
  *   GET|POST /a/<slug>/params    its params for a form, and setting them (.env; never a secret's value)
  *   *    /p/<agent path>         prometheus, your planner         → worker in <your prometheus>
  *   *    /a/<slug>/<agent path>  an agent                       → worker in <your prometheus>/agents/<slug>
@@ -41,10 +41,10 @@ import { sandboxed, skillScript } from "./sandbox.ts";
 import { MAX_EDIT, changes, checkoutBranch, diffOf, discardBranch, discardEdits, inAgent, inside, listAgentFolder, listFiles, readAgentFile, saveAgentFile, sendFile, upload } from "./files.ts";
 import { childLog, outputs, textIn, waveInfo } from "./subagents.ts";
 import { ask, forward, historyFirst, restartStale, workerFor, workers } from "./workers.ts";
-// all your agents, or just one (`only`: its folder), as list_agents.py summarises them
+// all your agents, or just one (`only`: its folder), as agent_list.py summarises them
 function listAgents(user: string, res: ServerResponse, only?: string) {
   // in the planner's sandbox (it reads every agent's git), or the one agent's
-  void skillScript(only ?? prometheusOf(user), "list_agents.py", only ? ["--agent", only] : ["--root", "agents"]).then((r) =>
+  void skillScript(only ?? prometheusOf(user), "agent_list.py", only ? ["--agent", only] : ["--root", "agents"]).then((r) =>
     r.code ? send(res, 500, { error: r.err || r.out }) : (res.writeHead(200, { "Content-Type": "application/json" }), res.end(r.out)));
 }
 

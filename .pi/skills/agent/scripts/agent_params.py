@@ -10,14 +10,14 @@ The plan declares each param (`params:` in plan.yaml) with a type:
 A param reads the environment variable its `env:` names, else its name in upper
 case (email_folder -> EMAIL_FOLDER). Values come from the process environment
 first, then `.env` in the agent root (pydantic-settings), then the plan's
-default; values a run was started with (`run_log.py new --params`, an API call) win
+default; values a run was started with (`run_steps.py start-run --params`, an API call) win
 over all of them for that run. `.env` is per machine and not in git, and never loaded
-into pi's environment: the batcher adds the secrets a command names (compile_wave.py).
+into pi's environment: the batcher adds the secrets a command names (run_compile.py).
 """
 import re
 from pathlib import Path
 
-import runs
+import run_folders
 from dotenv import dotenv_values, set_key
 from pydantic import Field, SecretStr, create_model
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -68,7 +68,7 @@ def load(root: Path, specs):
         for name, s in specs.items() if ENV_NAME_RE.match(env_name(name, s))
     }
     settings = create_model("Params", __base__=_Base, **fields)(_env_file=Path(root) / ENV_FILE)
-    run = runs.active_run(root)
+    run = run_folders.active_run(root)
     given = (run.state.get("given_params") or {}) if run else {}
     values = {}
     for name, s in specs.items():

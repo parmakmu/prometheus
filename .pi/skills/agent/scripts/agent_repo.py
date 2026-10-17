@@ -27,9 +27,9 @@ the agent) before and after each writer child. The same check makes git a
 requirement: without a repo, writer children fail.
 
 Usage (from the agent root, or --agent DIR):
-  agent_git.py begin-change     start or continue a change branch (no active run; improve needs a run first)
-  agent_git.py review           the checked-out branch against main: commits, files
-  agent_git.py merge --action merge|keep|discard
+  agent_repo.py begin-change     start or continue a change branch (no active run; improve needs a run first)
+  agent_repo.py review           the checked-out branch against main: commits, files
+  agent_repo.py merge --action merge|keep|discard
 """
 import datetime
 import os
@@ -40,7 +40,8 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-from runs import active_run, list_runs
+from plan_validate import check_ready, validate
+from run_folders import active_run, list_runs
 from utils import (
     PLAN_DIR,
     PLAN_PARTS,
@@ -50,7 +51,6 @@ from utils import (
     refuse,
     report_state,
 )
-from validate_plan import check_ready, validate
 
 MAIN = "main"
 CHANGE_KINDS = ("revise", "improve")  # a change to the plan between runs: /agent-revise, /agent-improve
@@ -156,7 +156,7 @@ def find_off_branch(agent_dir, to):
     """{checked_out, home, uncommitted} when a run whose branch is `to` (run/<id>) doesn't have its home checked out:
     `to`, or main until the run's first commit creates that branch (until then, what the first wave writes waits
     uncommitted on main); `uncommitted` lists the changed files. None when it does, or git isn't here. A new run skips
-    every id that has a branch (run_log.py new), so an existing run/<id> is this run's own."""
+    every id that has a branch (run_steps.py start-run), so an existing run/<id> is this run's own."""
     if not (to and available() and is_repo(agent_dir)):
         return None
     home = to if to in run_branches(agent_dir) else MAIN
@@ -196,6 +196,21 @@ def run_branches(agent_dir):
     return git(agent_dir, "branch", "--list", "run/*", "--format=%(refname:short)", check=False).stdout.split()
 
 
+# commits on main that only a run or a reviewed merge makes: the first run's plan commit (run_steps.py start-run, when it
+# had something to commit), and `r<rev>: <branch>` (merge_message); the extension's hasRun (index.ts) greps for the same
+RUN_MARK = r"^r[0-9]+: (plan for run |(run|revise|improve)/)"
+
+
+def has_run(agent_dir):
+    """Whether the agent has had a run, which closes main to direct edits: a run here, or one main's history shows,
+    since runs/ is not in git and a clone or an installed copy has none."""
+    if list_runs(agent_dir):
+        return True
+    if not available() or not is_repo(agent_dir):
+        return False
+    return bool(git(agent_dir, "log", MAIN, "-1", "-E", f"--grep={RUN_MARK}", "--format=%h", check=False).stdout.strip())
+
+
 def is_change_branch(name):
     return bool(name) and name.split("/")[0] in CHANGE_KINDS and "/" in name
 
@@ -233,12 +248,9 @@ def begin_change(kind: Annotated[str, typer.Option(help="revise (/agent-revise) 
     if kind not in CHANGE_KINDS:
         refuse(f"kind must be one of {', '.join(CHANGE_KINDS)}")
     agent_dir = Path.cwd()
-    if run := active_run(agent_dir):
-        refuse(f"run {run.id} is active: tell the run what to change (it resolves on its branch), or stop it first")
-    if not list_runs(agent_dir):
-        if kind == "improve":
-            refuse("no run yet, so nothing to improve from: run the agent first (/agent-run), "
-                   "or change the plan directly while planning (/agent-revise)")
+    import agent_state  # here, not at the top: agent_state imports this module
+    agent_state.require(agent_dir, agent_state.revise if kind == "revise" else agent_state.improve)
+    if not has_run(agent_dir):
         emit({"ok": True, "branch": branch(agent_dir), "mode": "planning", "note": "no run yet: planning edits the plan directly"})
     b = branch(agent_dir)
     if is_change_branch(b):
@@ -247,8 +259,6 @@ def begin_change(kind: Annotated[str, typer.Option(help="revise (/agent-revise) 
             refuse(f"{b} is an open /agent-{open_kind} change: finish it first (review: merge, keep "
                    f"or discard), then start /agent-{kind}")
         emit({"ok": True, "branch": b, "mode": open_kind, "continued": True})
-    if b != MAIN:
-        refuse(f"branch {b} is checked out and not reviewed: review it first (agent_merge: merge, keep or discard)")
     today = datetime.datetime.now().astimezone().date().isoformat()  # local date
     taken = [int(m.group(1)) for x in git(agent_dir, "branch", "--list", f"{kind}/{today}-*", "--format=%(refname:short)").stdout.split()
              if (m := re.match(rf"^{kind}/{today}-(\d+)$", x))]
@@ -309,10 +319,8 @@ def merge(action: Annotated[str, typer.Option(help="merge | keep | discard")],
     if action not in ("merge", "keep", "discard"):
         refuse("action must be merge, keep or discard")
     b = branch(agent_dir)
-    if b in (None, MAIN):
-        refuse("main is checked out: nothing to review")
-    if run := active_run(agent_dir):
-        refuse(f"run {run.id} is still active: let it finish, or stop it (agent_stop_run), then review")
+    import agent_state  # here, not at the top: agent_state imports this module
+    agent_state.require(agent_dir, agent_state.merge, action)
     if action == "merge":
         plan = read_plan(agent_dir, {})
         errors = validate(plan, None, None, agent_dir)[0]

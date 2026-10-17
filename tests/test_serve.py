@@ -1,16 +1,16 @@
 """`prometheus serve` (prometheus/serve.py) through FastAPI's test client: the agent and its generated form, starting a
 run from uploads, its state, events and outputs, a run that waits for an answer, the token, the limit on runs, and runs
-read back after a restart. pi is faked (test_frozen.fake_launch: the stage programs run directly)."""
+read back after a restart. pi is faked (test_run_release.fake_launch: the stage programs run directly)."""
 import pytest
 
 pytest.importorskip("fastapi")
 pytest.importorskip("httpx")
 from conftest import SKILL
 from fastapi.testclient import TestClient
-from test_frozen import fake_pi  # noqa: F401 (a fixture)
-from test_release import make_agent
+from test_agent_release import make_agent
+from test_run_release import fake_pi  # noqa: F401 (a fixture)
 
-from prometheus import frozen, serve
+from prometheus import run_release, serve
 from prometheus.cli import PrometheusError
 
 
@@ -20,8 +20,8 @@ def agent(tmp_path, run_py, monkeypatch, fake_pi):  # noqa: F811
     monkeypatch.setenv("PROMETHEUS_RELEASES", str(tmp_path / "releases"))
     (tmp_path / "agents").mkdir()
     folder = make_agent(tmp_path / "agents", run_py)
-    assert run_py([SKILL / "scripts" / "release.py", "tag", "--agent", folder]).data["ok"]
-    return frozen.load_agent(str(folder))
+    assert run_py([SKILL / "scripts" / "agent_release.py", "tag", "--agent", folder]).data["ok"]
+    return run_release.load_agent(str(folder))
 
 
 def client(agent, **options):
@@ -91,7 +91,7 @@ def test_what_a_run_needs_is_checked_before_it_starts(agent, monkeypatch):
 
     def refuse(*args, **kwargs):
         raise PrometheusError("counter v1.0 can't run: missing params: source", {"preflight": {"missing_params": ["source"]}})
-    monkeypatch.setattr(frozen.Agent, "start", refuse)
+    monkeypatch.setattr(run_release.Agent, "start", refuse)
     refused = c.post("/runs", files={"source": ("a", b"x")})
     assert refused.status_code == 400 and refused.json()["detail"]["needs"] == {"params": ["source"], "secrets_on_the_server": []}
 

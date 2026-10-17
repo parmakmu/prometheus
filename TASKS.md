@@ -8,11 +8,8 @@ frozen release as code, with no orchestrator. GitLab; users are developers; ever
 
 ## Open
 
-- [ ] 75. the run protocol (~3k tokens) is read at the start of every run, even one that turns out fully reused
-  (email-summaries run 2026-10-17-2: the read was most of the run's cost). Give each start only what it needs: the
-  tool results already carry `next` and conclusions; the protocol could be split so a plain run reads a short core
-- [ ] 73. a map's merge checks that every item of the split appears once in the result (the batch task already says
-  to name items as the batch file does)
+
+
 - [ ] 38. per-item reuse in map stages: a batch child writes one result per item (its id), a store keyed by item
   content + stage fingerprint, split leaves known items out, merge restores item order. Until an agent runs over a
   growing input; 68 reuses a map stage whole
@@ -35,6 +32,15 @@ frozen release as code, with no orchestrator. GitLab; users are developers; ever
   `prune` removes empty launch folders
 - [x] 68–72. a map stage reused whole; outputs anywhere in the run reused; a fully reused wave recorded at compile
   (`launched: false`); deliverables with item counts in the finished result
+- [x] 75. a start reads only the run protocol's core, sent with `/agent-run`'s prompt (no read turn); the
+  detours (asking, preflight, failures, resolving, changing) are read when it says. Measured on email-summaries
+  run 2026-10-17-2 ($0.00204): the protocol was ~a quarter (a read turn + ~3k tokens cached); half was the ~8k
+  tokens of system prompt and tools every session pays, ~2k of them ours (tool descriptions ~1.75k)
+- [x] 76. state machine as a Quint-style spec (`agent_state.py`: `State`, actions with guards and effects,
+  `INVARIANTS`; `require(agent_dir, <action>)` in each script); names `<place>_<status>` (+ `other_branch`); `has_run`
+  from main's history too; tests: model check, walk with hand edits and branch switches, conformance
+- [x] 73. a map's merge checks that every item of the split is named by exactly one result record (by path or
+  file name; JSON-object items only counted) and fails naming the missing and repeated ones
 - [x] 74. results state conclusions: a finished run's `report` (`do`: open nothing when every deliverable was
   checked); a new run starts without asking whether inputs changed. Live: run 2026-10-17-2, 5 tool calls in 11 s
 

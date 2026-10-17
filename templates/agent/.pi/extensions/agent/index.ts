@@ -15,12 +15,12 @@
  * Tools for the model (the mechanical steps of the run protocol)
  *   agent_check            validate the plan and compile-check its waves
  *   agent_sessions         list this agent's Pi sessions, or read a bounded part of one
- *   agent_new_run          start a run (runs/<id>/)
+ *   agent_start_run          start a run (runs/<id>/)
  *   agent_stop_run         stop the active run (kept in runs/); returns its branch for review
- *   agent_compile          compile the active run's next wave into the exact subagent call
+ *   agent_compile_wave          compile the active run's next wave into the exact subagent call
  *   agent_record_decision  write the user's answer for a decision stage
- *   agent_log_start        record a wave launch
- *   agent_log_finish       record a wave result
+ *   agent_start_wave        record a wave launch
+ *   agent_finish_wave       record a wave result
  *   agent_resolve           resolve provisional stages after their discovery (or change pending ones, asked)
  *   agent_record_critique  record a plan-critic result; marks the plan ready if it validates
  *   agent_set_params       set param values in .env (not secrets)
@@ -29,7 +29,7 @@
  * The plan is reusable; each execution of it is a run, a folder runs/<id>/ with its
  * state (run.yaml), the children's work/ and compiled waves. Waves are not written in the
  * plan; the scripts derive them from the stages and the active run's stage status.
- * The agent is its own git repo (agent_git.py). main holds the reviewed plan; a
+ * The agent is its own git repo (agent_repo.py). main holds the reviewed plan; a
  * run's changes go to run/<id>, a /agent-revise change to revise/<date>-<n>, /agent-improve to improve/<date>-<n>, and each
  * reaches main only when the user merges it. The scripts commit (never while a wave runs:
  * pi-subagents checks the repo's staged index around writer children); git commands that
@@ -48,6 +48,7 @@
  */
 import { defineTool, type BeforeAgentStartEvent, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type, type Static, type TSchema } from "typebox";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -55,19 +56,32 @@ import * as path from "node:path";
 
 // --- prompts sent to the model ------------------------------------------------
 
-const RUN_PROMPT = (note: string) => `Run this agent. Read \`.pi/skills/agent/references/run-protocol.md\`
-and follow it from "Every start": check, then plan, resolve or run the next
-wave, whichever the plan needs.
+/** The run protocol's core, sent with the prompt so a start needs no read: about a quarter of a fully reused run
+ * went on reading it (TASKS 75). Its detours (preflight, failures, resolving, changing, asking) are read when it says. */
+function readProtocol(root: string): string {
+  try {
+    return fs.readFileSync(path.join(root, ".pi", "skills", "agent", "references", "run-protocol.md"), "utf8");
+  } catch {
+    return "Read `.pi/skills/agent/references/run-protocol.md` first.";
+  }
+}
+
+const RUN_PROMPT = (root: string, note: string) => `Run this agent. Follow the run protocol below from
+"Every start": check, then plan, resolve or run the next wave, whichever the
+plan needs.
 
 Use the agent tools for every mechanical step: \`agent_check\`,
-\`agent_new_run\`, \`agent_compile\`, \`agent_record_decision\`,
-\`agent_log_start\`, \`agent_log_finish\`, \`agent_resolve\`,
+\`agent_start_run\`, \`agent_compile_wave\`, \`agent_record_decision\`,
+\`agent_start_wave\`, \`agent_finish_wave\`, \`agent_resolve\`,
 \`agent_stop_run\` and \`agent_merge\`. The subagent tool is already active: pass
-the \`call\` that \`agent_compile\` returns to it unchanged, without calling
+the \`call\` that \`agent_compile_wave\` returns to it unchanged, without calling
 subagents_enable or listing agents first. Ask every question that has a fixed set of
-answers with the question tool (run-protocol.md, "Asking the user").
+answers with the question tool, after reading
+\`.pi/skills/agent/references/asking.md\` once.
 
-Note from the user for this run (may be empty): ${note}`;
+Note from the user for this run (may be empty): ${note}
+
+${readProtocol(root)}`;
 
 /** Starts every /agent-auto hand-over: its turn ends the autopilot's hold on the run tools. */
 const HANDOVER_MARK = "/agent-auto ran";
@@ -77,7 +91,7 @@ const PARENT_WAKE = "Inspect subagent updates above.";
 const isNotice = (event: BeforeAgentStartEvent) =>
   event.messageType === "custom" ? event.message.customType.startsWith("subagent") : event.prompt.startsWith(PARENT_WAKE);
 /** The tools /agent-auto calls itself while it runs; the model's are refused meanwhile. */
-const AUTO_OWNS = new Set(["agent_compile", "agent_log_start", "agent_log_finish", "agent_new_run", "agent_stop_run", "subagent"]);
+const AUTO_OWNS = new Set(["agent_compile_wave", "agent_start_wave", "agent_finish_wave", "agent_start_run", "agent_stop_run", "subagent"]);
 
 const FINISH_PROMPT = (result: string) => `${HANDOVER_MARK} this agent's run to the end. Its \`report\` below is the final
 report, settled by code (deliverables, how each was checked, criteria): do what \`report.do\` says, nothing more. Pass \`mission_close\` to the subagent tool
@@ -137,8 +151,7 @@ branch's committed state on the bundle's params and files), and release it after
    the user to take to prometheus.
    \`lessons\` are what earlier /agent-improve passes decided: do not re-propose a rejected one, and
    if an applied one's problem shows up again, say its fix did not work.
-3. Ask the user about each proposal with the question tool (apply / skip), in plain words (run-protocol,
-   "Asking the user"): what you noticed, what it costs them, what the change will do, and what skipping
+3. Ask the user about each proposal with the question tool (apply / skip), in plain words (\`.pi/skills/agent/references/asking.md\`): what you noticed, what it costs them, what the change will do, and what skipping
    leaves. Show the evidence and the exact edit (before and after) in chat first, not in the question;
    a lesson for the agent is "the agent will stop doing X", not the rule's text. Then make the accepted
    edits following the "Changing the plan" section of
@@ -243,7 +256,7 @@ function alive(pid: number): boolean {
   }
 }
 
-/** Why a recorded wave (run_log finish) waits for the user, or undefined when the run goes on by itself. */
+/** Why a recorded wave (run_steps.py finish-wave) waits for the user, or undefined when the run goes on by itself. */
 function waitsForUser(d: any): string | undefined {
   if (!d?.ok) return undefined;
   if (d.run_status === "done") return `run ${d.run} is done`;
@@ -306,7 +319,7 @@ const BRANCH_FILES = /^(gates|scripts|\.pi[\\/]agents)[\\/]|^(pyproject\.toml|uv
 const SESSION_FILES = /[\\/]\.pi[\\/]agent[\\/]sessions[\\/]/;
 // adding a package is the user's call: only agent_add_package, which asks, may do it
 // (also uvx, uv tool and uv run --with, which fetch packages for one command; and any write to the package list)
-const PACKAGE_INSTALL = /\buv\s+(?:pip\s+)?(?:add|install)\b|\bpip3?\s+install\b|\buvx\b|\buv\s+tool\s+(?:install|run)\b|\buv\s+run\b[^\n;&|]*\s--with\b|add_package\.py/;
+const PACKAGE_INSTALL = /\buv\s+(?:pip\s+)?(?:add|install)\b|\bpip3?\s+install\b|\buvx\b|\buv\s+tool\s+(?:install|run)\b|\buv\s+run\b[^\n;&|]*\s--with\b|agent_packages\.py/;
 const PACKAGE_FILES = /(^|[\\/])(pyproject\.toml|uv\.lock)$/;
 const PACKAGE_FILES_WRITE = /(pyproject\.toml|uv\.lock)/;
 const SHELL_WRITE = /\bsed\s+-i|>|\btee\b|\bmv\b|\bcp\b|\bperl\s+-\w*i|\btruncate\b|\bpython3?\b|\bnode\b/;
@@ -360,18 +373,28 @@ function runActive(root: string): boolean {
   }
 }
 
-/** True once a run has been started (runs/<id>/run.yaml exists). */
+/** agent_repo.RUN_MARK: commits on main only a run or a reviewed merge makes. */
+const RUN_MARK = "^r[0-9]+: (plan for run |(run|revise|improve)/)";
+
+/** True once the agent has had a run (agent_repo.has_run): a runs/<id>/run.yaml here, or one main's history shows,
+ * since runs/ is not in git and a clone has none. */
 function hasRun(root: string): boolean {
   try {
-    return fs.readdirSync(path.join(root, "runs")).some((d) => fs.existsSync(path.join(root, "runs", d, "run.yaml")));
+    if (fs.readdirSync(path.join(root, "runs")).some((d) => fs.existsSync(path.join(root, "runs", d, "run.yaml")))) return true;
   } catch {
-    return false;
+    // no runs/ here
+  }
+  if (!fs.existsSync(path.join(root, ".git"))) return false; // no repo of its own: git would read an enclosing one
+  try {
+    return execFileSync("git", ["log", "main", "-1", "-E", `--grep=${RUN_MARK}`, "--format=%h"], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() !== "";
+  } catch {
+    return false; // no git, or no main yet
   }
 }
 
 async function check(pi: ExtensionAPI, root: string, signal?: AbortSignal) {
-  const v = await runScript(pi, root, "validate_plan.py", ["plan.yaml"], signal);
-  const c = await runScript(pi, root, "compile_wave.py", ["--check"], signal);
+  const v = await runScript(pi, root, "plan_validate.py", ["plan.yaml"], signal);
+  const c = await runScript(pi, root, "run_compile.py", ["--check"], signal);
   return {
     valid: v.data?.valid ?? false,
     status: v.data?.status,
@@ -390,21 +413,21 @@ export default function agentExtension(pi: ExtensionAPI) {
   pi.on("tool_call", (event, ctx) => {
     const root = findRoot(ctx.cwd);
     if (!root) return;
-    // run 2026-10-05-1: a completion notice woke the model, which called agent_log_finish on a wave /agent-auto had recorded
+    // run 2026-10-05-1: a completion notice woke the model, which called agent_finish_wave on a wave /agent-auto had recorded
     if (autopilot && AUTO_OWNS.has(event.toolName))
       return { block: true, reason: "/agent-auto is running this run's waves and records them itself; it hands over when it needs you. Do nothing now." };
     // run 2026-10-09-4: the wave's completion notice came after the hand-over, and the model recorded the wave again
     const wave = (event.input as { wave?: string }).wave;
-    if (event.toolName === "agent_log_finish" && wave && autoRecorded.has(wave))
+    if (event.toolName === "agent_finish_wave" && wave && autoRecorded.has(wave))
       return { block: true, reason: `/agent-auto already recorded wave ${wave}: there is nothing to record. Follow its hand-over message.` };
-    if (event.toolName === "agent_new_run") autoRecorded.clear();
+    if (event.toolName === "agent_start_run") autoRecorded.clear();
     const input = event.input as { path?: string; command?: string };
     const shellCommand = event.toolName === "bash" || event.toolName === "powershell" ? (input.command ?? "") : "";
     const packageFile =
       ((event.toolName === "write" || event.toolName === "edit") && !!input.path && PACKAGE_FILES.test(path.relative(root, path.resolve(ctx.cwd, input.path)))) ||
       (PACKAGE_FILES_WRITE.test(shellCommand) && SHELL_WRITE.test(shellCommand));
     if (PACKAGE_INSTALL.test(shellCommand) || packageFile)
-      return { block: true, reason: "Python packages are added with agent_add_package (the packages and why they are needed), which asks the user to approve them. Do not run uv add, pip install, uvx or uv run --with, edit pyproject.toml or uv.lock, or run add_package.py yourself. If you cannot ask (you are a stage's child), do not add the package: finish without it, or fail and name the package and why." };
+      return { block: true, reason: "Python packages are added with agent_add_package (the packages and why they are needed), which asks the user to approve them. Do not run uv add, pip install, uvx or uv run --with, edit pyproject.toml or uv.lock, or run agent_packages.py yourself. If you cannot ask (you are a stage's child), do not add the package: finish without it, or fail and name the package and why." };
     if ((event.toolName === "bash" || event.toolName === "powershell") && GIT_WRITE.test(input.command ?? ""))
       return {
         block: true,
@@ -422,7 +445,7 @@ export default function agentExtension(pi: ExtensionAPI) {
     if (envFile)
       return {
         block: true,
-        reason: ".env holds this machine's param values and may hold secrets: do not read or change it. Values that are not secrets: agent_set_params. Secrets: ask the user to add the variable to .env themselves (agent_compile's preflight names it); never ask for a secret's value.",
+        reason: ".env holds this machine's param values and may hold secrets: do not read or change it. Values that are not secrets: agent_set_params. Secrets: ask the user to add the variable to .env themselves (agent_compile_wave's preflight names it); never ask for a secret's value.",
       };
     // the critic's record, always: only agent_record_critique writes it (a hand-written one would claim a review)
     const critique = input.path
@@ -430,7 +453,8 @@ export default function agentExtension(pi: ExtensionAPI) {
       : (event.toolName === "bash" || event.toolName === "powershell") && /\.plan[\\/]critique/.test(input.command ?? "") && SHELL_WRITE.test(input.command ?? "");
     if (critique && event.toolName !== "read")
       return { block: true, reason: "The critic's record (.plan/critique.yaml) is written only by agent_record_critique, which checks the critic ran and ties its result to the plan. Read it with the read tool." };
-    if (!hasRun(root)) return; // before the first run the plan is still a draft on main
+    // what follows guards writes only; before the first run the plan is still a draft on main (hasRun may run git)
+    if (!["write", "edit", "bash", "powershell"].includes(event.toolName) || !hasRun(root)) return;
     // after the first run, main changes only by a reviewed merge: a write here means the work
     // is on the wrong branch (say, someone switched branches during a change)
     if (!runActive(root) && currentBranch(root) === "main") {
@@ -460,8 +484,8 @@ export default function agentExtension(pi: ExtensionAPI) {
       return {
         block: true,
         reason: planOpen
-          ? "Run state changes only through the agent tools (agent_new_run, agent_log_start/finish), and the critic's record (.plan/critique.yaml) only through agent_record_critique. Read the files with the read tool."
-          : "A run exists, so the plan changes only through the agent tools: during a run agent_resolve and agent_record_critique; otherwise /agent-revise (a change branch). Run state: agent_new_run, agent_log_start/finish. Read the files with the read tool.",
+          ? "Run state changes only through the agent tools (agent_start_run, agent_start_wave/finish), and the critic's record (.plan/critique.yaml) only through agent_record_critique. Read the files with the read tool."
+          : "A run exists, so the plan changes only through the agent tools: during a run agent_resolve and agent_record_critique; otherwise /agent-revise (a change branch). Run state: agent_start_run, agent_start_wave/finish. Read the files with the read tool.",
       };
   });
 
@@ -579,13 +603,13 @@ export default function agentExtension(pi: ExtensionAPI) {
       // a finished run with nothing to review needs only the report: not the whole run protocol (~3k tokens)
       const finished = data?.run_status === "done" && !data?.review;
       // The hold ends now, not when this message's turn starts: delivered into a notice turn already running, it starts
-      // no turn of its own, and the model, refused agent_compile after asking for the approval, stopped believing
+      // no turn of its own, and the model, refused agent_compile_wave after asking for the approval, stopped believing
       // /agent-auto would go on (an API call, 2026-10-05). The loop is over: nothing is left to protect.
       autopilot = false;
       // a follow-up: a completion notice may have started a turn, and Pi drops a plain message sent during one
       // (run 2026-10-05-1 lost its report this way)
       pi.sendUserMessage(finished ? FINISH_PROMPT(compact(data))
-        : `${RUN_PROMPT("")}\n\n${HANDOVER_MARK} the waves it could without you and stopped: ${why}. Go on from here (skip the checks it did):\n${compact(data)}`,
+        : `${RUN_PROMPT(root, "")}\n\n${HANDOVER_MARK} the waves it could without you and stopped: ${why}. Go on from here (skip the checks it did):\n${compact(data)}`,
         { deliverAs: "followUp" });
     };
     try {
@@ -593,22 +617,23 @@ export default function agentExtension(pi: ExtensionAPI) {
     } catch (e: any) {
       return ctx.ui.notify(`${e.message}. Use /agent-run instead.`, "error");
     }
-    const state = (await step("agent_state.py", [])).state;
-    if (["planned", "ready", "branch_review", "change_ready"].includes(state)) {
-      const r = await step("run_log.py", ["new", "--note", "started by /agent-auto"]);
+    const { state, moves = [] } = await step("agent_state.py", []);
+    // not from an unfinished change: starting a run would commit it as it is and run main's plan
+    if (moves.includes("agent_start_run") && state !== "change_draft") {
+      const r = await step("run_steps.py", ["start-run", "--note", "started by /agent-auto"]);
       if (!r.ok) return ctx.ui.notify(r.error ?? "cannot start a run", "error");
-    } else if (state !== "between_waves") {
+    } else if (!moves.includes("agent_compile_wave")) {
       return ctx.ui.notify(`/agent-auto starts from a ready plan or a run between waves; the agent is ${state}: use /agent-run.`, "warning");
     }
     autopilot = true;
     autoRecorded.clear();
     for (;;) {
-      const c = await step("compile_wave.py", []);
+      const c = await step("run_compile.py", []);
       if (!c.ok) return handOver("the next wave needs something first", c);
       // one line in the chat per wave start and end: with no model turn, nothing else shows the run moving
       const started = Date.now();
       show(`Wave ${c.wave} ${c.launched === false ? "reused" : "started"}`, `${c.stages.join(", ")}${c.notes?.length ? ` (${c.notes.join("; ")})` : ""}`);
-      let f: any = c; // every stage reused: compile_wave recorded the wave, with agent_log_finish's result, and launched nothing
+      let f: any = c; // every stage reused: compile_wave recorded the wave, with agent_finish_wave's result, and launched nothing
       if (c.launched !== false) {
         ctx.ui.setStatus("agent-auto", `agent-auto: wave ${c.wave} running`);
         let launched: any;
@@ -619,12 +644,12 @@ export default function agentExtension(pi: ExtensionAPI) {
         }
         const id = launched?.details?.runId ?? launched?.details?.asyncId;
         const dir = launched?.details?.asyncDir;
-        const recorded = await step("run_log.py", ["start", "--wave", c.wave, "--subagent-run-id", String(id)]);
+        const recorded = await step("run_steps.py", ["start-wave", "--wave", c.wave, "--subagent-run-id", String(id)]);
         if (!recorded.ok || !dir) return handOver(`wave ${c.wave} launched as ${id} but not recorded`, recorded);
         const end = await waveEnd(dir);
         if (end === "lost") return handOver(`pi-subagents' runner for wave ${c.wave} stopped without recording how it ended (run ${id}); check the run before relaunching`, { wave: c.wave, subagent_run_id: id });
         if (end === "paused") return handOver(`a child of wave ${c.wave} asked a question (pi-subagents run ${id})`, { wave: c.wave, subagent_run_id: id });
-        f = await step("run_log.py", ["finish", "--wave", c.wave]);
+        f = await step("run_steps.py", ["finish-wave", "--wave", c.wave]);
         if (!f.ok) return handOver(`recording wave ${c.wave} failed`, f);
         autoRecorded.add(c.wave);
       }
@@ -695,7 +720,7 @@ export default function agentExtension(pi: ExtensionAPI) {
       if (looping) return ctx.ui.notify("/agent-auto is running this run's waves; it hands over when it needs you.", "warning");
       autopilot = false; // a hand-over that never arrived: you take the run back
       autoRecorded.clear();
-      ask(ctx, RUN_PROMPT(args.trim()));
+      ask(ctx, RUN_PROMPT(mustRoot(ctx), args.trim()));
     },
   });
 
@@ -710,9 +735,9 @@ export default function agentExtension(pi: ExtensionAPI) {
       ctx.ui.notify("The agent is busy; wait for it to finish, then run the command again.", "warning");
       return;
     }
-    const r = await runScript(pi, root, "agent_git.py", ["begin-change", "--kind", kind]);
+    const r = await runScript(pi, root, "agent_repo.py", ["begin-change", "--kind", kind]);
     if (!r.data?.ok) {
-      ctx.ui.notify(r.data?.error ?? `agent_git.py begin-change failed: ${(r.stderr || r.stdout).trim().slice(0, 500)}`, "error");
+      ctx.ui.notify(r.data?.error ?? `agent_repo.py begin-change failed: ${(r.stderr || r.stdout).trim().slice(0, 500)}`, "error");
       return;
     }
     return { root, branch: r.data.branch ?? "main", mode: r.data.mode };
@@ -740,9 +765,9 @@ export default function agentExtension(pi: ExtensionAPI) {
       const words = args.trim().split(/\s+/).filter(Boolean);
       const isBundle = (w: string) => /\.tgz$/.test(w) && fs.existsSync(path.resolve(ctx.cwd, w));
       for (const file of words.filter(isBundle)) {
-        const added = await runScript(pi, root, "bundle.py", ["add", path.resolve(ctx.cwd, file), "--agent", root]);
+        const added = await runScript(pi, root, "run_bundle.py", ["add", path.resolve(ctx.cwd, file), "--agent", root]);
         if (!added.data?.ok) {
-          ctx.ui.notify(added.data?.error ?? `bundle.py failed: ${(added.stderr || added.stdout).trim().slice(0, 500)}`, "error");
+          ctx.ui.notify(added.data?.error ?? `run_bundle.py failed: ${(added.stderr || added.stdout).trim().slice(0, 500)}`, "error");
           return;
         }
         ctx.ui.notify(`Imported ${file}: run ${added.data.run} of ${added.data.version}, ${added.data.state}` +
@@ -776,13 +801,13 @@ export default function agentExtension(pi: ExtensionAPI) {
       }
       const words = args.trim().split(/\s+/).filter(Boolean);
       const run = words.find((w) => !w.startsWith("--"));
-      const res = await runScript(pi, root, "bundle.py", [
+      const res = await runScript(pi, root, "run_bundle.py", [
         "make", ...(run ? ["--run", path.join(root, "runs", path.basename(run))] : ["--agent", root]),
         "--out", path.join(root, "runs"), ...(words.includes("--with-files") ? ["--with-files"] : []),
       ]);
       const b = res.data ?? {};
       if (!b.ok) {
-        ctx.ui.notify(b.error ?? `bundle.py failed: ${(res.stderr || res.stdout).trim().slice(0, 500)}`, "error");
+        ctx.ui.notify(b.error ?? `run_bundle.py failed: ${(res.stderr || res.stdout).trim().slice(0, 500)}`, "error");
         return;
       }
       show("Bundle", [
@@ -804,9 +829,9 @@ export default function agentExtension(pi: ExtensionAPI) {
         return;
       }
       const [info, chk, next] = await Promise.all([
-        runScript(pi, root, "list_agents.py", ["--agent", root]),
+        runScript(pi, root, "agent_list.py", ["--agent", root]),
         check(pi, root),
-        runScript(pi, root, "compile_wave.py", ["--no-commit"]),
+        runScript(pi, root, "run_compile.py", ["--no-commit"]),
       ]);
       const b = info.data ?? {};
       const s = chk.summary ?? {};
@@ -879,7 +904,7 @@ export default function agentExtension(pi: ExtensionAPI) {
         if (!params.packages.length || !params.reason.trim()) throw new Error("name the packages and say why they are needed");
         const yes = await ctx.ui.confirm("Add a Python package?", `${params.packages.join(", ")}\n\nWhy: ${params.reason.trim()}`);
         if (!yes) return { content: [{ type: "text" as const, text: "The user declined. Do not add it: work without it, or ask the user what to do instead." }], details: { declined: true } };
-        return toolResult(await runScript(pi, root, "add_package.py", [...params.packages, "--reason", params.reason], signal), "add_package.py");
+        return toolResult(await runScript(pi, root, "agent_packages.py", [...params.packages, "--reason", params.reason], signal), "agent_packages.py");
       },
     }),
   );
@@ -947,7 +972,7 @@ export default function agentExtension(pi: ExtensionAPI) {
   });
 
   scriptTool({
-    name: "agent_new_run",
+    name: "agent_start_run",
     label: "New run",
     description:
       "Start a run of this agent: a folder runs/<id>/ for its state, work files and outputs, which becomes the active run. It starts from main; the run's own plan changes go to a branch run/<id>. Always starts from main: a run or change branch checked out is committed and kept for review (the result's left_branch names it; tell the user it still waits for review), unless main's plan is not ready. Refuses while another run is active.",
@@ -955,8 +980,8 @@ export default function agentExtension(pi: ExtensionAPI) {
     parameters: Type.Object({
       note: Type.Optional(Type.String({ description: "what this run is for, in the user's words" })),
     }),
-    script: "run_log.py",
-    args: (p) => ["new", ...opt("--note", p.note)],
+    script: "run_steps.py",
+    args: (p) => ["start-run", ...opt("--note", p.note)],
   });
 
   scriptTool({
@@ -966,7 +991,7 @@ export default function agentExtension(pi: ExtensionAPI) {
       "Stop the active run (it stays in runs/, marked stopped). Returns its branch, if it changed the plan, for the user's review with agent_merge, and `mission_close` (pass it to the subagent tool unchanged). Refuses while a wave is running.",
     promptGuidelines: ["Stop a run only when the user asked to stop it or to start over."],
     parameters: Type.Object({ note: Type.Optional(Type.String({ description: "why it stopped" })) }),
-    script: "run_log.py",
+    script: "run_steps.py",
     args: (p) => ["stop", ...opt("--note", p.note)],
   });
 
@@ -983,18 +1008,18 @@ export default function agentExtension(pi: ExtensionAPI) {
       action: Type.Union([Type.Literal("merge"), Type.Literal("keep"), Type.Literal("discard")]),
       summary: Type.Optional(Type.String({ description: "merge: what the branch changes, in words, for the commit message" })),
     }),
-    script: "agent_git.py",
+    script: "agent_repo.py",
     args: (p) => ["merge", "--action", p.action, ...opt("--summary", p.summary)],
   });
 
   scriptTool({
-    name: "agent_compile",
+    name: "agent_compile_wave",
     label: "Compile wave",
     description:
-      "Compile the active run's next wave into the exact pi-subagents call. Returns {ok, run, wave, stages, ends_with, call, children} when it can launch; {ok, launched: false, ...} when every stage was reused from an earlier run, the wave already recorded with nothing launched (what agent_log_finish returns: go on from it, launch and log nothing); or {ok: false, preflight} listing params to set (missing_params), secrets the user must add to .env (missing_secrets), decisions to collect, approvals to get, and review_needed when the last wave ended with a review the user has not answered yet. Only the launched wave's plan is committed; children that completed in a failed launch of the same wave, unchanged since, are not run again (notes say which).",
+      "Compile the active run's next wave into the exact pi-subagents call. Returns {ok, run, wave, stages, ends_with, call, children} when it can launch; {ok, launched: false, ...} when every stage was reused from an earlier run, the wave already recorded with nothing launched (what agent_finish_wave returns: go on from it, launch and log nothing); or {ok: false, preflight} listing params to set (missing_params), secrets the user must add to .env (missing_secrets), decisions to collect, approvals to get, and review_needed when the last wave ended with a review the user has not answered yet. Only the launched wave's plan is committed; children that completed in a failed launch of the same wave, unchanged since, are not run again (notes say which).",
     promptSnippet: "Compile the next agent wave into a subagent call",
     promptGuidelines: [
-      "Never write a wave script by hand; use agent_compile and pass its `call` to the subagent tool unchanged. `call.workflow` is a script path (pi-subagents reads it itself): pass it as-is, do not open the file or paste its contents into the tool call.",
+      "Never write a wave script by hand; use agent_compile_wave and pass its `call` to the subagent tool unchanged. `call.workflow` is a script path (pi-subagents reads it itself): pass it as-is, do not open the file or paste its contents into the tool call.",
       "Only list a stage in `approve` after the user explicitly approved that stage's side effect in this session.",
       "Pass `reviewed: true` only after the user saw the last wave's outputs (preflight review_needed) and said to go on.",
       "Pass `budget` only after preflight budget: the user saw what the run spent and gave a new limit.",
@@ -1004,7 +1029,7 @@ export default function agentExtension(pi: ExtensionAPI) {
       reviewed: Type.Optional(Type.Boolean({ description: "the user reviewed the last wave's outputs and said to go on" })),
       budget: Type.Optional(Type.Number({ description: "the run's new cost limit in USD, given by the user after preflight budget" })),
     }),
-    script: "compile_wave.py",
+    script: "run_compile.py",
     args: (p) => [...opt("--approve", p.approve?.join(",")), ...(p.reviewed ? ["--reviewed"] : []), ...opt("--budget", p.budget?.toString())],
   });
 
@@ -1017,33 +1042,33 @@ export default function agentExtension(pi: ExtensionAPI) {
       stage: Type.String({ description: "the decision stage id" }),
       answer: Type.Any({ description: "the user's answer as JSON (object, string, list)" }),
     }),
-    script: "run_log.py",
+    script: "run_steps.py",
     args: (p) => ["decision", "--stage", p.stage, "--answer", JSON.stringify(p.answer)],
   });
 
   scriptTool({
-    name: "agent_log_start",
+    name: "agent_start_wave",
     label: "Log wave start",
     description: "Record that the active run's next wave was launched: marks its stages running and appends a launch to runs/<id>/run.yaml.",
     parameters: Type.Object({
-      wave: Type.String({ description: "the wave id agent_compile returned" }),
+      wave: Type.String({ description: "the wave id agent_compile_wave returned" }),
       subagent_run_id: Type.String({ description: "the run id the subagent launch returned" }),
       mission_id: Type.Optional(Type.String()),
       approved: Type.Optional(Type.Array(Type.String())),
       decisions: Type.Optional(Type.Record(Type.String(), Type.Any())),
     }),
-    script: "run_log.py",
-    args: (p) => ["start", "--wave", p.wave, "--subagent-run-id", p.subagent_run_id, ...opt("--mission-id", p.mission_id),
+    script: "run_steps.py",
+    args: (p) => ["start-wave", "--wave", p.wave, "--subagent-run-id", p.subagent_run_id, ...opt("--mission-id", p.mission_id),
       ...opt("--approved", p.approved?.join(",")), ...opt("--decisions", p.decisions && JSON.stringify(p.decisions))],
   });
 
   scriptTool({
-    name: "agent_log_finish",
+    name: "agent_finish_wave",
     label: "Log wave result",
     description:
       "Record a finished wave in the active run. Pass only the wave: the outcome (the workflow script's return value, status, cost) is read from pi-subagents. `done` marks its stages done (and the run done after the last wave); failed, blocked or stopped put them back to pending so the wave can be fixed and relaunched. Commits files the wave wrote into the agent on the run's branch. Returns the wave's ends_with (what to do next), a summary of its children, next_wave (with `preflight`: the decisions, approvals, params or secrets its compile needs first, to ask for before compiling) and, when the run is done, its branch for review, the plan's `done_when` for the final report, `outputs` (each deliverable's path in this run, whether it exists, and its `items` count when one can be read), and `mission_close` (pass it to the subagent tool unchanged).",
     promptGuidelines: [
-      "After a wave's completion notice, call agent_log_finish with just the wave; do not look up the run's status or assemble its result yourself.",
+      "After a wave's completion notice, call agent_finish_wave with just the wave; do not look up the run's status or assemble its result yourself.",
     ],
     parameters: Type.Object({
       wave: Type.String(),
@@ -1055,9 +1080,9 @@ export default function agentExtension(pi: ExtensionAPI) {
       result: Type.Optional(Type.Any({ description: "only with status, when pi-subagents has no record: the workflow script's return value" })),
       note: Type.Optional(Type.String()),
     }),
-    script: "run_log.py",
+    script: "run_steps.py",
     // a given result is saved in the run's .compiled/
-    args: (p) => ["finish", "--wave", p.wave, ...opt("--status", p.status),
+    args: (p) => ["finish-wave", "--wave", p.wave, ...opt("--status", p.status),
       ...opt("--result", p.result === undefined ? undefined : JSON.stringify(p.result)), ...opt("--note", p.note)],
     format: (d) => {
       const why = waitsForUser(d);

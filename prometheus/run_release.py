@@ -5,13 +5,13 @@
     result = agent.run(params={"email_folder": "mail/"}, approve=["build-workbook"])
     result.outputs["email_workbook"]                    # a Path
 
-A release (release.py) is unpacked once into the releases folder, releases/<slug>/<version>/ (`git archive` of its tag,
+A release (agent_release.py) is unpacked once into the releases folder, releases/<slug>/<version>/ (`git archive` of its tag,
 plus an empty git repo, which pi-subagents' writer checks need), with RELEASE.json: its record (agent, version, commit,
 interface); the agent's name comes from there, not from the folder's. Each run is a folder runs/<id>/ inside it, as in the agent itself, so the batcher, `uv run` and gates find
 what they expect. Releases are kept, not cached: on a machine that only runs them (`prometheus install <source>@v1`)
 there is no repository to unpack them from again, and their runs are inside. With the agent's repository at hand its
-tags decide which release a name means; without it, the installed releases' records do. A Run is driven in code, wave by wave (compile_wave.py --frozen, then
-`pi -p "/prometheus-run <run> <wave>"`, frozen_runner.ts, with pi-subagents: no model turn); a plan in which nothing
+tags decide which release a name means; without it, the installed releases' records do. A Run is driven in code, wave by wave (run_compile.py --frozen, then
+`pi -p "/prometheus-run <run> <wave>"`, release_runner.ts, with pi-subagents: no model turn); a plan in which nothing
 asks the caller anything is one wave, one launch. At a decision or a side effect not approved up front it stops
 (`input_required`, what it needs in Result.needs) until Run.answer() gives it.
 
@@ -44,7 +44,7 @@ from pathlib import Path
 from prometheus import cli
 from prometheus.cli import PrometheusError, run_script
 
-RELEASE_FILE = "RELEASE.json"  # in an unpacked release: its record (version, commit, interface); bundle.py reads it
+RELEASE_FILE = "RELEASE.json"  # in an unpacked release: its record (version, commit, interface); run_bundle.py reads it
 VERSION_RE = re.compile(r"^v\d+(\.\d+)?$")  # a release (v1: the newest 1.x); anything else names a commit to build
 
 
@@ -163,12 +163,12 @@ def safe_name(name: str, fallback: str) -> str:
 
 
 def launch_wave(agent: Agent, run_dir: Path, wave: str) -> subprocess.Popen:
-    """pi running one compiled wave (frozen_runner.ts), with pi-subagents and nothing else loaded."""
+    """pi running one compiled wave (release_runner.ts), with pi-subagents and nothing else loaded."""
     pi, subagents = find_tools()
     with (run_dir / "pi.log").open("ab") as log:
         return subprocess.Popen(
             [pi, "-p", "--no-session", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-context-files",
-             "--approve", "-e", str(subagents), "-e", str(Path(__file__).with_name("frozen_runner.ts")),
+             "--approve", "-e", str(subagents), "-e", str(Path(__file__).with_name("release_runner.ts")),
              f"/prometheus-run {run_dir} {wave}"],
             cwd=agent.folder, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
 
@@ -272,7 +272,7 @@ class Run:
 
     # --- driving ------------------------------------------------------------------
     def compile(self) -> dict:
-        return run_script("compile_wave.py", "--agent", str(self.agent.folder), "--frozen", str(self.dir),
+        return run_script("run_compile.py", "--agent", str(self.agent.folder), "--frozen", str(self.dir),
                           "--params", json.dumps(self.values), "--approve", ",".join(self.read_state().get("approve") or []))
 
     def finish(self, state: str, error: str | None = None):
@@ -297,7 +297,7 @@ class Run:
                     return self.finish("error", describe_refusal(self.agent, compiled))
                 wave = compiled["wave"]
                 if compiled.get("nothing_to_launch"):  # every stage reused from an earlier run: recorded, not launched
-                    cli.import_script("runs").record_wave_result(self.dir, wave, compiled["outcome"])
+                    cli.import_script("run_folders").record_wave_result(self.dir, wave, compiled["outcome"])
                     state = self.read_state()
                     self.write_state(launches=[*(state.get("launches") or []), {"wave": wave, "stages": compiled.get("stages"),
                                                                                 "status": "done", "cost_usd": 0.0, "launched": False}],
@@ -315,8 +315,8 @@ class Run:
                 launched = next((e for e in reversed(self.read_events()) if e.get("event") == "launched" and e.get("wave") == wave), {})
                 record = read_record(end.get("status_dir") or launched.get("status_dir"))
                 value = (record.get("workflow") or {}).get("value") or {}
-                # what later runs reuse by (compile_wave.reuse_earlier: the record's `result` beside its `inputs`)
-                cli.import_script("runs").record_wave_result(self.dir, wave, value)
+                # what later runs reuse by (run_compile.reuse_earlier: the record's `result` beside its `inputs`)
+                cli.import_script("run_folders").record_wave_result(self.dir, wave, value)
                 cost = ((end.get("cost") or record.get("totalCost") or {}).get("costUsd"))
                 state = self.read_state()
                 self.write_state(launches=[*(state.get("launches") or []), {
@@ -377,11 +377,11 @@ class Run:
         self.go()
 
     def bundle(self, out: Path | str = ".", with_files: bool = False) -> Path:
-        """The run's evidence as one file (bundle.py make), to fix the agent where it is developed: /agent-improve
+        """The run's evidence as one file (run_bundle.py make), to fix the agent where it is developed: /agent-improve
         <file>. `with_files` adds the run's inputs, outputs and work: the caller's data. Refused while it runs."""
-        made = run_script("bundle.py", "make", "--run", str(self.dir), "--out", str(out), *(["--with-files"] if with_files else []))
+        made = run_script("run_bundle.py", "make", "--run", str(self.dir), "--out", str(out), *(["--with-files"] if with_files else []))
         if not made.get("ok"):
-            raise PrometheusError(made.get("error") or "bundle.py failed", made)
+            raise PrometheusError(made.get("error") or "run_bundle.py failed", made)
         return Path(made["bundle"])
 
     def cancel(self, grace_s: float = 30):
@@ -469,14 +469,14 @@ class Agent:
     @property
     def output_params(self) -> set[str]:
         """The params an output's path names (where the run writes): for a server, always inside the run."""
-        PARAM_RE = cli.import_script("compile_wave").PARAM_RE
+        PARAM_RE = cli.import_script("run_compile").PARAM_RE
         plan = cli.import_script("utils").read_plan(self.folder, {}) or {}
         return {m for o in plan.get("outputs") or [] if isinstance(o, dict) for m in PARAM_RE.findall(str(o.get("path") or ""))}
 
     def output_file_name(self, name: str) -> str:
         """The file an output param names inside a run: its default's name (outputs/emails.xlsx -> emails.xlsx), else the
         param's name with the output's format as extension (report -> report.txt)."""
-        PARAM_RE = cli.import_script("compile_wave").PARAM_RE
+        PARAM_RE = cli.import_script("run_compile").PARAM_RE
         plan = cli.import_script("utils").read_plan(self.folder, {}) or {}
         default = cli.import_script("agent_params").spec_of((plan.get("params") or {}).get(name)).get("default")
         if default:
@@ -488,7 +488,7 @@ class Agent:
     @property
     def folder_params(self) -> set[str]:
         """The params naming a folder (an input or output of kind folder): over HTTP, several files under one name."""
-        PARAM_RE = cli.import_script("compile_wave").PARAM_RE
+        PARAM_RE = cli.import_script("run_compile").PARAM_RE
         plan = cli.import_script("utils").read_plan(self.folder, {}) or {}
         return {m for o in [*(plan.get("inputs") or []), *(plan.get("outputs") or [])]
                 if isinstance(o, dict) and o.get("kind") == "folder" for m in PARAM_RE.findall(str(o.get("path") or ""))}
@@ -525,7 +525,7 @@ class Agent:
     def resolve_outputs(self, run_dir: Path, values: dict) -> dict[str, Path | None]:
         """Each plan output's path with the run's values (agent_params.resolve, as the compiler does)."""
         agent_params = cli.import_script("agent_params")
-        PARAM_RE = cli.import_script("compile_wave").PARAM_RE
+        PARAM_RE = cli.import_script("run_compile").PARAM_RE
         read_plan = cli.import_script("utils").read_plan
         plan = read_plan(self.folder, {}) or {}
         specs = plan.get("params") or {}
@@ -553,7 +553,7 @@ class Agent:
         find_tools()
         run_id = f"{datetime.datetime.now(datetime.UTC):%Y%m%d-%H%M%S}-{secrets.token_hex(2)}"
         run_dir = self.folder / "runs" / run_id
-        (run_dir / "work").mkdir(parents=True)  # the children's folder (run_log.py new makes it in an agent)
+        (run_dir / "work").mkdir(parents=True)  # the children's folder (run_steps.py start-run makes it in an agent)
         try:
             values = self.prepare_params(run_dir, params or {}, in_run)
             (run_dir / "call.json").write_text(json.dumps({"agent": self.name, "version": self.version, "params": values,
@@ -587,7 +587,7 @@ def load_agent(name: str, version: str | None = None) -> Agent:
     if (folder / "plan.yaml").is_file():
         if version is not None and not VERSION_RE.match(version):
             return load_build(folder.resolve(), version)
-        listed = run_script("release.py", "list", "--agent", str(folder.resolve()))
+        listed = run_script("agent_release.py", "list", "--agent", str(folder.resolve()))
         release = pick_release(listed.get("releases") or [], version)
         return Agent(unpack(folder.resolve(), release), release)
     installed = list_installed(name)
@@ -608,12 +608,12 @@ def load_build(folder: Path, ref: str) -> Agent:
                               "commit runs as a build")
     release = {"version": "build", "commit": found.stdout.strip()}
     agent = Agent(unpack(folder, release), release)
-    agent.interface = cli.import_script("release").interface(cli.import_script("utils").read_plan(agent.folder, {}) or {})
+    agent.interface = cli.import_script("agent_release").interface(cli.import_script("utils").read_plan(agent.folder, {}) or {})
     return agent
 
 
 def read_bundle_call(bundle: Path, agent: Agent) -> tuple[dict, list[str], set[str], list[str]]:
-    """A bundled run's call (bundle.py), for a new run of `agent`: (params, approvals, the params that named the run's
+    """A bundled run's call (run_bundle.py), for a new run of `agent`: (params, approvals, the params that named the run's
     outputs: placed in the new run, the params that named files the caller sent but the bundle lacks). The files a
     bundle carries (--with-files) are unpacked once under the cache's bundles/."""
     try:

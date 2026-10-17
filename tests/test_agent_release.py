@@ -1,4 +1,4 @@
-"""Releases (release.py) and the frozen compile they rely on (compile_wave.py --frozen): an agent code can run, with
+"""Releases (agent_release.py) and the frozen compile they rely on (run_compile.py --frozen): an agent code can run, with
 no person or model deciding anything, and the interface its callers depend on."""
 import shutil
 import sys
@@ -8,7 +8,7 @@ from conftest import SKILL, copy_example, git_in, stamp
 
 SCRIPTS = SKILL / "scripts"
 sys.path.insert(0, str(SCRIPTS))
-import release as release_py
+import agent_release as release_py
 
 PLAN = """\
 format: 1
@@ -77,7 +77,7 @@ PROGRAMS = {  # count.py <file> <json out>: the file's line count; save.py <json
 
 def make_agent(root, run_py, slug="counter"):
     """A ready, committed agent whose programs exist (no stage needs a model): releasable."""
-    r = run_py([SCRIPTS / "scaffold_agent.py", slug, "--root", root, "--request", "count the lines"])
+    r = run_py([SCRIPTS / "agent_scaffold.py", slug, "--root", root, "--request", "count the lines"])
     assert r.data and r.data["ok"], r
     folder = root / slug
     (folder / "plan.yaml").write_text(PLAN, encoding="utf-8")
@@ -101,7 +101,7 @@ def commit(folder, message="test"):
 
 
 def release(run_py, folder, *args):
-    return run_py([SCRIPTS / "release.py", *args, "--agent", folder], cwd=folder)
+    return run_py([SCRIPTS / "agent_release.py", *args, "--agent", folder], cwd=folder)
 
 
 def edit_plan(folder, old, new):
@@ -167,7 +167,7 @@ def test_what_a_released_run_could_not_do_blocks_the_release(agent, run_py, tmp_
 
 def test_the_frozen_compile_is_one_wave_when_approved_else_wave_by_wave(agent, run_py, tmp_path):
     run_dir = tmp_path / "call-1"
-    args = [SCRIPTS / "compile_wave.py", "--agent", agent, "--frozen", run_dir, "--params", '{"source": "/data/in.txt"}']
+    args = [SCRIPTS / "run_compile.py", "--agent", agent, "--frozen", run_dir, "--params", '{"source": "/data/in.txt"}']
     first = run_py(args)  # save not approved: count runs first, and the run asks before save
     assert first.data["ok"] and (first.data["wave"], first.data["stages"]) == ("w1", ["count"]), first
     (run_dir / "state.json").write_text('{"done": ["count"], "launches": [{"wave": "w1"}]}')
@@ -182,5 +182,5 @@ def test_the_frozen_compile_is_one_wave_when_approved_else_wave_by_wave(agent, r
     script = (run_dir / ".compiled" / "all.js").read_text()
     assert "/data/in.txt" in script and str(run_dir / "outputs" / "count.txt") in script  # relative values resolve in the run
     assert git_in(agent)("status", "--porcelain").stdout == ""  # nothing committed or written in the agent
-    secret = run_py([SCRIPTS / "compile_wave.py", "--agent", agent, "--frozen", run_dir, "--params", '{"nope": 1}'])
+    secret = run_py([SCRIPTS / "run_compile.py", "--agent", agent, "--frozen", run_dir, "--params", '{"nope": 1}'])
     assert secret.returncode == 2 and "declares no param 'nope'" in secret.data["error"]

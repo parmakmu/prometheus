@@ -16,11 +16,16 @@ split  {"op":"split","source":PATH,"glob":"*.eml"?,"batch":N,"outdir":PATH}
        other text file (one item per line). Writes <outdir>/<i>.txt (or .csv)
        and prints {"total":N,"batches":[{"index":i,"file":PATH,"count":k}]}.
 
-merge  {"op":"merge","inputs":[PATH,...],"output":PATH}
+merge  {"op":"merge","inputs":[PATH,...],"output":PATH,"batches":[PATH,...]?}
        Concatenates by the output's extension: .json (arrays are flattened,
        objects appended), .jsonl / .txt (lines), .csv (header once).
-       Missing inputs are an error. Prints {"output":PATH,"count":N}; with
-       "gate" (as in run), the gate's result too, checking the merged output.
+       Missing inputs are an error. With "batches" (the split's batch files),
+       every item they list must be named by exactly one record of the result
+       (a JSON record holding it as a string value, a line or a CSV row holding
+       it; a file's name counts for its path): one missing or named twice fails
+       the merge, naming them. Items that are JSON objects have no name and are
+       only counted. Prints {"output":PATH,"count":N,"items":{"checked","unnamed"}};
+       with "gate" (as in run), the gate's result too, checking the merged output.
 
 run    {"op":"run","command":CMD,"gate":CMD?,"gate_json":BOOL?,"timeout":S?,"secrets":[ENV]?,"env_file":PATH?}
        Runs a stage's program, then its gate, each through the shell (so
@@ -42,7 +47,7 @@ a2a    {"op":"a2a","url":URL,"files":{PARAM:PATH},"params":{...},"approve":[STAG
        "artifacts": [PATH]}; then the gate. A task that ends otherwise fails with its message; one that waits for an
        answer fails with what it asks (nobody can answer inside a wave: approve its side effects in the plan).
 
-Can also be run directly: batch_tool.py '<json request>'.
+Can also be run directly: run_batcher.py '<json request>'.
 """
 import base64
 import csv
@@ -50,6 +55,7 @@ import fnmatch
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -131,6 +137,54 @@ def split(req):
     return {"total": len(items), "batches": batches}
 
 
+def batch_items(batches):
+    """The names of the items the split wrote into `batches`, and how many items have none (JSON objects)."""
+    names, unnamed = [], 0
+    for path in map(Path, batches):
+        if path.suffix == ".csv":
+            with path.open(encoding="utf-8", newline="") as fh:
+                names += [row[0] for row in list(csv.reader(fh))[1:] if row]  # a row is named by its first cell
+            continue
+        for line in (l for l in path.read_text(encoding="utf-8").splitlines() if l.strip()):
+            try:
+                value = json.loads(line)
+            except ValueError:
+                value = line  # a path or a line of text
+            if isinstance(value, (dict, list)):
+                unnamed += 1
+            else:
+                names.append(str(value))
+    return names, unnamed
+
+
+def strings_in(value):
+    if isinstance(value, dict):
+        return [s for v in value.values() for s in strings_in(v)]
+    if isinstance(value, list):
+        return [s for v in value for s in strings_in(v)]
+    return [str(value)] if value is not None else []
+
+
+def check_items(names, records, kind):
+    """Fail unless each name is named by exactly one record: a JSON record (any string value), a line, a CSV row."""
+    def forms(name):  # a batch file lists files by their path; a result may name them by file name
+        return {name, Path(name).name} if "/" in name else {name}
+
+    def names_it(record, name):
+        if kind == "lines":
+            return any(re.search(rf"(?<![\w.-]){re.escape(f)}(?![\w-])", record) for f in forms(name))
+        base = Path(name).name
+        return any(v == name or ("/" in name and Path(v).name == base) for v in record)
+
+    found = {name: sum(names_it(r, name) for r in records) for name in names}
+    missing = [n for n, k in found.items() if k == 0]
+    twice = [n for n, k in found.items() if k > 1]
+    if missing or twice:
+        show = lambda xs: ", ".join(Path(x).name if "/" in x else x for x in xs[:10]) + (f" and {len(xs) - 10} more" if len(xs) > 10 else "")
+        fail("the merged result does not name every item of the split exactly once"
+             + (f"; missing: {show(missing)}" if missing else "") + (f"; named more than once: {show(twice)}" if twice else ""))
+
+
 def merge(req):
     inputs, output = req.get("inputs"), req.get("output")
     if not isinstance(inputs, list) or not output:
@@ -149,7 +203,7 @@ def merge(req):
             data = json.loads(text) if text.strip() else []
             merged.extend(data if isinstance(data, list) else [data])
         output.write_text(json.dumps(merged, ensure_ascii=False, indent=1), encoding="utf-8")
-        count = len(merged)
+        count, records, kind = len(merged), [strings_in(r) for r in merged], "values"
     elif ext == ".csv":
         header, rows = None, []
         for p in inputs:
@@ -167,14 +221,19 @@ def merge(req):
             if header is not None:
                 w.writerow(header)
             w.writerows(rows)
-        count = len(rows)
+        count, records, kind = len(rows), rows, "values"
     else:
         lines = []
         for p in inputs:
             lines.extend(l for l in Path(p).read_text(encoding="utf-8").splitlines() if l.strip())
         output.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
-        count = len(lines)
-    return {"output": str(output.resolve()), "count": count}
+        count, records, kind = len(lines), lines, "lines"
+    result = {"output": str(output.resolve()), "count": count}
+    if batches := req.get("batches"):
+        names, unnamed = batch_items(batches)
+        check_items(names, records, kind)
+        result["items"] = {"checked": len(names), "unnamed": unnamed}
+    return result
 
 
 def dotenv(path):

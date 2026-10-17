@@ -143,8 +143,8 @@ function slugs(prefix = ""): string[] {
 
 async function check(pi: ExtensionAPI, root: string, slug: string, signal?: AbortSignal) {
   const agent = path.join(agentsDir(), slug);
-  const v = await runScript(pi, root, "validate_plan.py", [path.join(agent, "plan.yaml")], signal);
-  const c = await runScript(pi, root, "compile_wave.py", ["--agent", agent, "--check"], signal);
+  const v = await runScript(pi, root, "plan_validate.py", [path.join(agent, "plan.yaml")], signal);
+  const c = await runScript(pi, root, "run_compile.py", ["--agent", agent, "--check"], signal);
   return {
     valid: v.data?.valid ?? false,
     status: v.data?.status,
@@ -189,7 +189,7 @@ export default function prometheus(pi: ExtensionAPI) {
   // the scaffold script is reachable only through agent_scaffold, which checks for /agent-new
   pi.on("tool_call", (event) => {
     const command = (event.input as { command?: string }).command ?? "";
-    if ((event.toolName === "bash" || event.toolName === "powershell") && /scaffold_agent\.py/.test(command))
+    if ((event.toolName === "bash" || event.toolName === "powershell") && /agent_scaffold\.py/.test(command))
       return { block: true, reason: "Create agents with agent_scaffold, and only after the user ran /agent-new." };
     const shell = event.toolName === "bash" || event.toolName === "powershell";
     const path_ = (event.input as { path?: string }).path ?? "";
@@ -201,8 +201,8 @@ export default function prometheus(pi: ExtensionAPI) {
     if (((event.toolName === "write" || event.toolName === "edit") && /(^|[\\/])\.plan[\\/]critique\.yaml$/.test(path_)) ||
         (shell && /\.plan[\\/]critique/.test(command) && /\bsed\s+-i|>|\btee\b|\bmv\b|\bcp\b|\bperl\s+-\w*i|\btruncate\b|\bpython3?\b|\bnode\b/.test(command)))
       return { block: true, reason: "An agent's critic record (.plan/critique.yaml) is written only by agent_record_critique, after your last edit: it checks the critic ran and ties its result to the plan." };
-    if ((shell && /\buv\s+(?:pip\s+)?(?:add|install)\b|\bpip3?\s+install\b|\buvx\b|\buv\s+tool\s+(?:install|run)\b|\buv\s+run\b[^\n;&|]*\s--with\b|add_package\.py/.test(command)) || packageFile)
-      return { block: true, reason: "Python packages are added with agent_add_package (the packages and why they are needed), which asks the user to approve them. Do not run uv add, pip install, uvx or uv run --with, edit pyproject.toml or uv.lock, or run add_package.py yourself. Name the agent (slug) when you call it." };
+    if ((shell && /\buv\s+(?:pip\s+)?(?:add|install)\b|\bpip3?\s+install\b|\buvx\b|\buv\s+tool\s+(?:install|run)\b|\buv\s+run\b[^\n;&|]*\s--with\b|agent_packages\.py/.test(command)) || packageFile)
+      return { block: true, reason: "Python packages are added with agent_add_package (the packages and why they are needed), which asks the user to approve them. Do not run uv add, pip install, uvx or uv run --with, edit pyproject.toml or uv.lock, or run agent_packages.py yourself. Name the agent (slug) when you call it." };
   });
 
   // --- commands ---------------------------------------------------------------
@@ -248,7 +248,7 @@ export default function prometheus(pi: ExtensionAPI) {
         );
         return;
       }
-      const res = await runScript(pi, root, "list_agents.py", ["--root", agentsDir()]);
+      const res = await runScript(pi, root, "agent_list.py", ["--root", agentsDir()]);
       const list: any[] = Array.isArray(res.data) ? res.data : [];
       if (list.length === 0) {
         show("Agents", "No agents yet. Create one with /agent-new <request>.");
@@ -286,7 +286,7 @@ export default function prometheus(pi: ExtensionAPI) {
         ctx.ui.notify("Usage: /agent-export <slug> <destination folder> [--keep-state]", "warning");
         return;
       }
-      const res = await runScript(pi, root, "export_agent.py", [path.join(agentsDir(), slug), dest, ...(keep ? ["--keep-state"] : [])]);
+      const res = await runScript(pi, root, "agent_export.py", [path.join(agentsDir(), slug), dest, ...(keep ? ["--keep-state"] : [])]);
       const d = res.data ?? {};
       if (!d.ok) {
         show(`Export ${slug} failed`, d.error ?? res.stderr.trim());
@@ -322,7 +322,7 @@ export default function prometheus(pi: ExtensionAPI) {
       const rows = [["slug", "refreshed", "version", "plan valid", "compiles", "first error"]];
       for (const slug of targets) {
         // --all leaves an agent already at this Prometheus's version alone; a named one is always refreshed
-        const res = await runScript(pi, root, "scaffold_agent.py", [slug, "--root", agentsDir(), "--refresh", ...(target === "--all" ? ["--if-stale"] : [])]);
+        const res = await runScript(pi, root, "agent_scaffold.py", [slug, "--root", agentsDir(), "--refresh", ...(target === "--all" ? ["--if-stale"] : [])]);
         const c = await check(pi, root, slug);
         const firstErr = c.errors[0] ?? Object.values(c.compile_errors as Record<string, string[]>).flat()[0] ?? "";
         rows.push([slug, res.data?.skipped ? "skipped (current)" : String(res.data?.ok ?? false), String(res.data?.prometheus_version ?? ""), String(c.valid), String(c.compiles), firstErr.slice(0, 80)]);
@@ -339,7 +339,7 @@ export default function prometheus(pi: ExtensionAPI) {
       description:
         "Create a new agent, <slug>/ in the agents folder, with the plan skeleton, agents, commands and a copy of the planning skill. Only after the user ran /agent-new.",
       promptSnippet: "Create an agent",
-      promptGuidelines: ["Use agent_scaffold to create an agent instead of running scaffold_agent.py yourself."],
+      promptGuidelines: ["Use agent_scaffold to create an agent instead of running agent_scaffold.py yourself."],
       parameters: Type.Object({
         slug: Type.String({ description: "short lowercase slug: letters, digits and dashes" }),
         request: Type.String({ description: "the user's request, verbatim" }),
@@ -351,8 +351,8 @@ export default function prometheus(pi: ExtensionAPI) {
           throw new Error(
             "agents are created only through /agent-new. Do not plan this request; answer it normally, and if it is multi-step work, tell the user they can run `/agent-new <request>`.",
           );
-        const res = await runScript(pi, root, "scaffold_agent.py", [params.slug, "--root", agentsDir(), "--request", params.request, ...(params.from ? ["--from", params.from] : [])], signal);
-        if (res.data === undefined) throw new Error(`scaffold_agent.py failed: ${(res.stderr || res.stdout).trim().slice(0, 2000)}`);
+        const res = await runScript(pi, root, "agent_scaffold.py", [params.slug, "--root", agentsDir(), "--request", params.request, ...(params.from ? ["--from", params.from] : [])], signal);
+        if (res.data === undefined) throw new Error(`agent_scaffold.py failed: ${(res.stderr || res.stdout).trim().slice(0, 2000)}`);
         if (res.data.ok) newRequested = false;
         return { content: [{ type: "text" as const, text: JSON.stringify(res.data) }], details: res.data };
       },
@@ -367,7 +367,7 @@ export default function prometheus(pi: ExtensionAPI) {
         "Validate an agent's plan.yaml and compile-check every concrete pending wave. Returns errors, warnings and a summary.",
       promptSnippet: "Validate and compile-check an agent plan",
       promptGuidelines: [
-        "Use agent_check after every change to an agent plan, instead of running validate_plan.py or compile_wave.py yourself.",
+        "Use agent_check after every change to an agent plan, instead of running plan_validate.py or run_compile.py yourself.",
       ],
       parameters: Type.Object({ slug: Type.String({ description: "the agent's slug" }) }),
       async execute(_id, params, signal, _onUpdate, ctx) {
@@ -426,8 +426,8 @@ export default function prometheus(pi: ExtensionAPI) {
         if (!params.packages.length || !params.reason.trim()) throw new Error("name the packages and say why they are needed");
         const yes = await ctx.ui.confirm("Add a Python package?", `${params.packages.join(", ")} (agent ${params.slug})\n\nWhy: ${params.reason.trim()}`);
         if (!yes) return { content: [{ type: "text" as const, text: "The user declined. Do not add it: work without it, or ask the user what to do instead." }], details: { declined: true } };
-        const res = await runScript(pi, root, "add_package.py", [...params.packages, "--reason", params.reason, "--agent", path.join(agentsDir(), params.slug)], signal);
-        if (res.data === undefined) throw new Error(`add_package.py failed: ${(res.stderr || res.stdout).trim().slice(0, 2000)}`);
+        const res = await runScript(pi, root, "agent_packages.py", [...params.packages, "--reason", params.reason, "--agent", path.join(agentsDir(), params.slug)], signal);
+        if (res.data === undefined) throw new Error(`agent_packages.py failed: ${(res.stderr || res.stdout).trim().slice(0, 2000)}`);
         return { content: [{ type: "text" as const, text: JSON.stringify(res.data) }], details: res.data };
       },
     }),

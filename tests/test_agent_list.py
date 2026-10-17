@@ -1,11 +1,11 @@
-"""list_agents' live view of a running wave: the children pi-subagents has launched, counted per stage."""
+"""agent_list' live view of a running wave: the children pi-subagents has launched, counted per stage."""
 import json
 import sys
 
 from conftest import SKILL
 
 sys.path.insert(0, str(SKILL / "scripts"))
-import list_agents
+import agent_list
 
 
 def test_children_are_counted_under_the_longest_stage_key_they_start_with(tmp_path, monkeypatch):
@@ -17,7 +17,7 @@ def test_children_are_counted_under_the_longest_stage_key_they_start_with(tmp_pa
                 {"childId": "stray", "state": "running"}]
     (record / "status.json").write_text(json.dumps({"workflowChildren": {"children": children}}), encoding="utf-8")
     state = {"launches": [{"status": "running", "subagent_run_id": "sub-1"}]}
-    progress = list_agents.child_progress(state, ["discover", "read", "read-emails"])
+    progress = agent_list.child_progress(state, ["discover", "read", "read-emails"])
     assert {k: {n: v[n] for n in ("done", "failed", "total")} for k, v in progress.items()} == {
         "read-emails": {"done": 1, "failed": 0, "total": 2},
         "read": {"done": 0, "failed": 0, "total": 1},
@@ -28,16 +28,16 @@ def test_children_are_counted_under_the_longest_stage_key_they_start_with(tmp_pa
 
 def test_no_progress_unless_the_last_launch_is_running(tmp_path, monkeypatch):
     monkeypatch.setenv("PI_SUBAGENTS_TEMP_ROOT", str(tmp_path))
-    assert list_agents.child_progress({}, ["a"]) == {}
-    assert list_agents.child_progress({"launches": [{"status": "done", "subagent_run_id": "x"}]}, ["a"]) == {}
-    assert list_agents.child_progress({"launches": [{"status": "running", "subagent_run_id": "missing"}]}, ["a"]) == {}
+    assert agent_list.child_progress({}, ["a"]) == {}
+    assert agent_list.child_progress({"launches": [{"status": "done", "subagent_run_id": "x"}]}, ["a"]) == {}
+    assert agent_list.child_progress({"launches": [{"status": "running", "subagent_run_id": "missing"}]}, ["a"]) == {}
 
 
 def test_a_run_waits_for_what_its_last_finished_wave_ended_with():
     done = lambda ends: {"launches": [{"status": "done", "ends_with": ends}]}
-    assert list_agents.waiting_for(done("approval"), "w2") == "approval"
-    assert list_agents.waiting_for(done("review"), "w2") == "review"
-    assert list_agents.waiting_for(done("resolve"), "w2") == "resolve"
-    assert list_agents.waiting_for(done("none"), "w2") is None
-    assert list_agents.waiting_for(done("review"), None) is None  # no next wave: the run is over
-    assert list_agents.waiting_for({"launches": [{"status": "running", "ends_with": "review"}]}, "w2") is None
+    assert agent_list.waiting_for(done("approval"), "w2") == "approval"
+    assert agent_list.waiting_for(done("review"), "w2") == "review"
+    assert agent_list.waiting_for(done("resolve"), "w2") == "resolve"
+    assert agent_list.waiting_for(done("none"), "w2") is None
+    assert agent_list.waiting_for(done("review"), None) is None  # no next wave: the run is over
+    assert agent_list.waiting_for({"launches": [{"status": "running", "ends_with": "review"}]}, "w2") is None

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """List agents and where each one stands.
 
-Usage: list_agents.py [--root agents] [--agent DIR]
+Usage: agent_list.py [--root agents] [--agent DIR]
 
 Prints a JSON list, one object per agent: slug, status, revision, goal,
 state (agent_state's name for where it stands), runs (count),
@@ -12,25 +12,25 @@ active_run, next_wave (its id) and next_stages (its stage ids), waiting (what th
 wave: approval | review | resolve, else null), stages_done/stages_total (of the active run) and stages
 (every plan stage: key, title, status: done | running | null, null when no run is active; children {done, failed, total, items: each child's key, agent, state, run_id}
 while its wave runs, from pi-subagents' record of the launch),
-provisional, open_questions, custom_subagents, prometheus_version (the skill copy's; stale when
-Prometheus here would copy something else, prometheus_version.up_to_date), branch (checked out), unmerged
+provisional, open_questions, custom_subagents, agent_version (the skill copy's; stale when
+Prometheus here would copy something else, agent_version.up_to_date), branch (checked out), unmerged
 (run/, revise/ and improve/ branches not merged into main) and off_branch (the active run's branch isn't checked
 out: what is, and what to do; else null). Waves and stage status come from
-validate_plan (waves are derived; status lives in runs/<id>/run.yaml).
+plan_validate (waves are derived; status lives in runs/<id>/run.yaml).
 Nothing is changed.
 """
 import json
 from pathlib import Path
 from typing import Annotated
 
-import agent_git
+import agent_repo
 import agent_state
-import prometheus_version
+import agent_version
 import typer
-from runs import last_run, list_runs, read_run
+from plan_validate import validate
+from run_folders import last_run, list_runs, read_run
 from session_digest import agent_costs, default_sessions_dir
 from utils import read_json, read_plan, refuse, subagents_runs_root
-from validate_plan import validate
 
 
 def recent_runs(agent_dir, runs, n=5):
@@ -85,7 +85,7 @@ def waiting_for(run_state, next_wave):
 
 
 def summarise(root, slug, current):
-    """One agent's summary; `current` is this Prometheus's version (prometheus_version.current(), the same for all)."""
+    """One agent's summary; `current` is this Prometheus's version (agent_version.current(), the same for all)."""
     plan = read_plan(Path(root) / slug, {})
     if not isinstance(plan, dict):
         return {"slug": slug, "error": "plan.yaml is not a mapping"}
@@ -102,7 +102,7 @@ def summarise(root, slug, current):
     subagents_dir = Path(root) / slug / ".pi" / "agents"
     custom = sorted(p.stem for p in subagents_dir.iterdir() if p.suffix == ".md") if subagents_dir.is_dir() else []
     goal = plan.get("goal") or ""
-    installed = prometheus_version.installed(Path(root) / slug)
+    installed = agent_version.installed(Path(root) / slug)
     where = agent_state.state(Path(root) / slug)
     return {
         "slug": slug,
@@ -124,10 +124,10 @@ def summarise(root, slug, current):
         "last_run": last,
         "recent_runs": recent_runs(Path(root) / slug, runs),
         "custom_subagents": [a for a in custom if a not in ("plan-critic", "batcher")],
-        "prometheus_version": installed,
-        "stale": bool(current) and not prometheus_version.up_to_date(installed, current),
-        "branch": agent_git.branch(Path(root) / slug),
-        "unmerged": agent_git.unmerged_branches(Path(root) / slug),
+        "agent_version": installed,
+        "stale": bool(current) and not agent_version.up_to_date(installed, current),
+        "branch": agent_repo.branch(Path(root) / slug),
+        "unmerged": agent_repo.unmerged_branches(Path(root) / slug),
         "off_branch": where.get("off_branch"),
     }
 
@@ -141,10 +141,10 @@ def main(
         b = Path(agent_dir).resolve()
         if not (b / "plan.yaml").is_file():
             refuse(f"{b} is not an agent")
-        print(json.dumps(summarise(b.parent, b.name, prometheus_version.current()), indent=2, default=str))
+        print(json.dumps(summarise(b.parent, b.name, agent_version.current()), indent=2, default=str))
         return
     root_path = Path(root)
-    current = prometheus_version.current()  # git calls and a hash of the skill and templates: once
+    current = agent_version.current()  # git calls and a hash of the skill and templates: once
     agent_dirs = [
         summarise(root, entry.name, current)
         for entry in (sorted(root_path.iterdir()) if root_path.is_dir() else [])

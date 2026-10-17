@@ -74,7 +74,7 @@ def test_plan_critic_identical_in_prometheus_and_agent_template(env):
 
 
 def test_scaffold_returns_today(env):
-    r = env.run_in(env.prometheus, ["scaffold_agent.py", "invoice-check", "--root", "agents", "--request", "invoices"])
+    r = env.run_in(env.prometheus, ["agent_scaffold.py", "invoice-check", "--root", "agents", "--request", "invoices"])
     assert r.data and r.data["ok"]
     assert r.data["today"] == datetime.datetime.now().astimezone().date().isoformat()
 
@@ -104,7 +104,7 @@ def test_refresh_keeps_the_lessons_section_of_the_role_file(env):
     role = env.b / ".pi" / "APPEND_SYSTEM.md"
     original = role.read_text(encoding="utf-8")
     role.write_text(original + "\n## Lessons for this agent\n\n- Ask for the folder first.\n", encoding="utf-8")
-    r = env.run_in(env.prometheus, ["scaffold_agent.py", "invoice-check", "--root", "agents", "--refresh"])
+    r = env.run_in(env.prometheus, ["agent_scaffold.py", "invoice-check", "--root", "agents", "--refresh"])
     assert r.data["ok"]
     refreshed = role.read_text(encoding="utf-8")
     assert refreshed.startswith(original.rstrip("\n")) and refreshed.endswith("- Ask for the folder first.\n")
@@ -127,7 +127,7 @@ def test_compile_check(env):
         "import json,sys,os\nprint(json.dumps({'ok': all(os.path.exists(p) for p in sys.argv[1:])}))\n", encoding="utf-8")
     (env.b / "gates" / "check_report.py").write_text(
         "import os,sys\nsys.exit(0 if os.path.exists(sys.argv[1]) else 1)\n", encoding="utf-8")
-    r = env.run_in(env.prometheus, ["compile_wave.py", "--agent", env.b, "--check"])
+    r = env.run_in(env.prometheus, ["run_compile.py", "--agent", env.b, "--check"])
     assert r.data and r.data["ok"] is True
 
 
@@ -139,12 +139,12 @@ def test_compile_needs_an_active_run(env):
     assert text != plan.read_text(encoding="utf-8")
     plan.write_text(text, encoding="utf-8")
     stamp(plan)  # the critic's result, recorded for the plan as edited
-    r = env.run(["compile_wave.py"])
+    r = env.run(["run_compile.py"])
     assert "no active run" in (r.data or {}).get("error", "")
 
 
 def test_new_run_folder(env):
-    r = env.run(["run_log.py", "new", "--note", "first"])
+    r = env.run(["run_steps.py", "start-run", "--note", "first"])
     assert r.data and r.data["ok"]
     env.rid = r.data["run"]
     env.run_dir = Path(r.data["path"])  # as the script sees it (/var -> /private/var on macOS)
@@ -160,21 +160,16 @@ def test_new_run_commits_the_plan(env):
     assert env.git("status", "--porcelain").stdout.strip() == ""
 
 
-def test_second_run_refused_while_one_is_active(env):
-    r = env.run(["run_log.py", "new"])
-    assert "is active" in (r.data or {}).get("error", "")
-
-
 def test_a_run_refuses_given_values_it_cant_use(env):
     # what an API call gives up front: declared params only, stages that exist
-    r = env.run(["run_log.py", "new", "--params", '{"nosuch": "x"}'])
+    r = env.run(["run_steps.py", "start-run", "--params", '{"nosuch": "x"}'])
     assert "declares no param 'nosuch'" in (r.data or {}).get("error", "")
-    r = env.run(["run_log.py", "new", "--approve", "nosuch"])
+    r = env.run(["run_steps.py", "start-run", "--approve", "nosuch"])
     assert "names no stage: nosuch" in (r.data or {}).get("error", "")
 
 
 def test_preflight_asks_for_params(env):
-    r = env.run(["compile_wave.py"])
+    r = env.run(["run_compile.py"])
     assert "mail_dir" in (r.data or {}).get("preflight", {}).get("missing_params", [])
 
 
@@ -188,24 +183,24 @@ def test_relative_and_missing_input_paths_refused(env):
     env_file = env.b / ".env"
 
     env_file.write_text(f"MAIL_DIR=data/mail\nBUDGET_FILE={budget}\n", encoding="utf-8")
-    r = env.run(["compile_wave.py"])
+    r = env.run(["run_compile.py"])
     assert "relative path" in " ".join((r.data or {}).get("preflight", {}).get("plan_errors", []))
 
     env_file.write_text(f"MAIL_DIR={env.tmp / 'data' / 'nope'}\nBUDGET_FILE={budget}\n", encoding="utf-8")
-    r = env.run(["compile_wave.py"])
+    r = env.run(["run_compile.py"])
     assert "does not exist" in " ".join((r.data or {}).get("preflight", {}).get("plan_errors", []))
 
     env_file.write_text(f"MAIL_DIR={data_dir}\nBUDGET_FILE={budget}\n", encoding="utf-8")
 
 
 def test_environment_wins_over_dotenv(env):
-    r = env.run(["compile_wave.py", "--no-commit"], env={**os.environ, "MAIL_DIR": str(env.tmp / "data" / "nope")})
+    r = env.run(["run_compile.py", "--no-commit"], env={**os.environ, "MAIL_DIR": str(env.tmp / "data" / "nope")})
     assert "does not exist" in " ".join((r.data or {}).get("preflight", {}).get("plan_errors", []))
     assert not (env.run_dir / ".compiled").exists()  # a refused compile saves no wave
 
 
 def test_compile_w1_from_main_tag_r1(env):
-    r = env.run(["compile_wave.py"])
+    r = env.run(["run_compile.py"])
     assert r.data and r.data["ok"] is True
     assert r.data["run"] == env.rid
     assert r.data["commit"] == env.git("rev-parse", "HEAD").stdout.strip()
@@ -278,14 +273,14 @@ def test_blocked_only_applies_to_review_children(env, run_node):
     assert r.data and r.data["result"]["status"] == "done"
 
 
-def test_run_log_start_refuses_a_wave_that_is_not_next(env):
-    r = env.run(["run_log.py", "start", "--wave", "w2", "--subagent-run-id", "wf-0"])
+def test_start_wave_refuses_a_wave_that_is_not_next(env):
+    r = env.run(["run_steps.py", "start-wave", "--wave", "w2", "--subagent-run-id", "wf-0"])
     assert "not the next wave" in (r.data or {}).get("error", "")
 
 
-def test_run_log_start(env):
+def test_start_wave(env):
     plan_before = (env.b / "plan.yaml").read_text(encoding="utf-8")
-    r = env.run(["run_log.py", "start", "--wave", "w1", "--subagent-run-id", "wf-1", "--mission-id", "m-1"])
+    r = env.run(["run_steps.py", "start-wave", "--wave", "w1", "--subagent-run-id", "wf-1", "--mission-id", "m-1"])
     assert r.data and r.data["ok"]
     assert (env.b / "plan.yaml").read_text(encoding="utf-8") == plan_before
     run_yaml = (env.run_dir / "run.yaml").read_text(encoding="utf-8")
@@ -293,7 +288,7 @@ def test_run_log_start(env):
 
 
 def test_running_wave_cannot_relaunch(env):
-    r = env.run(["compile_wave.py"])
+    r = env.run(["run_compile.py"])
     assert "running" in (r.data or {}).get("error", "")
 
 
@@ -313,7 +308,7 @@ def test_nothing_commits_while_a_wave_runs(env, python_exe):
     (env.b / "scripts" / "extract_invoice_lines.py").write_text('"""usage: extract_invoice_lines.py MAIL OUT"""\n', encoding="utf-8")
     tree = env.git("write-tree").stdout.strip()
     import subprocess
-    r = subprocess.run([python_exe, "-c", f"import agent_git; print(agent_git.commit({str(env.b)!r}, 'x')[1])"],
+    r = subprocess.run([python_exe, "-c", f"import agent_repo; print(agent_repo.commit({str(env.b)!r}, 'x')[1])"],
                         cwd=env.k, capture_output=True, text=True, check=False)
     assert "a wave is running" in r.stdout
     assert env.git("write-tree").stdout.strip() == tree
@@ -322,7 +317,7 @@ def test_nothing_commits_while_a_wave_runs(env, python_exe):
 def test_refresh_refused_during_an_active_run(env):
     skill_file = env.b / ".pi" / "skills" / "agent" / "SKILL.md"
     before = skill_file.stat().st_mtime_ns
-    r = env.run_in(env.prometheus, ["scaffold_agent.py", "invoice-check", "--root", "agents", "--refresh"])
+    r = env.run_in(env.prometheus, ["agent_scaffold.py", "invoice-check", "--root", "agents", "--refresh"])
     assert r.data and r.data["ok"] is False
     assert "active run" in r.data["error"]
     assert skill_file.stat().st_mtime_ns == before  # nothing rewritten
@@ -335,7 +330,7 @@ def test_finish_refuses_while_pi_subagents_still_runs_the_wave(env):
     pis.mkdir(parents=True)
     (pis / "status.json").write_text('{"state": "running"}', encoding="utf-8")
     env.pis_root = env.tmp / "pi-subagents"
-    r = env.run(["run_log.py", "finish", "--wave", "w1"], env={**os.environ, "PI_SUBAGENTS_TEMP_ROOT": str(env.pis_root)})
+    r = env.run(["run_steps.py", "finish-wave", "--wave", "w1"], env={**os.environ, "PI_SUBAGENTS_TEMP_ROOT": str(env.pis_root)})
     assert "still running" in (r.data or {}).get("error", "")
 
 
@@ -344,7 +339,7 @@ def test_finish_reads_outcome_and_cost_from_pi_subagents(env):
     status = {"state": "complete", "workflow": {"value": returned},
               "totalCost": {"costUsd": 0.0123, "inputTokens": 10, "outputTokens": 900}}
     (env.pis_root / "async-subagent-runs" / "wf-1" / "status.json").write_text(json.dumps(status), encoding="utf-8")
-    r = env.run(["run_log.py", "finish", "--wave", "w1"], env={**os.environ, "PI_SUBAGENTS_TEMP_ROOT": str(env.pis_root)})
+    r = env.run(["run_steps.py", "finish-wave", "--wave", "w1"], env={**os.environ, "PI_SUBAGENTS_TEMP_ROOT": str(env.pis_root)})
     assert r.data, r
     env.fin = r.data
     assert (r.data["wave_status"], r.data["run_status"], r.data["ends_with"]) == ("done", "active", "none")
@@ -390,30 +385,30 @@ def test_finish_commits_files_the_wave_wrote_on_the_run_branch(env):
 
 
 def test_next_wave_is_w2_and_asks_for_the_decision(env):
-    r = env.run(["compile_wave.py"])
+    r = env.run(["run_compile.py"])
     assert r.data and r.data["wave"] == "w2"
     assert [x["stage"] for x in r.data["preflight"]["decisions_needed"]] == ["approve-drafts"]
 
 
 def test_decision_refused_for_a_non_decision_stage(env):
-    r = env.run(["run_log.py", "decision", "--stage", "drafts", "--answer", '"yes"'])
+    r = env.run(["run_steps.py", "decision", "--stage", "drafts", "--answer", '"yes"'])
     assert r.data and r.data["ok"] is False
 
 
 def test_decision_recorded_in_the_runs_work(env):
-    r = env.run(["run_log.py", "decision", "--stage", "approve-drafts", "--answer", '{"approved": true}'])
+    r = env.run(["run_steps.py", "decision", "--stage", "approve-drafts", "--answer", '{"approved": true}'])
     assert r.data and r.data["path"].startswith(str(env.run_dir / "work"))
 
 
 def test_side_effect_needs_approval(env):
-    r = env.run(["compile_wave.py"])
+    r = env.run(["run_compile.py"])
     assert r.data, r
     needed = [(x["stage"], bool(x["done_when"]), len(x["reads"])) for x in r.data["preflight"]["approvals_needed"]]
     assert ("drafts", True, 2) in needed
 
 
 def test_approved_w2_compiles_and_reuses_the_runs_mission(env):
-    r = env.run(["compile_wave.py", "--approve", "drafts"])
+    r = env.run(["run_compile.py", "--approve", "drafts"])
     assert r.data and r.data["call"].get("missionId") == "m-1"
 
 
@@ -513,20 +508,15 @@ def test_launch_records_the_param_values_it_ran_with(env):
 
 # --- review, merge, a second run -------------------------------------------------
 
-def test_no_merge_while_the_run_is_active(env):
-    r = env.run(["agent_git.py", "merge", "--action", "merge"])
-    assert "still active" in (r.data or {}).get("error", "")
-
-
 def test_stop_keeps_the_run_and_returns_its_branch_for_review(env):
-    r = env.run(["run_log.py", "stop", "--note", "test"])
+    r = env.run(["run_steps.py", "stop", "--note", "test"])
     assert r.data, r
     assert (r.data["run_status"], r.data["review"]["branch"], len(r.data["review"]["commits"])) == ("stopped", f"run/{env.rid}", 3)
     assert "status: stopped" in (env.run_dir / "run.yaml").read_text(encoding="utf-8").splitlines()
 
 
 def test_a_new_run_starts_from_main_and_keeps_the_branch_waiting_for_review(env):
-    r = env.run(["run_log.py", "new"])
+    r = env.run(["run_steps.py", "start-run"])
     assert r.data, r
     assert r.data["left_branch"] == f"run/{env.rid}" and env.git("branch", "--show-current").stdout.strip() == "main"
     assert env.git("merge-base", "--is-ancestor", f"{env.main0}", f"run/{env.rid}").returncode == 0  # the kept branch still has its commits
@@ -538,7 +528,7 @@ def test_a_new_run_starts_from_main_and_keeps_the_branch_waiting_for_review(env)
 
 def test_merge_run_branch(env):
     steps = int(env.git("rev-list", "--count", f"main..run/{env.rid}").stdout)
-    r = env.run(["agent_git.py", "merge", "--action", "merge"])
+    r = env.run(["agent_repo.py", "merge", "--action", "merge"])
     assert r.data, r
     # one commit on main for the whole run, however many the run's branch made
     assert steps > 1 and env.git("rev-list", "--count", f"{env.main0}..main").stdout.strip() == "1"
@@ -551,11 +541,11 @@ def test_merge_run_branch(env):
 
 
 def test_second_run_starts_from_merged_main(env):
-    r = env.run(["run_log.py", "new"])
+    r = env.run(["run_steps.py", "start-run"])
     assert r.data
     env.rid2 = r.data["run"]
     assert env.rid2 != env.rid
-    r = env.run(["compile_wave.py"])
+    r = env.run(["run_compile.py"])
     assert r.data and (r.data["ok"], r.data["run"], r.data["wave"]) == (True, env.rid2, "w1")
 
 
@@ -601,47 +591,37 @@ def test_a_failing_program_gets_a_fix_child(env, run_node):
 
 
 def test_check_reports_the_last_run(env):
-    r = env.run(["validate_plan.py", "plan.yaml"])
+    r = env.run(["plan_validate.py", "plan.yaml"])
     assert r.data, r
     last = r.data["summary"]["last_run"]
     assert (last["id"], last["runs"]) == (env.rid2, 2)
 
 
 def test_failure_without_a_return_value_recorded_with_failure_kind(env):
-    env.run(["run_log.py", "start", "--wave", "w1", "--subagent-run-id", "wf-9"])
+    env.run(["run_steps.py", "start-wave", "--wave", "w1", "--subagent-run-id", "wf-9"])
     run_dir = env.tmp / "pi-subagents" / "async-subagent-runs" / "wf-9"
     run_dir.mkdir(parents=True)
     (run_dir / "status.json").write_text(json.dumps({
         "state": "failed", "error": "workflow timed out after 600000 ms", "workflow": {"failureKind": "timeout"},
     }), encoding="utf-8")
-    r = env.run(["run_log.py", "finish", "--wave", "w1"], env={**os.environ, "PI_SUBAGENTS_TEMP_ROOT": str(env.tmp / "pi-subagents")})
+    r = env.run(["run_steps.py", "finish-wave", "--wave", "w1"], env={**os.environ, "PI_SUBAGENTS_TEMP_ROOT": str(env.tmp / "pi-subagents")})
     assert r.data, r
     assert r.data["wave_status"] == "pending"
     assert r.data["failure_kind"] == "timeout"
     assert "timed out" in r.data["error"]
 
 
-def test_agent_revise_refused_while_a_run_is_active(env):
-    r = env.run(["agent_git.py", "begin-change"])
-    assert "is active" in (r.data or {}).get("error", "")
-
-
 def test_a_run_that_changed_nothing_has_no_branch_to_review(env):
-    r = env.run(["run_log.py", "stop"])
+    r = env.run(["run_steps.py", "stop"])
     assert r.data and r.data["review"] is None
 
 
 def test_agent_revise_change_branch_from_main(env):
-    r = env.run(["agent_git.py", "begin-change"])
+    r = env.run(["agent_repo.py", "begin-change"])
     assert r.data, r
     today = datetime.datetime.now().astimezone().date().isoformat()
     assert (r.data["ok"], r.data["branch"], r.data["revision"]) == (True, f"revise/{today}-1", 2)
     assert "status: ready" in (env.b / "plan.yaml").read_text(encoding="utf-8").splitlines()  # untouched until edited
-
-
-def test_resolve_needs_an_active_run(env):
-    r = env.run(["plan_edit.py", "resolve", "--change", '{"note":"x"}'])
-    assert "no run is active" in (r.data or {}).get("error", "")
 
 
 def test_direct_edits_on_the_change_branch_critique_marks_it_ready(env):
@@ -656,7 +636,7 @@ def test_direct_edits_on_the_change_branch_critique_marks_it_ready(env):
 def test_merged_change_goal_changed_on_main_tag_r3(env):
     before = env.git("rev-parse", "main").stdout.strip()
     revise = env.git("symbolic-ref", "--short", "HEAD").stdout.strip()
-    r = env.run(["agent_git.py", "merge", "--action", "merge"])
+    r = env.run(["agent_repo.py", "merge", "--action", "merge"])
     assert r.data, r
     assert revise.startswith("revise/") and env.git("rev-list", "--count", f"{before}..main").stdout.strip() == "1"
     assert env.git("log", "-1", "--format=%s", "main").stdout.strip() == f"r3: {revise}"
@@ -666,19 +646,19 @@ def test_merged_change_goal_changed_on_main_tag_r3(env):
 
 
 def test_a_draft_change_cannot_merge_discard_leaves_main_unchanged(env):
-    r = env.run(["agent_git.py", "begin-change"])
+    r = env.run(["agent_repo.py", "begin-change"])
     assert r.data and r.data["ok"]
     plan_path = env.b / "plan.yaml"  # an edit the critic has not seen
     plan_path.write_text(plan_path.read_text(encoding="utf-8").replace("goal: >-\n", "goal: >-\n  Not reviewed.\n", 1), encoding="utf-8")
-    r = env.run(["agent_git.py", "merge", "--action", "merge"])
+    r = env.run(["agent_repo.py", "merge", "--action", "merge"])
     assert "only a ready, valid plan" in (r.data or {}).get("error", "")
-    r = env.run(["agent_git.py", "merge", "--action", "discard"])
+    r = env.run(["agent_repo.py", "merge", "--action", "discard"])
     assert r.data and (r.data["ok"], r.data["revision"]) == (True, 3)
     assert env.git("branch", "--list", "revise/*").stdout.strip() == ""
 
 
 def test_third_run_starts(env):
-    r = env.run(["run_log.py", "new"])
+    r = env.run(["run_steps.py", "start-run"])
     assert r.data
     env.rid3 = r.data["run"]
 
@@ -687,7 +667,7 @@ def test_third_run_starts(env):
 
 def test_fresh_export(env):
     dest = env.tmp / "fresh"
-    r = env.run_in(env.prometheus, ["export_agent.py", "agents/invoice-check", str(dest)])
+    r = env.run_in(env.prometheus, ["agent_export.py", "agents/invoice-check", str(dest)])
     assert r.data, r
     assert (r.data["ok"], r.data["valid"]) == (True, True)
     assert list((dest / "invoice-check" / "runs").iterdir()) == []
@@ -708,7 +688,7 @@ def test_keep_state_export_keeps_runs_and_git_history(env):
     (env.b / ".pi" / "npm" / "node_modules").mkdir(parents=True)
     (env.b / ".venv" / "bin").mkdir(parents=True, exist_ok=True)  # `uv run` may have made it already
     dest = env.tmp / "elsewhere"
-    r = env.run_in(env.prometheus, ["export_agent.py", "agents/invoice-check", str(dest), "--keep-state"])
+    r = env.run_in(env.prometheus, ["agent_export.py", "agents/invoice-check", str(dest), "--keep-state"])
     assert r.data and r.data["ok"]
     assert (dest / "invoice-check" / "runs" / env.rid / "run.yaml").is_file()
     import subprocess
@@ -756,7 +736,7 @@ def ext(env, tmp_path_factory):
     (nm / "@types" / "node").symlink_to(ROOT / "node_modules" / "@types" / "node", target_is_directory=True)
     _shutil.copy(ROOT / ".pi" / "extensions" / "prometheus" / "index.ts", tmp / ".ext" / "prometheus.ts")
     _shutil.copy(ROOT / "templates" / "agent" / ".pi" / "extensions" / "agent" / "index.ts", tmp / ".ext" / "agent.ts")
-    _shutil.copy(ROOT / "prometheus" / "frozen_runner.ts", tmp / ".ext" / "frozen_runner.ts")  # type-checked with the others
+    _shutil.copy(ROOT / "prometheus" / "release_runner.ts", tmp / ".ext" / "release_runner.ts")  # type-checked with the others
     _shutil.copy(HERE / "tsconfig.json", tmp / "tsconfig.json")
     (tmp / "package.json").write_text('{"type": "module"}\n')  # ES modules, as pi loads extensions (import.meta)
     _shutil.copy(HERE / "ext-harness.mjs", tmp / "h.mjs")
@@ -814,7 +794,7 @@ def test_scaffold_needs_agent_new(env, ext):
     scaffold = {"tool": "agent_scaffold", "params": {"slug": "invoice-check", "request": "x"}}
     report = drive(ext, ext.tmp / ".ext" / "prometheus.ts", env.prometheus, [
         scaffold,
-        {"toolCall": {"toolName": "bash", "input": {"command": "python .pi/skills/agent/scripts/scaffold_agent.py x"}}},
+        {"toolCall": {"toolName": "bash", "input": {"command": "python .pi/skills/agent/scripts/agent_scaffold.py x"}}},
         {"cmd": "agent-new", "args": "read my emails"},
         scaffold,
     ])
@@ -834,7 +814,7 @@ def test_prometheus_records_a_new_agents_critic_which_makes_it_ready(env, ext, r
     # ran and stamps the plan, as it does inside an agent
     from ruamel.yaml import YAML
     agents = env.prometheus / "agents"
-    assert run_py([SKILL / "scripts" / "scaffold_agent.py", "fresh", "--root", agents, "--request", "x"]).data["ok"]
+    assert run_py([SKILL / "scripts" / "agent_scaffold.py", "fresh", "--root", agents, "--request", "x"]).data["ok"]
     fresh = agents / "fresh"
     copy_example("invoice-check", fresh)
     for g in (env.b / "gates").glob("*.py"):
@@ -872,7 +852,7 @@ def test_missing_packages_message(env, ext):
 def test_packages_are_added_only_through_the_approval_tool(env, ext):
     # a new Python package is the user's call: no uv add / pip install from the model, and the tool refuses without a user to ask
     # also every other way to a package: uvx, uv run --with, writing the package list itself
-    commands = ("uv add openpyxl", "pip install x", "python -m pip3 install x", "python .pi/skills/agent/scripts/add_package.py x --reason y",
+    commands = ("uv add openpyxl", "pip install x", "python -m pip3 install x", "python .pi/skills/agent/scripts/agent_packages.py x --reason y",
                 "uvx ruff check", "uv run --with openpyxl scripts/a.py", "sed -i s/a/b/ pyproject.toml", "uv run scripts/a.py", "cat pyproject.toml")
     blocked = [True] * 7 + [False, False]
     for name, cwd, tool_args, project in (("prometheus", env.prometheus, {"slug": "invoice-check"}, "agents/invoice-check/pyproject.toml"),
@@ -890,7 +870,7 @@ def test_packages_are_added_only_through_the_approval_tool(env, ext):
 def test_agent_extension_registers_commands_and_tools(env, ext):
     steps = [
         {"cmd": "agent-status", "args": ""},
-        {"tool": "agent_compile", "params": {"approve": ["drafts"]}},
+        {"tool": "agent_compile_wave", "params": {"approve": ["drafts"]}},
         {"toolCall": {"toolName": "edit", "input": {"path": "plan.yaml"}}},
         {"toolCall": {"toolName": "bash", "input": {"command": "sed -i s/x/y/ plan.yaml"}}},
         {"toolCall": {"toolName": "write", "input": {"path": "runs/x/run.yaml"}}},
@@ -913,6 +893,14 @@ def test_agent_extension_registers_commands_and_tools(env, ext):
     report = drive(ext, ext.tmp / ".ext" / "agent.ts", env.b, steps)
     env.agent_ext_report = report
     assert (len(report["commands"]), len(report["tools"])) == (8, 13)
+
+
+@skip_extensions
+def test_agent_run_sends_the_protocol_core_with_its_prompt(env):
+    """So a start needs no read of it (TASKS 75); the detours stay in their own files."""
+    (prompt,) = [o["text"] for o in env.agent_ext_report["steps"][12]["out"] if o["kind"] == "prompt"]
+    assert "## Every start" in prompt and "## Finish" in prompt, prompt[:300]
+    assert "## Decisions and approvals" not in prompt and "## Asking the user" not in prompt
 
 
 @skip_extensions
@@ -949,7 +937,7 @@ def test_dotenv_guard(env):
 @skip_extensions
 def test_extension_keeps_dotenv_out_of_pis_environment(env):
     # every child inherits pi's environment and shares its sandbox: values reach children through their tasks, and
-    # secrets only the batcher's commands (compile_wave.secrets_for)
+    # secrets only the batcher's commands (run_compile.secrets_for)
     assert env.agent_ext_report["steps"][11]["env"] is None
 
 
@@ -964,14 +952,14 @@ def test_agent_run_activates_subagent(env):
 def test_script_tools_pass_their_arguments(env):
     # refusals that show each tool's parameters reached its script as arguments
     merge, decision = env.agent_ext_report["steps"][13:15]
-    assert merge["schemaOk"] and "nothing to review" in merge["result"]["error"]
+    assert merge["schemaOk"] and "is active" in merge["result"]["error"]
     assert decision["schemaOk"] and "no-such-stage" in json.dumps(decision["result"])
 
 
 @skip_extensions
 def test_change_branch_guard(env, ext):
-    _subprocess.run(["python3", str(env.k / "run_log.py"), "stop"], cwd=env.b, capture_output=True, check=False)
-    _subprocess.run(["python3", str(env.k / "agent_git.py"), "begin-change"], cwd=env.b, capture_output=True, check=False)
+    _subprocess.run(["python3", str(env.k / "run_steps.py"), "stop"], cwd=env.b, capture_output=True, check=False)
+    _subprocess.run(["python3", str(env.k / "agent_repo.py"), "begin-change"], cwd=env.b, capture_output=True, check=False)
     steps = [
         {"toolCall": {"toolName": "edit", "input": {"path": "plan.yaml"}}},
         {"toolCall": {"toolName": "bash", "input": {"command": "cat plan.yaml"}}},
@@ -1025,12 +1013,12 @@ def test_agent_auto_runs_the_waves_without_the_model(ext, tmp_path, run_py):
     # a ready one-wave plan: /agent-auto starts the run, launches its wave through the RPC, records it and hands
     # over only for the final report (one model turn, not one per step)
     from test_run_finish import TWO
-    r = run_py([SKILL / "scripts" / "scaffold_agent.py", "auto", "--root", tmp_path, "--request", "count the lines"])
+    r = run_py([SKILL / "scripts" / "agent_scaffold.py", "auto", "--root", tmp_path, "--request", "count the lines"])
     assert r.data["ok"], r
     wf = tmp_path / "auto"
     (wf / "plan.yaml").write_text(TWO, encoding="utf-8")
-    finish = {"toolCall": {"toolName": "agent_log_finish", "input": {"wave": "w1"}}}
-    compile_call = {"toolCall": {"toolName": "agent_compile", "input": {}}}
+    finish = {"toolCall": {"toolName": "agent_finish_wave", "input": {"wave": "w1"}}}
+    compile_call = {"toolCall": {"toolName": "agent_compile_wave", "input": {}}}
     report = drive(ext, ext.tmp / ".ext" / "agent.ts", wf, [
         {"cmd": "agent-auto", "background": True}, {"sleep": 3000},
         # while its wave runs, a completion notice's turn (pi-subagents' wake message): told to do nothing, and its
@@ -1038,7 +1026,7 @@ def test_agent_auto_runs_the_waves_without_the_model(ext, tmp_path, run_py):
         {"systemPrompt": "Some other opening.", "prompt": WAKE}, finish,
         {"wait": True},
         # handed over: the hold is gone at once, even in a turn already under way (the hand-over arrives as a
-        # follow-up and starts none of its own: refused agent_compile, a model once stopped after an approval)
+        # follow-up and starts none of its own: refused agent_compile_wave, a model once stopped after an approval)
         {"systemPrompt": "Some other opening.", "prompt": "Go on."}, compile_call,
         # but the wave's notice arriving after the hand-over needs nothing: w1 is recorded (run 2026-10-09-4)
         {"systemPrompt": "Some other opening.", "prompt": WAKE}, finish,
@@ -1065,7 +1053,7 @@ def test_agent_auto_runs_the_waves_without_the_model(ext, tmp_path, run_py):
 def test_agent_auto_hands_over_when_the_runner_dies_without_an_end(ext, tmp_path, run_py):
     # else it would poll forever, and its hold would refuse /agent-run
     from test_run_finish import TWO
-    r = run_py([SKILL / "scripts" / "scaffold_agent.py", "lost", "--root", tmp_path, "--request", "count the lines"])
+    r = run_py([SKILL / "scripts" / "agent_scaffold.py", "lost", "--root", tmp_path, "--request", "count the lines"])
     assert r.data["ok"], r
     (tmp_path / "lost" / "plan.yaml").write_text(TWO, encoding="utf-8")
     report = drive(ext, ext.tmp / ".ext" / "agent.ts", tmp_path / "lost", [{"cmd": "agent-auto"}],

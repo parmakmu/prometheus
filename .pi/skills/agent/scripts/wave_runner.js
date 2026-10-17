@@ -1,4 +1,4 @@
-// Runs one wave of an agent. compile_wave.py writes the wave as data, `const W = {...};`,
+// Runs one wave of an agent. run_compile.py writes the wave as data, `const W = {...};`,
 // and appends this file unchanged, so every compiled wave runs the same code.
 //
 // W: {wave, revision, max_parallel, steps}. Each step is one of
@@ -10,7 +10,7 @@
 // wave; `resumeFrom: key` resumes that child. A layer item with `fix` runs a stage's program as
 // a command (no model); only if that fails is `fix`, a model child, launched to repair it. A
 // layer item with `reuse` completed in the wave's last launch and is unchanged: its earlier
-// result stands in and it is not launched again (compile_wave.py, reuse_finished); a map's
+// result stands in and it is not launched again (run_compile.py, reuse_finished); a map's
 // `reuse` does the same for its batches ({<key>-<n>: result}) and its reduce.
 //
 // A layer launches max_parallel children at a time and stops launching once a child failed
@@ -102,7 +102,7 @@ try {
       const outputs = batches.map((b) => batchOutput(m, b));
       const last = m.pattern === "map"
         ? { key: m.key + "-merge", agent: m.split.agent, label: "Merge batches: " + m.key, cwd: m.cwd,
-            task: "BATCH_TOOL_REQUEST " + JSON.stringify(Object.assign({ op: "merge", inputs: outputs, output: m.final }, m.merge)) }
+            task: "BATCH_TOOL_REQUEST " + JSON.stringify(Object.assign({ op: "merge", inputs: outputs, output: m.final, batches: batches.map((b) => b.file) }, m.merge)) }
         : { key: m.key + "-reduce", label: m.title + " — reduce", agent: m.agent, cwd: m.cwd,
             task: text(m.reduce_task) + "\n\nThis is the reduce step. Combine these batch results into the output above: " + outputs.join(", "),
             output: m.final };

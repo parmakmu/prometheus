@@ -67,7 +67,7 @@ def read_bundle(path):
 
 def test_a_bundle_holds_the_run_and_what_pi_subagents_kept_of_it(tmp_path, run_py):
     run, env = fake_released_run(tmp_path)
-    r = run_py([SCRIPTS / "bundle.py", "make", "--run", run, "--out", tmp_path / "out"], env=env)
+    r = run_py([SCRIPTS / "run_bundle.py", "make", "--run", run, "--out", tmp_path / "out"], env=env)
     assert r.data["ok"] and r.data["redacted"] == ["MAILER_KEY"], r
     assert r.data["warnings"] == ["run/pi.log: looks like an API key or token"], r  # the param's value replaced, the other reported
     files = read_bundle(r.data["bundle"])
@@ -88,7 +88,7 @@ def test_a_bundle_holds_the_run_and_what_pi_subagents_kept_of_it(tmp_path, run_p
 
 def test_a_bundle_takes_the_callers_files_only_when_asked(tmp_path, run_py):
     run, env = fake_released_run(tmp_path)
-    r = run_py([SCRIPTS / "bundle.py", "make", "--run", run, "--out", tmp_path, "--with-files"], env=env)
+    r = run_py([SCRIPTS / "run_bundle.py", "make", "--run", run, "--out", tmp_path, "--with-files"], env=env)
     files = read_bundle(r.data["bundle"])
     assert files["run/inputs/mail.txt"] == "the caller's data\n" and "run/work/notes.md" in files, sorted(files)
     assert json.loads(files["bundle.json"])["with_files"] is True
@@ -96,9 +96,9 @@ def test_a_bundle_takes_the_callers_files_only_when_asked(tmp_path, run_py):
 
 def test_a_running_run_is_not_bundled(tmp_path, run_py):
     run, env = fake_released_run(tmp_path, state="running")
-    r = run_py([SCRIPTS / "bundle.py", "make", "--run", run, "--out", tmp_path], env=env)
+    r = run_py([SCRIPTS / "run_bundle.py", "make", "--run", run, "--out", tmp_path], env=env)
     assert "still running" in r.data["error"], r
-    r = run_py([SCRIPTS / "bundle.py", "make", "--run", tmp_path, "--out", tmp_path], env=env)
+    r = run_py([SCRIPTS / "run_bundle.py", "make", "--run", tmp_path, "--out", tmp_path], env=env)
     assert "is not a run" in r.data["error"], r
 
 
@@ -131,7 +131,7 @@ def test_prune_keeps_failed_runs_for_a_bundle_then_takes_all_pi_subagents_kept(t
 
 def make_bundle(tmp_path, run_py, *extra):
     run, env = fake_released_run(tmp_path)
-    r = run_py([SCRIPTS / "bundle.py", "make", "--run", run, "--out", tmp_path / "out", *extra], env=env)
+    r = run_py([SCRIPTS / "run_bundle.py", "make", "--run", run, "--out", tmp_path / "out", *extra], env=env)
     assert r.data["ok"], r
     return Path(r.data["bundle"])
 
@@ -141,11 +141,11 @@ def test_a_bundle_is_imported_once_for_improve_and_read_as_evidence(tmp_path, ru
     agent = tmp_path / "agents" / "mailer"
     agent.mkdir(parents=True)
     (agent / "plan.yaml").write_text("format: 1\n", encoding="utf-8")
-    r = run_py([SCRIPTS / "bundle.py", "add", bundle, "--agent", agent])
+    r = run_py([SCRIPTS / "run_bundle.py", "add", bundle, "--agent", agent])
     folder = "runs/imported/v1.0-20261016-101010-abcd"
     assert r.data["ok"] and r.data["imported"] == folder and not r.data["already"] and r.data["state"] == "failed", r
     assert r.data["warnings"] == []  # no git here: nothing to compare the release's commit with
-    assert run_py([SCRIPTS / "bundle.py", "add", bundle, "--agent", agent]).data["already"]
+    assert run_py([SCRIPTS / "run_bundle.py", "add", bundle, "--agent", agent]).data["already"]
     assert not (agent / "runs" / "imported" / ".v1.0-20261016-101010-abcd.partial").exists()
 
     digest = run_py([SCRIPTS / "session_digest.py", "--agent", agent]).data
@@ -170,7 +170,7 @@ def test_a_bundle_of_another_agent_or_with_a_path_out_is_refused(tmp_path, run_p
     other = tmp_path / "agents" / "other"
     other.mkdir(parents=True)
     (other / "plan.yaml").write_text("format: 1\n", encoding="utf-8")
-    assert "is a run of mailer, not other" in run_py([SCRIPTS / "bundle.py", "add", bundle, "--agent", other]).data["error"]
+    assert "is a run of mailer, not other" in run_py([SCRIPTS / "run_bundle.py", "add", bundle, "--agent", other]).data["error"]
     evil = tmp_path / "evil.tgz"
     with tarfile.open(evil, "w:gz") as tar:
         for name, data in (("bundle.json", json.dumps({"format": 1, "agent": "other", "version": "v1", "run": "x"}).encode()),
@@ -178,7 +178,7 @@ def test_a_bundle_of_another_agent_or_with_a_path_out_is_refused(tmp_path, run_p
             member = tarfile.TarInfo(name)
             member.size = len(data)
             tar.addfile(member, io.BytesIO(data))
-    r = run_py([SCRIPTS / "bundle.py", "add", evil, "--agent", other])
+    r = run_py([SCRIPTS / "run_bundle.py", "add", evil, "--agent", other])
     assert "cannot read" in r.data["error"] and not (tmp_path / "agents" / "escaped.txt").exists(), r
     assert not (other / "runs" / "imported" / "v1-x").exists()
 
@@ -192,7 +192,7 @@ def test_an_import_says_when_the_release_is_not_on_main(tmp_path, run_py):
     git("init", "-q", "-b", "main")
     git("add", "-A")
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x")
-    r = run_py([SCRIPTS / "bundle.py", "add", bundle, "--agent", agent])
+    r = run_py([SCRIPTS / "run_bundle.py", "add", bundle, "--agent", agent])
     assert r.data["ok"] and "0123456789abcccccccccccccccccccccccccccc, isn't in this repository" in r.data["warnings"][0], r
 
 
@@ -206,7 +206,7 @@ def test_an_agents_own_run_is_bundled_with_its_sessions_and_read_back_as_evidenc
     (elsewhere / ".env").write_text(f"MAILER_KEY={SECRET}\n", encoding="utf-8")
     _, env = fake_released_run(tmp_path)  # only for pi-subagents' records of a launch (wave-1) and its env
     env.pop("MAILER_KEY")  # the agent's secret comes from its .env here
-    rid = run_py([k / "run_log.py", "new"], cwd=elsewhere, env=env).data["run"]
+    rid = run_py([k / "run_steps.py", "start-run"], cwd=elsewhere, env=env).data["run"]
     run_yaml = elsewhere / "runs" / rid / "run.yaml"
     state = YAML_SAFE.load(run_yaml.read_text())
     state["launches"] = [{"wave": "w1", "stages": ["read"], "status": "failed", "subagent_run_id": "wave-1"}]
@@ -236,7 +236,7 @@ def test_an_agents_own_run_is_bundled_with_its_sessions_and_read_back_as_evidenc
     wave = Path(env["PI_SUBAGENTS_TEMP_ROOT"]) / "async-subagent-runs" / "wave-1" / "workflow-children.jsonl"
     wave.write_text(wave.read_text() + json.dumps({"type": "settle", "key": "read", "result": {"ok": False, "results": [
         {"transcriptPath": ".pi/sessions/subagent-artifacts/child-1_reader_transcript.jsonl"}]}}) + "\n")
-    r = run_py([k / "bundle.py", "make", "--agent", elsewhere, "--out", elsewhere / "runs"], cwd=elsewhere, env=env)
+    r = run_py([k / "run_bundle.py", "make", "--agent", elsewhere, "--out", elsewhere / "runs"], cwd=elsewhere, env=env)
     assert r.data["ok"] and r.data["redacted"] == ["MAILER_KEY"], r
     files = read_bundle(r.data["bundle"])
     info = json.loads(files["bundle.json"])
@@ -251,7 +251,7 @@ def test_an_agents_own_run_is_bundled_with_its_sessions_and_read_back_as_evidenc
     assert "run/work/data.txt" not in files  # the rest of work/ only when asked
 
     home, _ = ready_agent(tmp_path / "home", run_py, "mailer")  # where it is developed
-    assert run_py([SCRIPTS / "bundle.py", "add", r.data["bundle"], "--agent", home]).data["ok"]
+    assert run_py([SCRIPTS / "run_bundle.py", "add", r.data["bundle"], "--agent", home]).data["ok"]
     found = run_py([SCRIPTS / "session_digest.py", "--agent", home]).data["imported"][0]
     assert found["kind"] == "run" and found["agent_sessions"] == [f"runs/imported/r1-{rid}/agent-sessions/2026-10-16_run.jsonl"], found
     assert run_py([SCRIPTS / "session_read.py", "show", found["agent_sessions"][0], "--agent", home]).data["ok"]
@@ -270,7 +270,7 @@ def test_prune_removes_empty_launch_folders_but_not_while_a_wave_runs(tmp_path, 
     (sessions / "s1" / "old-launch" / "run-0").mkdir(parents=True)
     (sessions / "s1" / "old-launch" / "run-0" / "session.jsonl").write_text("{}\n")  # an older pi-subagents kept sessions here
     prune = lambda *extra: run_py([k / "run_history.py", "prune", "--agent", agent, *extra])
-    rid = run_py([k / "run_log.py", "new"], cwd=agent).data["run"]
+    rid = run_py([k / "run_steps.py", "start-run"], cwd=agent).data["run"]
     run_yaml = agent / "runs" / rid / "run.yaml"
     state = YAML_SAFE.load(run_yaml.read_text())
     YAML_SAFE.dump({**state, "stages": {"count": "running"}}, run_yaml)  # a wave runs: it may still use its folder

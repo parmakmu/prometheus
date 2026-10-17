@@ -1,5 +1,5 @@
 """A stage that calls another agent over A2A (pattern: a2a): the validator's rules, the compiled batcher item, and
-batch_tool.py's a2a op calling a real `prometheus serve` (the counter agent, pi faked) over HTTP."""
+run_batcher.py's a2a op calling a real `prometheus serve` (the counter agent, pi faked) over HTTP."""
 import json
 import os
 import socket
@@ -13,8 +13,8 @@ from conftest import SKILL
 from ruamel.yaml import YAML
 
 sys.path.insert(0, str(SKILL / "scripts"))
-from compile_wave import Compiler
-from validate_plan import validate
+from plan_validate import validate
+from run_compile import Compiler
 
 CALLER = """\
 format: 1
@@ -109,10 +109,10 @@ def test_it_compiles_to_a_batcher_call_with_the_token_as_a_secret(tmp_path):
 
 
 fastapi = pytest.importorskip("fastapi")
-from test_frozen import fake_pi  # noqa: F401 (a fixture)
+from test_run_release import fake_pi  # noqa: F401 (a fixture)
 from test_serve import agent  # noqa: F401 (a fixture: the released counter agent)
 
-from prometheus import frozen
+from prometheus import run_release
 
 
 @pytest.fixture
@@ -136,12 +136,12 @@ def served(agent):  # noqa: F811
 
 
 def call(request, **env):
-    r = subprocess.run([sys.executable, str(SKILL / "scripts" / "batch_tool.py"), json.dumps(request)],
+    r = subprocess.run([sys.executable, str(SKILL / "scripts" / "run_batcher.py"), json.dumps(request)],
                        capture_output=True, text=True, env={**os.environ, **env}, check=False)
     return r.returncode, (json.loads(r.stdout) if r.stdout.strip() else {}), r.stderr
 
 
-def test_batch_tool_calls_an_agent_and_downloads_its_outputs(served, tmp_path):
+def test_run_batcher_calls_an_agent_and_downloads_its_outputs(served, tmp_path):
     (tmp_path / "lines.txt").write_text("a\nb\nc\n")
     request = {"op": "a2a", "url": served, "files": {"source": str(tmp_path / "lines.txt")}, "approve": ["save"],
                "token": "${COUNTER_TOKEN}", "out": str(tmp_path / "counted"), "timeout": 30}
@@ -165,12 +165,12 @@ def test_a_link_to_another_address_is_not_followed_with_the_token(served, tmp_pa
 def test_a_blocking_send_leaves_the_server_answering(served, tmp_path, monkeypatch):
     # message:send waits for the run by default: that wait must not hold up every other request
     import urllib.request
-    real_wait = frozen.Run.wait
+    real_wait = run_release.Run.wait
 
     def slow_wait(self, timeout=None):
         time.sleep(2)
         return real_wait(self, timeout)
-    monkeypatch.setattr(frozen.Run, "wait", slow_wait)
+    monkeypatch.setattr(run_release.Run, "wait", slow_wait)
     body = json.dumps({"message": {"messageId": "m", "role": "ROLE_USER", "parts": [
         {"raw": "YQo=", "filename": "a.txt"}, {"data": {"approve": ["save"]}}]}}).encode()
     send = urllib.request.Request(f"{served}/message:send", data=body, method="POST",

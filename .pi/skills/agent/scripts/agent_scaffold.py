@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Create or refresh an agent (an agent).
+"""Create or refresh an agent.
 
 Usage:
-  scaffold_agent.py SLUG [--root agents] [--request TEXT] [--refresh]
+  agent_scaffold.py SLUG [--root agents] [--request TEXT] [--refresh]
 
 Creates <root>/<slug>/ from templates/agent/ (at the repo root, outside the skill and .pi) (everything in it, with
 {{slug}} and {{request}} filled in) plus:
-  runs/                          one folder per run: state, work files, outputs (see validate_plan.py)
+  runs/                          one folder per run: state, work files, outputs (see plan_validate.py)
   gates/                         gate scripts, written while planning
   scripts/                       stage programs (a stage's `script:`), written by its first run
   uploads/                       files the user attaches in the web app's chat; not in git
@@ -22,8 +22,8 @@ batcher) and the plan skeleton.
 agent. It never touches plan.yaml, .env, runs/, uploads/, gates/, scripts/ or agents
 the plan added.
 
-The agent is its own git repo (agent_git.py); both modes commit the result.
---if-stale (with --refresh) skips an agent that is up to date (prometheus_version.up_to_date: the same
+The agent is its own git repo (agent_repo.py); both modes commit the result.
+--if-stale (with --refresh) skips an agent that is up to date (agent_version.up_to_date: the same
 hash of the skill and templates); the version is written to .pi/skills/agent/VERSION and goes in the commit message.
 A refresh refuses while the agent has an active run (it rewrites the skill copy, including the
 batch tool a running map stage uses, and its commit would land on the run branch) or while a run
@@ -39,12 +39,12 @@ import subprocess
 from pathlib import Path
 from typing import Annotated
 
-import agent_git
 import agent_params
-import prometheus_version
+import agent_repo
+import agent_version
 import typer
 from packaging.version import Version
-from runs import active_run
+from run_folders import active_run
 from utils import package_name, read_plan, refuse, write_plan
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -136,7 +136,7 @@ def refresh_refusal(agent_dir: Path):
     """Why a refresh must wait, or None: its commit would land on a run or change branch."""
     if run := active_run(agent_dir):
         return f"has an active run ({run.id}); refresh it once the run has finished and its branch is reviewed"
-    if (b := agent_git.branch(agent_dir)) and b != agent_git.MAIN:
+    if (b := agent_repo.branch(agent_dir)) and b != agent_repo.MAIN:
         return f"has branch {b} checked out; refresh it after merging, keeping or discarding that branch"
     return None
 
@@ -193,10 +193,10 @@ def main(
         refuse(f"{agent_dir} has no plan.yaml to refresh", 1)
     if refresh and (why := refresh_refusal(agent_dir.resolve())):
         refuse(f"{agent_dir} {why}", 1)
-    version = prometheus_version.current()
-    was = prometheus_version.installed(agent_dir) if refresh else None
-    if refresh and if_stale and was and prometheus_version.up_to_date(was, version):
-        print(json.dumps({"ok": True, "agent": str(agent_dir.resolve()), "mode": "refresh", "prometheus_version": version,
+    version = agent_version.current()
+    was = agent_version.installed(agent_dir) if refresh else None
+    if refresh and if_stale and was and agent_version.up_to_date(was, version):
+        print(json.dumps({"ok": True, "agent": str(agent_dir.resolve()), "mode": "refresh", "agent_version": version,
                           "skipped": f"already at prometheus {version}"}))
         raise typer.Exit(0)
 
@@ -232,7 +232,7 @@ def main(
         shutil.rmtree(skill_dst)
     shutil.copytree(SKILL_DIR, skill_dst, ignore=IGNORE)
     if version:
-        (skill_dst / prometheus_version.VERSION_FILE).write_text(version + "\n", encoding="utf-8")
+        (skill_dst / agent_version.VERSION_FILE).write_text(version + "\n", encoding="utf-8")
     written.append(str(Path(".pi") / "skills" / "agent") + "/")
 
     for rel, content in STATE_FILES.items():
@@ -254,7 +254,7 @@ def main(
     try:
         label = f" {version}" if version else ""
         moved_from = f" (was {was})" if was and was != version else ""
-        commit, note = agent_git.commit(str(agent_abs), f"Refresh from prometheus{label}{moved_from}" if refresh else f"Create agent {slug} with prometheus{label}")
+        commit, note = agent_repo.commit(str(agent_abs), f"Refresh from prometheus{label}{moved_from}" if refresh else f"Create agent {slug} with prometheus{label}")
     except RuntimeError as exc:
         commit, note = None, str(exc)
     print(json.dumps({
@@ -263,7 +263,7 @@ def main(
         "commit": commit,
         "git_note": note,
         "mode": "refresh" if refresh else "create",
-        "prometheus_version": version,
+        "agent_version": version,
         "was": was,
         "written": written,
         "kept": kept,

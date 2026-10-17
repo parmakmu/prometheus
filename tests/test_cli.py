@@ -91,21 +91,21 @@ def test_check_shows_a_hand_edited_plans_errors_and_exits_1(home, monkeypatch, c
 def test_doctor_refuses_a_pi_or_pi_subagents_older_than_prometheus_needs(home, monkeypatch):
     assert cli.check_version("pi", "1.3.0") == ("1.3.0", None) and cli.check_version("pi", "1.10.0")[1] is None
     assert cli.check_version("pi", "1.0.1")[1] == "1.0.1 is too old: needs 1.3.0 or later"
-    assert cli.check_version("pi-subagents", "0.75.0")[1] == "0.75.0 is too old: needs 0.78.0 or later"
+    assert cli.check_version("pi-subagents", "0.75.0")[1] == "0.75.0 is too old: needs 0.79.0 or later"
     assert cli.check_version("pi", None) == (None, None)
     monkeypatch.setattr(cli, "run_quiet", lambda *cmd: "1.0.1" if cmd[0] == "pi" else "x")
-    monkeypatch.setattr(cli, "find_pi_subagents", lambda: "0.78.0")
+    monkeypatch.setattr(cli, "find_pi_subagents", lambda: "0.79.0")
     assert cli.show_checks() is False
 
 
 def test_no_agent_can_be_named_like_a_command():
     sys.path.insert(0, str(SCRIPTS))
     try:
-        import scaffold_agent
+        import agent_scaffold
     finally:
         sys.path.remove(str(SCRIPTS))
-    assert cli.COMMANDS <= scaffold_agent.RESERVED
-    r = subprocess.run([sys.executable, str(SCRIPTS / "scaffold_agent.py"), "doctor", "--root", "/nonexistent"],
+    assert cli.COMMANDS <= agent_scaffold.RESERVED
+    r = subprocess.run([sys.executable, str(SCRIPTS / "agent_scaffold.py"), "doctor", "--root", "/nonexistent"],
                        capture_output=True, text=True, check=False)
     assert r.returncode == 2 and "is a prometheus command" in r.stdout
 

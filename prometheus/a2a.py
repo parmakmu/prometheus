@@ -28,7 +28,7 @@ from starlette.concurrency import run_in_threadpool
 
 from prometheus import cli
 from prometheus.cli import PrometheusError
-from prometheus.frozen import Run, public_needs
+from prometheus.run_release import Run, public_needs
 
 PROTOCOL = "1.0"
 CONTENT_TYPE = "application/a2a+json"

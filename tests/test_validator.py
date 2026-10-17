@@ -8,7 +8,7 @@ import pytest
 from conftest import SKILL
 
 sys.path.insert(0, str(SKILL / "scripts"))
-import validate_plan
+import plan_validate
 
 EX = SKILL / "examples"
 
@@ -17,8 +17,8 @@ def example(name):
     return (EX / name).read_text(encoding="utf-8")
 
 
-INV = validate_plan.read_plan(EX / "invoice-check", strict=True)  # plan.yaml with its .plan/
-COMP = validate_plan.read_plan(EX / "competitor-memo", strict=True)
+INV = plan_validate.read_plan(EX / "invoice-check", strict=True)  # plan.yaml with its .plan/
+COMP = plan_validate.read_plan(EX / "competitor-memo", strict=True)
 
 
 def st(p, key):
@@ -35,8 +35,8 @@ def check(base, mutate):
     mutate(p)
     run_state = p.pop("__run__", None)
     if isinstance(p.get("critique"), dict):  # the critic's record follows the change: these cases test other rules
-        p["critique"]["plan_digest"] = validate_plan.plan_digest(p)
-    return validate_plan.validate(p, run_state=run_state)
+        p["critique"]["plan_digest"] = plan_validate.plan_digest(p)
+    return plan_validate.validate(p, run_state=run_state)
 
 
 # (name, base plan, mutation, expected substring, "error" | "warning")
@@ -119,7 +119,7 @@ WAVES = [
 
 @pytest.mark.parametrize("name,base", [("invoice-check", INV), ("competitor-memo", COMP)])
 def test_example_is_valid(name, base):
-    errors, _warnings, _summary = validate_plan.validate(copy.deepcopy(base))
+    errors, _warnings, _summary = plan_validate.validate(copy.deepcopy(base))
     assert not errors
 
 
@@ -143,32 +143,32 @@ def test_a_ready_plan_needs_its_critique_recorded_by_the_tool():
     # not ready. A small plan that needs no critic needs no record either.
     hand = copy.deepcopy(INV)
     del hand["critique"]["plan_digest"]
-    assert any("not recorded with agent_record_critique" in e for e in validate_plan.validate(hand)[0])
+    assert any("not recorded with agent_record_critique" in e for e in plan_validate.validate(hand)[0])
     edited = copy.deepcopy(INV)
     edited["goal"] = "something else"
-    assert any("changed after the critic" in e for e in validate_plan.validate(edited)[0])
-    assert validate_plan.check_ready({"status": "ready", "stages": [{"id": "a", "kind": {"value": "deterministic"}}]}) is None
+    assert any("changed after the critic" in e for e in plan_validate.validate(edited)[0])
+    assert plan_validate.check_ready({"status": "ready", "stages": [{"id": "a", "kind": {"value": "deterministic"}}]}) is None
 
 
 def test_the_examples_carry_the_fingerprint_of_their_own_plan():
     # they show the model a ready plan: one edited without restamping would teach a stale record
     for plan in (INV, COMP):
-        assert plan["critique"]["plan_digest"] == validate_plan.plan_digest(plan)
+        assert plan["critique"]["plan_digest"] == plan_validate.plan_digest(plan)
 
 
 def test_repeated_key_after_a_dropped_list_item():
     # Text-level case: an edit that drops a `- id:` line merges two list items;
     # a plain YAML loader would silently keep the second item's values.
     text = example("invoice-check/.plan/questions.yaml").replace("  - id: q2\n", "", 1)
-    with pytest.raises(validate_plan.YAMLError, match="duplicate key"):
-        validate_plan.load_yaml(text)
+    with pytest.raises(plan_validate.YAMLError, match="duplicate key"):
+        plan_validate.load_yaml(text)
 
 
 def test_project_agent_listed_as_builtin(tmp_path):
     # A plain name means source: builtin; an agent the agent defines should say source: project.
     (tmp_path / ".pi" / "agents").mkdir(parents=True)
     (tmp_path / ".pi" / "agents" / "worker.md").write_text("---\nname: worker\n---\nbody\n", encoding="utf-8")
-    _errors, warnings, _summary = validate_plan.validate(copy.deepcopy(INV), agent_root=tmp_path)
+    _errors, warnings, _summary = plan_validate.validate(copy.deepcopy(INV), agent_root=tmp_path)
     assert any("'worker' is defined in .pi/agents/ but listed as builtin" in w for w in warnings), warnings
 
 
@@ -181,7 +181,7 @@ def test_gate_packages_come_from_the_agents_pyproject(tmp_path):
     (tmp_path / "gates" / "check_report.py").write_text("import openpyxl\nimport yaml\n", encoding="utf-8")
     plan = copy.deepcopy(INV)
     st(plan, "compare")["gate"] = "uv run ../gates/check_report.py ${report_dir}/Q3-invoice-variance.xlsx"
-    errors, _warnings, _summary = validate_plan.validate(plan, agent_root=tmp_path)
+    errors, _warnings, _summary = plan_validate.validate(plan, agent_root=tmp_path)
     assert any("check_lines.py would fail" in e and "agent_add_package" in e and "not_listed_pkg" in e for e in errors), errors
     assert not any("check_report.py would fail" in e for e in errors), errors  # yaml is PyYAML's import name
 
@@ -192,7 +192,7 @@ def test_gate_with_packages_must_run_with_uv_and_not_declare_its_own(tmp_path):
     (tmp_path / "gates" / "check_lines.py").write_text('# /// script\n# dependencies = ["openpyxl"]\n# ///\nimport openpyxl\n',
                                                          encoding="utf-8")
     (tmp_path / "gates" / "check_report.py").write_text("import openpyxl\n", encoding="utf-8")  # run with python3
-    errors, _warnings, _summary = validate_plan.validate(copy.deepcopy(INV), agent_root=tmp_path)
+    errors, _warnings, _summary = plan_validate.validate(copy.deepcopy(INV), agent_root=tmp_path)
     assert any("check_lines.py would fail" in e and "pyproject.toml instead" in e for e in errors), errors
     assert any("check_report.py would fail" in e and "`uv run`" in e for e in errors), errors
 
@@ -205,10 +205,10 @@ def test_a_side_effect_agent_must_reach_its_target(tmp_path):
     st(plan, "drafts")["agent"] = "drafter"
     agent = tmp_path / ".pi" / "agents" / "drafter.md"
     agent.write_text("---\nname: drafter\ntools: read, write\n---\nbody\n", encoding="utf-8")
-    errors, _warnings, _summary = validate_plan.validate(plan, agent_root=tmp_path)
+    errors, _warnings, _summary = plan_validate.validate(plan, agent_root=tmp_path)
     assert any("'drafter' cannot reach Gmail drafts" in e for e in errors), errors
     agent.write_text("---\nname: drafter\ntools: [read, mcp:gmail/create_draft]\n---\nbody\n", encoding="utf-8")
-    errors, warnings, _summary = validate_plan.validate(plan, agent_root=tmp_path)
+    errors, warnings, _summary = plan_validate.validate(plan, agent_root=tmp_path)
     assert not any("cannot reach" in e for e in errors) and not any("connector" in w for w in warnings), (errors, warnings)
 
 
@@ -226,17 +226,17 @@ def test_long_strings_are_written_folded_and_read_back_the_same(tmp_path):
 
 def test_a_changed_revision_alone_needs_no_critic():
     plan = {"status": "ready", "revision": 5, "goal": "g"}
-    plan["critique"] = {"plan_digest": validate_plan.plan_digest(plan)}
-    assert validate_plan.check_ready({**plan, "revision": 6}) is None
-    assert validate_plan.check_ready({**plan, "goal": "other"})  # content: the critic must see it
+    plan["critique"] = {"plan_digest": plan_validate.plan_digest(plan)}
+    assert plan_validate.check_ready({**plan, "revision": 6}) is None
+    assert plan_validate.check_ready({**plan, "goal": "other"})  # content: the critic must see it
 
 
 def test_the_editors_schema_is_the_validators():
     # plan.schema.json is generated from the models; after changing them, write it again:
-    # uv run python -c "import json, sys; sys.path.insert(0, '.pi/skills/agent/scripts'); import validate_plan as v; \
+    # uv run python -c "import json, sys; sys.path.insert(0, '.pi/skills/agent/scripts'); import plan_validate as v; \
     #   open('.pi/skills/agent/plan.schema.json', 'w').write(json.dumps(v.plan_json_schema(), indent=1) + '\n')"
     import json
-    schema = validate_plan.plan_json_schema()
+    schema = plan_validate.plan_json_schema()
     assert json.loads((SKILL / "plan.schema.json").read_text(encoding="utf-8")) == schema
     stage = schema["$defs"]["Stage"]
     assert stage["additionalProperties"] is False and {"after", "reads", "writes", "program", "map"} <= set(stage["properties"])

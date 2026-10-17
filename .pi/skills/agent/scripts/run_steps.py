@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
 """Start runs and record wave launches and results in an agent (from the agent root).
 
-Each execution of the plan is a run, runs/<id>/ (layout in runs.py); the plan holds no run state,
+Each execution of the plan is a run, runs/<id>/ (layout in run_folders.py); the plan holds no run state,
 so the agent can run again on new input. Commands (`--help` lists their options):
 
-new       starts a run (id <date>-<n>). Refuses while another run is active, a branch other than
-          main is checked out, or the plan cannot run (validate_plan.check_ready). Commits the plan:
-          before the first run on main (that is planning), after it on run/<id>, since main changes
-          only by a reviewed merge.
-stop      marks the active run stopped, commits what its waves left on run/<id>, and returns the
+start-run   starts a run (id <date>-<n>) from main. Refuses as agent_state.start_run's guards say: another run
+          active, a branch other than main or one to review checked out, or main's plan cannot run.
+          Commits the plan: before the first run on main (that is planning), after it on run/<id>,
+          since main changes only by a reviewed merge.
+stop        marks the active run stopped, commits what its waves left on run/<id>, and returns the
           branch for review and the call that closes its pi-subagents mission.
-start     records a launch of the active run's next wave (the plan must be ready): its stages run.
+start-wave  records a launch of the active run's next wave (the plan must be ready): its stages run.
           Without --mission-id it looks up the mission that lists the launch (one recorded late).
-finish    records how the wave's launch ended, read from pi-subagents' status.json unless
+finish-wave records how the wave's launch ended, read from pi-subagents' status.json unless
           --result is given. `done` marks its stages done (and the run, after the last wave); any
           other status puts them back to pending for a relaunch. Saves the return value to
           .compiled/<wave>.json (`result`), commits files the wave wrote on run/<id>, and returns what
           the parent needs next (ends_with, next_wave with what its compile would ask first; at the
           end the review, mission_close and done_when).
-decision  writes the user's answer for a decision stage where compile_wave.py looks for it.
+decision    writes the user's answer for a decision stage where run_compile.py looks for it.
 
 Files are round-tripped, so comments and formatting survive. Prints one JSON object.
 """
@@ -28,11 +28,13 @@ from enum import Enum
 from pathlib import Path
 from typing import Annotated
 
-import agent_git
 import agent_params
+import agent_repo
+import agent_state
 import typer
-from compile_wave import Compiler
-from runs import (
+from plan_validate import validate
+from run_compile import Compiler
+from run_folders import (
     RUN_ID_RE,
     RUNS,
     Run,
@@ -53,7 +55,6 @@ from utils import (
     stage_kind,
     subagents_runs_root,
 )
-from validate_plan import check_ready, validate
 
 PLAN = Path("plan.yaml")
 STILL_RUNNING = {"queued", "pending", "scheduled", "started", "running"}
@@ -82,7 +83,7 @@ def open_agent(need_run=True) -> tuple[dict, Run | None]:
         refuse("run from the agent root (no plan.yaml here)", 2)
     run = active_run(Path.cwd())
     if need_run and run is None:
-        refuse("no active run: start one with agent_new_run (run_log.py new)")
+        refuse("no active run: start one with agent_start_run (run_steps.py start-run)")
     return read_plan(Path.cwd(), {}), run
 
 
@@ -98,10 +99,10 @@ def subagents_outcome(run_id):
         started = st["startedAt"] / 1000 if isinstance(st.get("startedAt"), (int, float)) else None  # ms
         if process_alive(st.get("pid"), started) is False:
             refuse(f"run {run_id} is still {st.get('state')} in pi-subagents, but its process ({st.get('pid')}) is gone: "
-                   "it ended without recording how. Record it with agent_log_finish passing status failed "
+                   "it ended without recording how. Record it with agent_finish_wave passing status failed "
                    "(stopped if it was stopped) and result {}")
         refuse(f"run {run_id} is still {st.get('state')} in pi-subagents: wait for its completion notice. Only if you "
-               "know it ended (Pi crashed, or it was stopped), record it with agent_log_finish passing status "
+               "know it ended (Pi crashed, or it was stopped), record it with agent_finish_wave passing status "
                "failed (or stopped) and result {}")
     return (st.get("workflow") or {}).get("value"), st
 
@@ -125,13 +126,13 @@ def set_status(state, keys, status):
 def commit(message, run):
     """Commit the agent on the run's branch; the note, or why it was not committed (never fatal)."""
     try:
-        return agent_git.commit(Path.cwd(), message, to=run.branch)[1]
+        return agent_repo.commit(Path.cwd(), message, to=run.branch)[1]
     except RuntimeError as exc:
         return f"not committed: {exc}"
 
 
 @app.command()
-def new(
+def start_run(
     note: Annotated[str | None, typer.Option(help="what this run is for")] = None,
     params: Annotated[str | None, typer.Option(help="{name: value} for this run only, over .env (not secrets)")] = None,
     approve: Annotated[str, typer.Option(help="side-effect stage ids approved for the whole run, comma-separated")] = "",
@@ -150,28 +151,22 @@ def new(
     approved = [a.strip() for a in approve.split(",") if a.strip()]
     if unknown := [a for a in approved if a not in {s.get("id") for s in plan.get("stages") or [] if isinstance(s, dict)}]:
         refuse(f"--approve names no stage: {', '.join(unknown)}")
-    if run is not None:
-        refuse(f"run {run.id} is active: continue it, or stop it first (agent_stop_run)")
-    left = agent_git.branch(Path.cwd())
-    if agent_git.is_review_branch(left):  # a run starts from main: the branch (a change or a finished run's) stays for review
-        if why := check_ready(agent_git.main_plan(Path.cwd()) or {}):
-            refuse(f"the plan on main is not ready to run ({why}); {left} is still checked out")
-        agent_git.leave_branch(Path.cwd())
+    agent_state.require(Path.cwd(), agent_state.start_run)
+    left = agent_repo.branch(Path.cwd())
+    if agent_repo.is_review_branch(left):  # a run starts from main: the branch (a change or a finished run's) stays for review
+        agent_repo.leave_branch(Path.cwd())
         plan, _ = open_agent(need_run=False)
-    elif left not in (None, agent_git.MAIN):
-        refuse(f"branch {left} is checked out and is not a branch to review: switch to main first")
-    if why := check_ready(plan):
-        refuse(why)
+    first = not agent_repo.has_run(Path.cwd())
     today = datetime.datetime.now().astimezone().date().isoformat()  # local date
     runs = list_runs(Path.cwd())
     # a run/<id> branch outlives its folder (runs/ is not in git): skip its id too
-    ids = [rid for rid, _ in runs] + [b.removeprefix("run/") for b in agent_git.run_branches(Path.cwd())]
+    ids = [rid for rid, _ in runs] + [b.removeprefix("run/") for b in agent_repo.run_branches(Path.cwd())]
     taken = [int(m.group(2)) for rid in ids if (m := RUN_ID_RE.match(rid)) and m.group(1) == today]
     rid = f"{today}-{max(taken, default=0) + 1}"
     run = Run(rid, Path(RUNS) / rid, {})
     try:  # before the first run, uncommitted work is planning, on main; after it, it is the run's
-        commit_sha = agent_git.commit(Path.cwd(), f"r{plan.get('revision', 1)}: plan for run {rid}",
-                                         to=run.branch if runs else None)[0]
+        commit_sha = agent_repo.commit(Path.cwd(), f"r{plan.get('revision', 1)}: plan for run {rid}",
+                                         to=None if first else run.branch)[0]
     except RuntimeError as exc:
         refuse(f"cannot commit the plan: {exc}")
     run.state.update({"id": rid, "status": "active", "revision": plan.get("revision", 1), "commit": commit_sha,
@@ -184,24 +179,23 @@ def new(
     (run.dir / "work").mkdir(parents=True)
     run.save()
     emit({"ok": True, "run": rid, "path": str(run.dir.resolve()), "commit": commit_sha,
-          **({"left_branch": left, "note": f"switched to main for this run; {left} is kept for review"} if agent_git.is_review_branch(left) else {})})
+          **({"left_branch": left, "note": f"switched to main for this run; {left} is kept for review"} if agent_repo.is_review_branch(left) else {})})
 
 
 @app.command()
 def stop(note: Annotated[str | None, typer.Option(help="why the run stopped")] = None):
     """Stop the active run; its branch (if any) waits for review."""
+    agent_state.require(Path.cwd(), agent_state.stop_run)
     _plan, run = open_agent()
-    if run.wave_running:
-        refuse(f"a wave of run {run.id} is running: let it finish, or stop it in pi-subagents first, then record it with agent_log_finish")
     git_note = commit(f"run {run.id}: files its waves left in the agent", run)  # stopping must work even if this fails
     run.state.update({"status": "stopped", "finished_at": now(), **({"note": note} if note else {})})
     run.save()
-    emit({"ok": True, "run": run.id, "run_status": "stopped", "git_note": git_note, "review": agent_git.review_info(Path.cwd()),
+    emit({"ok": True, "run": run.id, "run_status": "stopped", "git_note": git_note, "review": agent_repo.review_info(Path.cwd()),
           "mission_close": close_mission(run, "cancelled", f"Agent run {run.id} stopped" + (f": {note}" if note else ""))})
 
 
 @app.command()
-def start(
+def start_wave(
     wave: Annotated[str, typer.Option()],
     subagent_run_id: Annotated[str, typer.Option(help="the id the subagent launch returned")],
     mission_id: Annotated[str | None, typer.Option()] = None,
@@ -209,11 +203,8 @@ def start(
     decisions: Annotated[str, typer.Option(help="decision answers as JSON")] = "{}",
 ):
     """Record a wave launch."""
+    agent_state.require(Path.cwd(), agent_state.start_wave)
     plan, run = open_agent()
-    if run.wave_running:
-        refuse(f"a wave of run {run.id} is running; finish it first")
-    if why := check_ready(plan):
-        refuse(f"{why}. No wave was compiled from this plan, so none can have launched")
     nxt = (validate(plan, None, None, Path.cwd(), run_state=run.state)[2].get("waves") or [None])[0]
     if nxt is None or nxt["id"] != wave:
         refuse(f"wave {wave} is not the next wave of run {run.id} (next: {nxt['id'] if nxt else 'none'})")
@@ -232,8 +223,8 @@ def add_launch(plan, run, nxt, subagent_run_id, mission_id, approved, answers):
         "stages": nxt["stages"],
         "revision": plan.get("revision", 1),
         "ends_with": nxt["ends_with"],
-        "branch": agent_git.branch(Path.cwd()),
-        "commit": agent_git.head(Path.cwd()),
+        "branch": agent_repo.branch(Path.cwd()),
+        "commit": agent_repo.head(Path.cwd()),
         "status": "running",
         "subagent_run_id": subagent_run_id,
         "mission_id": mission_id or mission_of(subagent_run_id),  # a launch recorded late: its mission lists it
@@ -250,7 +241,7 @@ def add_launch(plan, run, nxt, subagent_run_id, mission_id, approved, answers):
 
 def record_without_launch(plan, run, nxt, returned, approved):
     """A wave every stage of which is reused from an earlier run (compile_wave: nothing_to_launch), recorded as
-    launched and finished at once, with no launch: what agent_log_finish would return."""
+    launched and finished at once, with no launch: what agent_finish_wave would return."""
     entry = add_launch(plan, run, nxt, None, None, approved, {})
     entry["launched"] = False
     return close_launch(plan, run, entry, Status.done, returned, {}, None)
@@ -305,7 +296,7 @@ def next_preflight(plan, run, wave):
 
 
 @app.command()
-def finish(
+def finish_wave(
     wave: Annotated[str, typer.Option()],
     status: Annotated[Status | None, typer.Option(help="default: the status the workflow script returned")] = None,
     result: Annotated[str | None, typer.Option(help="the workflow script's return value (a file or a JSON string); default: read from pi-subagents")] = None,
@@ -315,15 +306,13 @@ def finish(
     plan, run = open_agent(need_run=False)
     if run is None and (last := (list_runs(Path.cwd()) or [None])[-1]):
         run = Run(last[0], last[1], read_run(last[1]))  # a wave of a run that has ended: say it is recorded (a completion notice after /agent-auto)
-    if run is None:
-        refuse("no active run: start one with agent_new_run (run_log.py new)")
-    state = run.state
+    state = (run.state if run else {})
     entry = next((r for r in reversed(state.get("launches") or []) if r.get("wave") == wave and r.get("status") == "running"), None)
-    if entry is None:
-        recorded = next((r for r in reversed(state.get("launches") or []) if r.get("wave") == wave), None)
-        if recorded:
+    if entry is None:  # a running launch is recorded even after its run ended (a late completion notice)
+        if recorded := next((r for r in reversed(state.get("launches") or []) if r.get("wave") == wave), None):
             refuse(f"wave {wave} of run {run.id} is already recorded ({recorded.get('status')}; the run is {state.get('status')}): "
                    "nothing to record again, and nothing to relaunch")
+        agent_state.require(Path.cwd(), agent_state.finish_wave)
         refuse(f"run {run.id} has no running launch of wave {wave}")
     returned, record = None, {}
     if result:
@@ -350,7 +339,7 @@ def finish(
 
 def close_launch(plan, run, entry, status, returned, record, note):
     """Record how a launch ended (its stages done or pending again, its cost and children), commit what the wave wrote,
-    and say what comes next: agent_log_finish's result."""
+    and say what comes next: agent_finish_wave's result."""
     state, wave = run.state, entry["wave"]
     if returned is not None:
         record_wave_result(run.dir, wave, returned)
@@ -391,9 +380,9 @@ def close_launch(plan, run, entry, status, returned, record, note):
                        for k, v in ((returned or {}).get("children") or {}).items()} if isinstance(returned, dict) else None,
           "error": entry.get("error"), "failure_kind": entry.get("failure_kind"), "cost_usd": entry.get("cost_usd"),
           "stopped_at": entry.get("stopped_at"), "git_note": git_note,
-          # what to compile next, so the parent goes straight to agent_compile (no check in between)
+          # what to compile next, so the parent goes straight to agent_compile_wave (no check in between)
           "next_wave": nxt,
-          "review": agent_git.review_info(Path.cwd()) if done else None,
+          "review": agent_repo.review_info(Path.cwd()) if done else None,
           "mission_close": close_mission(run, "completed", f"Agent run {run.id} completed ({len(keys)} stages"
                                          + (f", ${total:.4f} in children" if total else "") + ").") if done else None,
           # the criteria the final report goes through, so the parent need not read the plan for them
@@ -435,10 +424,9 @@ def decision(
     stage: Annotated[str, typer.Option()],
     answer: Annotated[str, typer.Option(help="the user's answer as JSON")],
 ):
-    """Write the user's answer where compile_wave.py looks for it."""
+    """Write the user's answer where run_compile.py looks for it."""
+    agent_state.require(Path.cwd(), agent_state.record_decision)
     plan, run = open_agent()
-    if run.wave_running:
-        refuse(f"a wave of run {run.id} is running: record decisions for the next wave after agent_log_finish")
     st = next((s for s in plan.get("stages") or [] if isinstance(s, dict) and s.get("id") == stage), None)
     if st is None:
         refuse(f"no stage {stage}")

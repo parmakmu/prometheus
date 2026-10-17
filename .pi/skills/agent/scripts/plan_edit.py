@@ -26,11 +26,13 @@ import os
 from pathlib import Path
 from typing import Annotated
 
-import agent_git
 import agent_params
+import agent_repo
+import agent_state
 import typer
+from plan_validate import plan_digest, validate
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
-from runs import active_run, list_runs
+from run_folders import active_run
 from utils import (
     emit,
     read_plan,
@@ -40,7 +42,6 @@ from utils import (
     subagent_child,
     write_plan,
 )
-from validate_plan import plan_digest, validate
 
 PLAN = Path("plan.yaml")
 CRITIC_PASSES = 2  # each time a run resolves stages: a plan fixed after a finding gets a new revision, not a new budget
@@ -80,7 +81,7 @@ def back_to_run_branch(run):
     if run is None or run.wave_running:
         return
     try:
-        agent_git.back_to_run_branch(Path.cwd(), run.branch)
+        agent_repo.back_to_run_branch(Path.cwd(), run.branch)
     except RuntimeError as exc:
         refuse(f"run {run.id}: {exc}. Tell the user; do not change branches or files yourself")
 
@@ -89,7 +90,7 @@ def commit(message, run):
     """Commit the agent (on the run's branch during a run); (commit, note). A git failure is
     reported, not fatal."""
     try:
-        return agent_git.commit(Path.cwd(), message, to=run.branch if run else None)
+        return agent_repo.commit(Path.cwd(), message, to=run.branch if run else None)
     except RuntimeError as exc:
         return None, str(exc)
 
@@ -117,6 +118,7 @@ def main(agent_dir: Annotated[str, typer.Option("--agent", help="agent root")] =
 @app.command()
 def resolve(change: Annotated[str, typer.Option(help="the change as a JSON object, or a file holding it")]):
     """Resolve provisional stages after their discovery, or change pending ones the user asked about."""
+    agent_state.require(Path.cwd(), agent_state.resolve)
     back_to_run_branch(active_run(Path.cwd()))  # before the plan is read
     plan, c = read_plan(Path.cwd(), {}), json_arg(change)
     if not isinstance(c, dict):
@@ -130,11 +132,6 @@ def resolve(change: Annotated[str, typer.Option(help="the change as a JSON objec
 
     stages = plan.get("stages") or []
     run = active_run(Path.cwd())
-    if run is None:
-        refuse("no run is active: agent_resolve works only during a run. Before the first run (on main) or on a "
-               "change branch, edit plan.yaml directly; after a run, start a change with /agent-revise")
-    if run.wave_running:
-        refuse(f"a wave of run {run.id} is running: resolve after agent_log_finish")
     frozen = set(run.state.get("stages") or {})
     by_key = {s.get("id"): s for s in stages}
     unknowns = {u.get("id"): u for u in plan.get("unknowns") or []}
@@ -166,7 +163,7 @@ def resolve(change: Annotated[str, typer.Option(help="the change as a JSON objec
         refuse("; ".join(problems))
 
     rev = plan.get("revision", 1)
-    previous = agent_git.head(Path.cwd())
+    previous = agent_repo.head(Path.cwd())
 
     for key in c.get("remove") or []:
         stages.remove(by_key.pop(key))
@@ -192,6 +189,7 @@ def resolve(change: Annotated[str, typer.Option(help="the change as a JSON objec
 @app.command()
 def critique(result: Annotated[str, typer.Option(help="the critic's result as JSON {run_id, verdict, passes?, findings}, or a file")]):
     """Record a plan-critic result and mark the plan ready if it validates."""
+    agent_state.require(Path.cwd(), agent_state.record_critique)
     back_to_run_branch(active_run(Path.cwd()))  # before the plan is read
     plan, c = read_plan(Path.cwd(), {}), json_arg(result)
     if not isinstance(c, dict) or not c.get("run_id") or not c.get("verdict"):
@@ -200,11 +198,6 @@ def critique(result: Annotated[str, typer.Option(help="the critic's result as JS
         refuse(f"passes is 1 or 2: at most {CRITIC_PASSES} critic passes per revision, and each time a run resolves stages. "
                "Do not launch another; record the last pass with each remaining finding rejected and a note why")
     run = active_run(Path.cwd())
-    if run and run.wave_running:
-        refuse(f"a wave of run {run.id} is running: the critic reviews resolved stages, which waits for agent_log_finish")
-    if run is None and agent_git.branch(Path.cwd()) == agent_git.MAIN and list_runs(Path.cwd()):
-        refuse("main changes only by a reviewed merge once a run exists: change the plan with /agent-revise "
-               "(a branch), and record the critic there")
     child = subagent_child(c["run_id"])
     if child is None:
         refuse(f"pi-subagents has no record of a critic run {c['run_id']}: record the run id of the plan-critic child "
@@ -222,9 +215,9 @@ def critique(result: Annotated[str, typer.Option(help="the critic's result as JS
         if c["run_id"] not in seen:
             run.state.setdefault("critiques", []).append({"run_id": c["run_id"], "after_waves": waves})
             run.save()
-    if run is None and agent_git.is_change_branch(agent_git.branch(Path.cwd()) or ""):
+    if run is None and agent_repo.is_change_branch(agent_repo.branch(Path.cwd()) or ""):
         # a change's first critique of an edited plan makes it a new revision (begin-change leaves the plan as is)
-        base = agent_git.main_plan(Path.cwd()) or {}
+        base = agent_repo.main_plan(Path.cwd()) or {}
         if plan.get("revision", 1) == base.get("revision", 1) and plan_digest(plan) != plan_digest(base):
             plan["revision"] = plan.get("revision", 1) + 1
     plan["critique"] = {
@@ -235,7 +228,7 @@ def critique(result: Annotated[str, typer.Option(help="the critic's result as JS
         "verdict": c["verdict"],
         "findings": styled(c.get("findings") or []),
         # the plan the critic saw (status, revision and critique aside): an edit after this record makes it
-        # unready (validate_plan.check_ready), and only this command writes it
+        # unready (plan_validate.check_ready), and only this command writes it
         "plan_digest": plan_digest(plan),
     }
     plan["status"] = "ready"

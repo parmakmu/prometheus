@@ -1,6 +1,6 @@
 // Mock pi-subagents runtime for compiled workflow scripts.
 // Usage: node harness.mjs <compiled.json> [--fail KEY] [--block KEY]
-// - batcher children run the real batch_tool.py (stdin = task, cwd = item cwd)
+// - batcher children run the real run_batcher.py (stdin = task, cwd = item cwd)
 // - other children write placeholder files for every "- id: /abs/path" under "Write:",
 //   plus their `output`; return structuredOutput built from outputSchema
 // - acceptance.verify commands run on the host in the child's cwd; output: "json" ones parse stdout
@@ -31,10 +31,15 @@ function sample(schema) {
   return "x";
 }
 
-function writePlaceholder(p, key) {
+function writePlaceholder(p, key, task = "") {
   fs.mkdirSync(path.dirname(p), { recursive: true });
   const ext = path.extname(p);
-  const body = ext === ".json" ? JSON.stringify([{ mock: key }]) : ext === ".csv" ? "a,b\n1,2\n" : "placeholder\n";
+  // a batch child names each item of its batch file, as its task says (the merge checks every item appears once)
+  const batch = task.match(/Your batch file \(one item per line\): (\S+)/);
+  const items = batch ? fs.readFileSync(batch[1], "utf8").split("\n").filter((l) => l.trim()) : null;
+  const body = items
+    ? ext === ".json" ? JSON.stringify(items.map((item) => ({ mock: key, item }))) : items.map((i) => `${i}: ok`).join("\n") + "\n"
+    : ext === ".json" ? JSON.stringify([{ mock: key }]) : ext === ".csv" ? "a,b\n1,2\n" : "placeholder\n";
   fs.writeFileSync(p, body);
 }
 
@@ -53,7 +58,7 @@ function run(key, opts) {
   if (verify.some((v) => v.output === "json") && opts.outputSchema) throw new Error(`${key}: typed verify + outputSchema (pi rejects this)`);
   if (key === failKey) return { key, runId, ok: false, state: "failed", error: "mock failure" };
   if (opts.agent === "batcher") {
-    const r = spawnSync("python3", ["../../../.pi/skills/agent/scripts/batch_tool.py"], { cwd: opts.cwd, input: "agent text\n" + opts.task, encoding: "utf8" });
+    const r = spawnSync("python3", ["../../../.pi/skills/agent/scripts/run_batcher.py"], { cwd: opts.cwd, input: "agent text\n" + opts.task, encoding: "utf8" });
     if (r.status !== 0) return { key, runId, ok: false, state: "failed", error: r.stdout + r.stderr };
     return { key, runId, ok: true, state: "complete", output: r.stdout };
   }
@@ -65,7 +70,7 @@ function run(key, opts) {
     else if (m && opts.task.includes("Your batch file")) { /* batch child writes only its batch output */ }
     else if (m) writePlaceholder(m[1], key);
   }
-  if (opts.output) writePlaceholder(opts.output, key);
+  if (opts.output) writePlaceholder(opts.output, key, opts.task);
   let structuredOutput = opts.outputSchema ? sample(opts.outputSchema) : null;
   if (key === blockKey && structuredOutput && "blocking" in structuredOutput) structuredOutput.blocking = true;
   for (const v of verify) {

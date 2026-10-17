@@ -3,7 +3,7 @@
   run.yaml    id, status (active | done | stopped), revision, started_at, finished_at, note,
               stages {key: running | done} (absent = pending), launches [one entry per wave
               launch], critiques [{run_id, after_waves}] (critic results recorded while the run resolved stages;
-              plan_edit.py caps them each time). Written by run_log.py and plan_edit.py.
+              plan_edit.py caps them each time). Written by run_steps.py and plan_edit.py.
   work/       the children's cwd: stage outputs, decisions, batches, scripts
   .compiled/  per wave launched: <wave>.js, the script pi-subagents runs (the wave as data, `const W`,
               then wave_runner.js), and <wave>.json: the compile's result (the call), `inputs` (each
@@ -22,7 +22,7 @@ from utils import read_json, read_yaml, write_yaml
 
 RUNS = "runs"
 RUN_ID_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})-(\d+)$")
-HEADER = "# Run state written by the run protocol (run_log.py). Do not edit by hand.\n"
+HEADER = "# Run state written by the run protocol (run_steps.py). Do not edit by hand.\n"
 
 
 class Run(NamedTuple):
@@ -52,7 +52,7 @@ def list_runs(agent_dir):
 
 
 def list_released_runs(agent_dir):
-    """[(id, dir)] of a release's runs (prometheus/frozen.py: state.json, no run.yaml), oldest first: by when each
+    """[(id, dir)] of a release's runs (prometheus/run_release.py: state.json, no run.yaml), oldest first: by when each
     started (its call.json, written once), since two ids from the same second sort by their random suffix."""
     base = Path(agent_dir) / RUNS
     found = [p for p in base.iterdir() if (p / "state.json").is_file() and not (p / "run.yaml").exists()] if base.is_dir() else []

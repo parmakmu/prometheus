@@ -7,7 +7,7 @@ import pytest
 
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
-from test_frozen import fake_pi  # noqa: F401 (a fixture)
+from test_run_release import fake_pi  # noqa: F401 (a fixture)
 from test_serve import agent  # noqa: F401 (a fixture: the released counter agent)
 
 from prometheus import serve

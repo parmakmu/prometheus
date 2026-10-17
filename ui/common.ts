@@ -103,7 +103,7 @@ export const ownOf = (user: string) => (USERS_ROOT ? path.join(USERS_ROOT, user)
 export const filesOf = (user: string) => path.join(ownOf(user), "files");
 export const SLUG = /^[a-z0-9][a-z0-9-]*$/;
 
-// where sandboxed workers' pi-subagents keep their runs (survives a worker restart); list_agents.py reads them there
+// where sandboxed workers' pi-subagents keep their runs (survives a worker restart); agent_list.py reads them there
 export const SUBAGENTS_ROOT = path.join(HOME, ".cache", "pi-subagents");
 
 export const pythonFor = (root: string) => [path.join(root, ".venv/bin/python"), path.join(REPO, ".venv/bin/python")].find(existsSync) ?? "python3";

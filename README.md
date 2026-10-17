@@ -51,4 +51,4 @@ To be fair, an agent is more than many jobs need. If you'll only do the job once
 
 ## Requirements
 
-Pi 1.3.0 or later with pi-subagents 0.78.0 or later, Node, uv (which brings Python 3.14), and git. `prometheus doctor` checks them; the [tutorial](docs/tutorial.md#before-you-begin) shows how to install them.
+Pi 1.3.0 or later with pi-subagents 0.79.0 or later, Node, uv (which brings Python 3.14), and git. `prometheus doctor` checks them; the [tutorial](docs/tutorial.md#before-you-begin) shows how to install them.

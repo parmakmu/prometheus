@@ -2,11 +2,11 @@
 """A run's evidence as one file, to fix the agent where it is developed.
 
 Usage:
-  bundle.py make [--run DIR | --agent DIR] [--with-files] [--out DIR]
-  bundle.py show [--run DIR | --agent DIR]
-  bundle.py add FILE [--agent DIR]
+  run_bundle.py make [--run DIR | --agent DIR] [--with-files] [--out DIR]
+  run_bundle.py show [--run DIR | --agent DIR]
+  run_bundle.py add FILE [--agent DIR]
 
-make   writes <slug>-<version>-<run>.tgz from a run folder: a release's (prometheus/frozen.py: call.json, state.json;
+make   writes <slug>-<version>-<run>.tgz from a run folder: a release's (prometheus/run_release.py: call.json, state.json;
        `kind: release`, its version, and its commit from RELEASE.json) or the agent's own (run.yaml: `kind: run`, version r<revision>, the
        commit of its branch; for an agent copied elsewhere, which has no prometheus). With --agent and no --run: that
        agent's active run, else its last. The bundle holds bundle.json (agent, version, commit, run, state, error, the
@@ -36,10 +36,10 @@ import tempfile
 from pathlib import Path
 from typing import Annotated
 
-import agent_git
 import agent_params
+import agent_repo
 import typer
-from runs import Run, active_run, list_runs, read_run
+from run_folders import Run, active_run, list_runs, read_run
 from session_digest import default_sessions_dir, moment, session_start
 from utils import (
     SECRET_PATTERNS,
@@ -142,13 +142,13 @@ def describe_children(folder: Path, paths: dict, run_dir: Path) -> list[dict]:
 
 
 def describe_release_run(run_dir: Path, ended: bool):
-    """A release's run (prometheus/frozen.py): its facts for bundle.json, its launches, and its files and data folders;
+    """A release's run (prometheus/run_release.py): its facts for bundle.json, its launches, and its files and data folders;
     `ended`: refuse one still running (a bundle)."""
     state, call = read_json(run_dir / "state.json"), read_json(run_dir / "call.json")
     if ended and state.get("state") == "running":
         refuse(f"run {run_dir.name} is still running: bundle it once it ended (or cancel it)")
     agent_dir = run_dir.parent.parent  # releases/<slug>/<version>/runs/<id>
-    release = read_json(agent_dir / "RELEASE.json") or {}  # written when it was unpacked (prometheus/frozen.py)
+    release = read_json(agent_dir / "RELEASE.json") or {}  # written when it was unpacked (prometheus/run_release.py)
     facts = {"kind": "release", "agent": call.get("agent") or agent_name(agent_dir), "version": call.get("version"),
              "commit": release.get("commit"),
              "state": state.get("state"), "error": state.get("error")}
@@ -162,9 +162,9 @@ def describe_agent_run(run_dir: Path, ended: bool):
     if ended and run.wave_running:
         refuse(f"a wave of run {run.id} is running: bundle it once the wave ended")
     agent_dir = run_dir.parent.parent
-    branch = run.branch if run.branch in agent_git.run_branches(agent_dir) else agent_git.MAIN
-    commit = agent_git.git(agent_dir, "rev-parse", "--short=12", branch, check=False).stdout.strip() or None \
-        if agent_git.available() and agent_git.is_repo(agent_dir) else None
+    branch = run.branch if run.branch in agent_repo.run_branches(agent_dir) else agent_repo.MAIN
+    commit = agent_repo.git(agent_dir, "rev-parse", "--short=12", branch, check=False).stdout.strip() or None \
+        if agent_repo.available() and agent_repo.is_repo(agent_dir) else None
     launches = [x for x in run.state.get("launches") or [] if isinstance(x, dict)]
     unfinished = next((x for x in reversed(launches) if x.get("status") not in ("done", None)), None)
     facts = {"kind": "run", "agent": agent_dir.name, "version": f"r{run.state.get('revision', 1)}", "commit": commit,
@@ -290,12 +290,12 @@ def make(run_dir: RUN_OPTION = None, agent_dir: AGENT_OPTION = None,
 
 def check_commit(agent_dir: Path, commit: str | None) -> list[str]:
     """Why the fix may start from other code than what ran: its commit unknown here, or not on main."""
-    if not commit or not (agent_git.available() and agent_git.is_repo(agent_dir)):
+    if not commit or not (agent_repo.available() and agent_repo.is_repo(agent_dir)):
         return []
-    if agent_git.git(agent_dir, "cat-file", "-e", f"{commit}^{{commit}}", check=False).returncode != 0:
+    if agent_repo.git(agent_dir, "cat-file", "-e", f"{commit}^{{commit}}", check=False).returncode != 0:
         return [f"the commit that ran, {commit}, isn't in this repository: pull the agent first, or the fix starts from other code"]
-    if agent_git.git(agent_dir, "merge-base", "--is-ancestor", commit, agent_git.MAIN, check=False).returncode != 0:
-        return [f"the commit that ran, {commit}, isn't on {agent_git.MAIN}: the fix starts from other code than what ran"]
+    if agent_repo.git(agent_dir, "merge-base", "--is-ancestor", commit, agent_repo.MAIN, check=False).returncode != 0:
+        return [f"the commit that ran, {commit}, isn't on {agent_repo.MAIN}: the fix starts from other code than what ran"]
     return []
 
 

@@ -30,3 +30,9 @@ if a kind may change.
    blocking one) and continue.
 4. If the stage graph changed beyond filled-in details, or a side effect or
    question appeared, show the user and ask before continuing.
+
+## What you may edit while resolving
+
+The plan only through `agent_resolve` and `agent_record_critique`, plus `gates/`,
+`.pi/agents/` and packages (`agent_add_package`); stage programs are the
+children's. Nothing else.

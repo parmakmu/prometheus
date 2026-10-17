@@ -4,7 +4,7 @@ description: Command runner (no model) that splits a map stage's items into batc
 runner:
   type: external-cli
   command: python3
-  args: ["../../../.pi/skills/agent/scripts/batch_tool.py"]  # cwd is runs/<id>/work
+  args: ["../../../.pi/skills/agent/scripts/run_batcher.py"]  # cwd is runs/<id>/work
   promptDelivery: stdin
 inheritProjectContext: false
 inheritGlobalContext: false

@@ -23,7 +23,7 @@ uv add git+<prometheus repository>
 
 It needs Python 3.14. A run also needs what any released run needs on the machine:
 
-- Pi 1.3.0 or later and pi-subagents 0.78.0 or later, the same versions `prometheus doctor` checks;
+- Pi 1.3.0 or later and pi-subagents 0.79.0 or later, the same versions `prometheus doctor` checks;
 - uv, since the agent's programs and gates run with `uv run`;
 - a model login or key, if the release has stages that use a model;
 - the agent's secrets in the environment, since a release has no `.env`.

@@ -109,7 +109,7 @@ def test_an_agents_params_are_shown_and_set_but_never_a_secret(tmp_path, run_py)
     (home / ".pi" / "skills").mkdir(parents=True)
     (home / ".pi" / "APPEND_SYSTEM.md").write_text("", encoding="utf-8")
     shutil.copytree(SKILL, home / ".pi" / "skills" / "agent")  # the router runs prometheus's scripts, not the agent's
-    assert run_py([SKILL / "scripts" / "scaffold_agent.py", "p", "--root", home / "agents", "--request", "x"]).data["ok"]
+    assert run_py([SKILL / "scripts" / "agent_scaffold.py", "p", "--root", home / "agents", "--request", "x"]).data["ok"]
     plan = home / "agents" / "p" / "plan.yaml"
     text = plan.read_text(encoding="utf-8")
     assert "\nparams: {}\n" in text
@@ -144,7 +144,7 @@ def test_a_conversation_shows_before_its_worker_has_started(tmp_path, run_py):
     home = tmp_path / "ada" / "prometheus"
     (home / ".pi").mkdir(parents=True)
     (home / ".pi" / "APPEND_SYSTEM.md").write_text("", encoding="utf-8")
-    assert run_py([SKILL / "scripts" / "scaffold_agent.py", "h", "--root", home / "agents", "--request", "x"]).data["ok"]
+    assert run_py([SKILL / "scripts" / "agent_scaffold.py", "h", "--root", home / "agents", "--request", "x"]).data["ok"]
     agent = home / "agents" / "h"
     (agent / ".pi" / "sessions").mkdir(parents=True, exist_ok=True)
     entries = [
@@ -191,7 +191,7 @@ def agent_home(tmp_path, run_py, slug="s"):
     (home / ".pi" / "APPEND_SYSTEM.md").write_text("", encoding="utf-8")
     shutil.copytree(SKILL, home / ".pi" / "skills" / "agent")
     (tmp_path / "ada" / "pi-agent" / "extensions").mkdir(parents=True)
-    assert run_py([SKILL / "scripts" / "scaffold_agent.py", slug, "--root", home / "agents", "--request", "x"]).data["ok"]
+    assert run_py([SKILL / "scripts" / "agent_scaffold.py", slug, "--root", home / "agents", "--request", "x"]).data["ok"]
     return home / "agents" / slug
 
 
@@ -316,7 +316,7 @@ def call(port, path, method="GET", body=None, headers=None):
 def test_an_api_key_calls_its_own_agents_api_and_nothing_else(tmp_path, run_py):
     agent_home(tmp_path, run_py)
     agent_home_also = tmp_path / "ada" / "prometheus" / "agents"
-    assert run_py([ROOT / ".pi/skills/agent/scripts/scaffold_agent.py", "t", "--root", agent_home_also, "--request", "y"]).data["ok"]
+    assert run_py([ROOT / ".pi/skills/agent/scripts/agent_scaffold.py", "t", "--root", agent_home_also, "--request", "y"]).data["ok"]
     head = {"X-Forwarded-User": "ada", "X-Proxy-Secret": SECRET}
     proc, port = start(TRUST_USER_HEADER="x-forwarded-user", PROXY_SECRET=SECRET, USERS_ROOT=str(tmp_path))
     try:

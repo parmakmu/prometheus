@@ -6,7 +6,7 @@ import sys
 from conftest import SKILL
 
 sys.path.insert(0, str(SKILL / "scripts"))  # compile_wave imports its sibling scripts
-spec = importlib.util.spec_from_file_location("compile_wave", SKILL / "scripts" / "compile_wave.py")
+spec = importlib.util.spec_from_file_location("compile_wave", SKILL / "scripts" / "run_compile.py")
 cw = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cw)
 

@@ -112,12 +112,12 @@ Background children require the host npm package (@earendil-works/pi-coding-agen
 ### Branch not reviewed
 
 ```text
-the plan on main is not ready to run (…); <run/…, revise/… or improve/…> is still checked out
+the plan on main, which a run starts from, can't run: …
 ```
 
 **Cause.** A run always starts from `main`. When a branch awaiting review is checked out, starting a run commits its leftovers, switches to `main` and keeps the branch for review, but only if the plan on `main` is ready. Here it isn't (a draft, or errors), so nothing was switched.
 
-**Fix.** Review the branch (`/agent-revise` or the workspace's *Review and merge*: merge, keep or discard), or change the plan on `main` until it is ready.
+**Fix.** Review the branch: type `/agent-run`, which shows you the branch and asks whether to merge, keep or discard it. In the web app, the workspace's *Review and merge* does the same. Or change the plan on `main` with `/agent-revise` until it is ready.
 
 ### Plan not ready
 
@@ -142,12 +142,22 @@ the critic's result for this plan was not recorded with agent_record_critique, w
 ### A run is already active
 
 ```text
-run <id> is active: continue it, or stop it first
+run <id> is active: continue it (a change to its plan is resolved on its branch: agent_resolve), or stop it first (agent_stop_run)
 ```
 
-**Cause.** Only one run can be active at a time.
+**Cause.** Only one run can be active at a time, and while it is, the plan changes only through it: starting another run, `/agent-revise`, `/agent-improve` and reviewing a branch all wait.
 
-**Fix.** To continue the run, use `/agent-run`. To start over, tell the agent: it stops the active run, which stays in `runs/` marked stopped, and shows you its branch if it has one.
+**Fix.** To continue the run, use `/agent-run`. To change its plan, ask the run itself: it resolves the change on the run's branch, which you review at the end. To start over, tell the agent: it stops the active run, which stays in `runs/` marked stopped, and shows you its branch if it has one.
+
+### Another branch is checked out
+
+```text
+<branch> is checked out, which is neither main nor a run or change branch: switch back with `git switch main` (or to the branch you were working on)
+```
+
+**Cause.** Someone checked out a branch the agent didn't make (`git switch -c feature/x`, say), from a terminal or an editor. The agent works only on `main`, its runs' `run/…` branches and its changes' `revise/…` and `improve/…` branches, so it starts nothing here, and `/agent-status` shows the state `other_branch`.
+
+**Fix.** Switch back with `git switch main`, or to the branch you were working on. To keep work done on that branch, merge it into a `/agent-revise` branch with git yourself.
 
 ### A value is missing
 
@@ -192,24 +202,24 @@ builtin agent '<name>' writes <target> but has no connector tools
 ### A wave is running
 
 ```text
-a wave is running (stages <…>); check its run before launching again
+a wave of run <id> is running: let it finish (or stop it in pi-subagents), then record it with agent_finish_wave
 ```
 
-**Cause.** A wave was launched and hasn't been recorded as finished.
+You see this when the next wave would launch, or after asking the run to change its plan, or for a critique, a decision or a stop, while a wave runs.
+
+**Cause.** A wave was launched and hasn't been recorded as finished. Everything else waits until it is, so the plan and the answers for the next wave don't change underneath it.
 
 **Fix.** Wait for pi-subagents' completion notice; the agent then records the result and carries on. If `pi` restarted in the meantime, `/agent-run` checks the wave first and records it once it has finished.
 
-### Waits for the running wave
+### No wave to record
 
 ```text
-a wave of run <id> is running: …
+no wave of run <id> is running: there is nothing to record
 ```
 
-You see this after asking the run to change its plan, or for a critique, a decision or a stop, while a wave runs.
+**Cause.** A wave's result was recorded while none of the run's waves was running: a completion notice came after the wave had been recorded another way.
 
-**Cause.** These steps wait until the running wave is recorded as finished, so the plan and the answers for the next wave don't change underneath it.
-
-**Fix.** Wait for the completion notice, then ask again.
+**Fix.** Nothing: carry on with the run (`/agent-run`).
 
 ### Still running in pi-subagents
 
@@ -225,7 +235,7 @@ run <id> is still <state> in pi-subagents: wait for its completion notice
 
 The agent shows you a wave's results and asks whether to go on.
 
-**Cause.** The plan puts a review after that wave (`pauses_after`), and until you answer, compiling the next wave returns `review_needed`.
+**Cause.** The plan puts a review after that wave (`pauses_after` on one of its stages), so the next wave waits until you answer.
 
 **Fix.** Say go on, ask for a change (the run then resolves its pending stages anew), or stop the run.
 
@@ -233,9 +243,25 @@ The agent shows you a wave's results and asks whether to go on.
 
 The agent reports a failed wave and offers three options.
 
-**Cause.** A gate rejected an output, a review found a blocking problem, or the wave failed before its script returned, in which case the agent reports the `failure_kind`, such as `timeout` or `validation`.
+**Cause.** A gate rejected an output, a review found a blocking problem, or the wave failed before it could finish, in which case the agent reports the kind of failure, such as `timeout` or `validation`.
 
-**Fix.** Choose one of the options: relaunch the wave, which skips children that completed and haven't changed; change the plan, which the run does by resolving its pending stages anew; or stop the run.
+**Fix.** Choose one of the options:
+
+- **relaunch** the wave, which skips children that completed and haven't changed;
+- **change the plan**, which the run does by rewriting its pending stages;
+- **stop** the run.
+
+The steps are in [How to relaunch a wave that failed](how-to.md#how-to-relaunch-a-wave-that-failed).
+
+### A map's results are missing items
+
+```text
+the merged result does not name every item of the split exactly once; missing: …; named more than once: …
+```
+
+**Cause.** A map stage splits its items (emails, rows, lines) into batches, and each batch's child writes a result for each of its items. When the results are merged, every item must appear in exactly one of them. Here a batch's child skipped an item, wrote one twice, or named items differently from its batch file, so the stage's output would silently be incomplete.
+
+**Fix.** A relaunch keeps the batches that completed, so it would fail the same way. Change the stage's `instructions` to say what each result must contain and how it names its item, for example by the email's file name: during the run, ask the agent for the change (it resolves the pending stage); after it, with `/agent-revise`. The changed stage runs all its batches again.
 
 ### The run reached its budget
 
@@ -328,7 +354,7 @@ resolving cannot change [<fields>] … locked
 main is checked out and no run is active: gates, scripts, agents and packages change only on a run or change branch
 ```
 
-**Cause.** After the first run, `main` changes only by a reviewed merge. The message usually means the checked-out branch was switched, from a terminal or an editor, while a change was in progress.
+**Cause.** After the first run, `main` changes only by a reviewed merge. That holds in a fresh clone too, which has no `runs/`: `main`'s history shows the run. The message usually means the checked-out branch was switched, from a terminal or an editor, while a change was in progress.
 
 **Fix.** Switch back to the branch you were working on (`git switch revise/…`) and tell the agent to continue. To start something new, use `/agent-revise`. During a run, see [The run's branch isn't checked out](#the-runs-branch-isnt-checked-out).
 
@@ -341,16 +367,6 @@ main changes only by a reviewed merge once a run exists: change the plan with /a
 **Cause.** After the first run, a critic's result is recorded on a run's or a change's branch, never on `main`.
 
 **Fix.** Start a change with `/agent-revise`.
-
-### Change while a run is active
-
-```text
-run <id> is active: tell the run what to change … or stop it first
-```
-
-**Cause.** `/agent-revise` and `/agent-improve` work only while no run is active.
-
-**Fix.** Ask the run itself for the change: it resolves on the run's branch, which you review at the end. Or stop the run first.
 
 ### Another change is open
 
@@ -557,7 +573,7 @@ cannot read <bundle>: <reason>
 <bundle> is a bundle of format <n>; this agent reads format <m>: refresh it
 ```
 
-**Cause.** `/agent-improve` (`bundle.py add`) imports only a bundle of this agent that it can read. A file that isn't a bundle, or one that names a path outside its folder, can't be read.
+**Cause.** `/agent-improve` (`run_bundle.py add`) imports only a bundle of this agent that it can read. A file that isn't a bundle, or one that names a path outside its folder, can't be read.
 
 **Fix.** Run `/agent-improve` in the agent the bundle came from. For a newer format, refresh the agent (`prometheus refresh <slug>`). For anything else, make the bundle again with `prometheus bundle`.
 
@@ -825,16 +841,6 @@ wave <w> was already launched as pi-subagents run <id> … and not recorded
 
 **What the agent does.** The agent records the existing launch, then waits for it or records its result.
 
-### Launch recorded on a draft plan
-
-```text
-<why the plan is not ready>. No wave was compiled from this plan, so none can have launched
-```
-
-**Cause.** The agent tried to record a launch while the plan wasn't ready, typically after resolving stages the critic hasn't passed yet. Compiling refuses a plan that isn't ready, so no wave can have launched from it.
-
-**What the agent does.** The agent records the critic's result first, then compiles and launches the wave.
-
 ### The wave's process is gone
 
 ```text
@@ -858,12 +864,12 @@ cannot read pi-subagents' record of run <id>
 ### Resolve without a run
 
 ```text
-no run is active: agent_resolve works only during a run
+no active run: start one with agent_start_run (run_steps.py start-run)
 ```
 
-**Cause.** The agent tried to resolve outside a run.
+**Cause.** The agent tried to resolve, record a decision, compile or stop outside a run.
 
-**What the agent does.** Before the first run, or on a change branch, the agent edits `plan.yaml` directly; after a run has finished, use `/agent-revise`.
+**What the agent does.** Before the first run, or on a change branch, it edits `plan.yaml` directly. After a run has finished, it suggests `/agent-revise` instead.
 
 ### Package not in pyproject.toml
 
@@ -890,6 +896,6 @@ run <id> is a <agent> child in state <state>, not a completed plan-critic run
 
 ## For contributors
 
-The messages come from the Python scripts in [`.pi/skills/agent/scripts/`](../.pi/skills/agent/scripts/), which print `{"ok": false, "error": …}` and exit non-zero; the extensions pass that on to the model. A failed validation prints its report instead, with `errors: […]`. The run protocol ([`run-protocol.md`](../.pi/skills/agent/references/run-protocol.md), "Failures") tells the agent how to react.
+The messages come from the Python scripts in [`.pi/skills/agent/scripts/`](../.pi/skills/agent/scripts/), which print `{"ok": false, "error": …}` and exit non-zero; the extensions pass that on to the model. A failed validation prints its report instead, with `errors: […]`. The run protocol ([`run-protocol.md`](../.pi/skills/agent/references/run-protocol.md)) and its detour for failures ([`run-failures.md`](../.pi/skills/agent/references/run-failures.md)) tell the agent how to react.
 
 When you add a refusal that a person running agents can meet, add a test in [`tests/`](../tests/) that triggers it, and an entry here with a short heading (its anchor is what [Commands and tools](commands.md) links to), what the person sees, the cause and the fix.

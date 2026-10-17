@@ -29,16 +29,17 @@ type Agent = AgentSummary & {
 
 // what each state means for the person, and whether it waits for them
 const STATES: Record<string, { label: string; tone: string; needsYou?: boolean }> = {
-  planning: { label: "Being planned", tone: "bg-amber-100 text-amber-800" },
-  planned: { label: "Ready for its first run", tone: "bg-emerald-100 text-emerald-800" },
-  ready: { label: "Ready", tone: "bg-emerald-100 text-emerald-800" },
-  between_waves: { label: "Running", tone: "bg-sky-100 text-sky-800" },
-  wave_running: { label: "Running", tone: "bg-sky-100 text-sky-800" },
-  resolve_draft: { label: "Adjusting its plan", tone: "bg-sky-100 text-sky-800" },
-  branch_review: { label: "Waiting for your review", tone: "bg-violet-100 text-violet-800", needsYou: true },
+  plan_draft: { label: "Being planned", tone: "bg-amber-100 text-amber-800" },
+  plan_ready: { label: "Ready for its first run", tone: "bg-emerald-100 text-emerald-800" },
+  main_ready: { label: "Ready", tone: "bg-emerald-100 text-emerald-800" },
+  run_ready: { label: "Running", tone: "bg-sky-100 text-sky-800" },
+  run_wave: { label: "Running", tone: "bg-sky-100 text-sky-800" },
+  run_draft: { label: "Adjusting its plan", tone: "bg-sky-100 text-sky-800" },
+  run_review: { label: "Waiting for your review", tone: "bg-violet-100 text-violet-800", needsYou: true },
   change_draft: { label: "Change in progress", tone: "bg-amber-100 text-amber-800" },
   change_ready: { label: "Change waiting for your review", tone: "bg-violet-100 text-violet-800", needsYou: true },
   main_draft: { label: "Needs a revise", tone: "bg-amber-100 text-amber-800", needsYou: true },
+  other_branch: { label: "On a branch it didn't make", tone: "bg-amber-100 text-amber-800", needsYou: true },
 };
 const stateOf = (w: Agent) => STATES[w.state] ?? { label: w.state, tone: "bg-muted" };
 const needsYou = (w: Agent) => !!stateOf(w).needsYou || w.open_questions.length > 0;
@@ -340,7 +341,7 @@ function Layout() {
     if (!running) data.load(); // what the agent just did (a plan drafted, a wave finished) shows now, not at the next poll
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [running]);
-  const shown = data.agents.find((w) => (slug ? w.slug === slug : w.state === "planning"));
+  const shown = data.agents.find((w) => (slug ? w.slug === slug : w.state === "plan_draft"));
   // while its run is active the steps follow it every 2 s (wave starts, finishes, children done)
   const live = shown?.active_run ? shown.slug : null;
   useEffect(() => {

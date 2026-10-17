@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Add Python packages to an agent's pyproject.toml (`uv add`), after the user approved them.
 
-Usage: add_package.py PACKAGE... --reason TEXT [--agent DIR]
+Usage: agent_packages.py PACKAGE... --reason TEXT [--agent DIR]
 
 Only the extensions' `agent_add_package` tool runs this, and only after it showed the user the
 packages and the reason and got a yes; bash running it, or `uv add`, is blocked. A package is a
@@ -15,10 +15,10 @@ import tomllib
 from pathlib import Path
 from typing import Annotated
 
-import agent_git
+import agent_repo
 import typer
 from packaging.requirements import InvalidRequirement, Requirement
-from runs import active_run, list_runs
+from run_folders import active_run
 from utils import emit, refuse, report_state
 
 
@@ -55,8 +55,8 @@ def main(
     if run := active_run(root):
         if run.wave_running:
             refuse(f"a wave of run {run.id} is running: add the package between waves")
-    elif list_runs(root) and agent_git.branch(root) in (None, agent_git.MAIN):
-        waiting = agent_git.unmerged_branches(root)
+    elif agent_repo.has_run(root) and agent_repo.branch(root) in (None, agent_repo.MAIN):
+        waiting = agent_repo.unmerged_branches(root)
         refuse("main is checked out and no run is active: packages change only on a run or change branch, reviewed before they reach main."
                + (f" {', '.join(waiting)} waiting for review." if waiting else " Ask the user to start a change with /agent-revise."))
     r = subprocess.run(["uv", "add", "--project", str(root), *packages], capture_output=True, text=True, check=False)

@@ -9,8 +9,8 @@ import sys
 from conftest import SKILL, copy_example
 
 sys.path.insert(0, str(SKILL / "scripts"))
+from plan_validate import plan_digest
 from utils import BANNER, PLAN_PARTS, read_plan, read_yaml, write_plan
-from validate_plan import plan_digest
 
 
 def test_the_plan_is_split_and_written_in_its_sections(tmp_path):
@@ -49,5 +49,5 @@ def test_a_part_left_in_plan_yaml_is_reported(tmp_path, run_py):
     (agent / ".plan" / "questions.yaml").unlink(missing_ok=True)
     with (agent / "plan.yaml").open("a", encoding="utf-8") as f:
         f.write("questions: []\n")
-    r = run_py([SKILL / "scripts" / "validate_plan.py", agent / "plan.yaml"])
+    r = run_py([SKILL / "scripts" / "plan_validate.py", agent / "plan.yaml"])
     assert any("questions: belongs in .plan/questions.yaml" in e for e in r.data["errors"]), r.data["errors"]

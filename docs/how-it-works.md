@@ -36,6 +36,8 @@ You run that folder whenever the job comes round again. Here's what that looked 
 | Model cost | $0.016 | $0.004 | $0 |
 | Whole run | under 4 minutes | 77 seconds | 29 seconds |
 
+The run where the models also wrote the programs cost a little more, $0.021. That's the first run in the [tutorial](tutorial.md#8-run-it-again), and [the second run](#the-second-run-where-it-pays-off) explains why it pays for itself.
+
 The diagram below shows the whole cycle. Don't worry if some of the boxes don't mean much yet; we'll go through each one in turn.
 
 ```mermaid

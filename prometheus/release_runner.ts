@@ -1,11 +1,11 @@
 /**
  * Runs one wave of a released agent's run, with no model and no one to ask: `pi -p "/prometheus-run <run folder> <wave>"`
- * (prometheus/frozen.py starts it, in the release's checkout, with pi-subagents loaded beside this file, once per wave).
+ * (prometheus/run_release.py starts it, in the release's checkout, with pi-subagents loaded beside this file, once per wave).
  *
- * It launches the call compile_wave.py --frozen saved in <run>/.compiled/<wave>.json through pi-subagents' RPC, waits
+ * It launches the call run_compile.py --frozen saved in <run>/.compiled/<wave>.json through pi-subagents' RPC, waits
  * for its status.json, and appends one JSON line per event to <run>/events.jsonl: launched, child (a child's state
  * changed), wave_end (the wave's state and cost) or error. The exit code is 0 when the wave completed, 1 when it ended
- * otherwise, 2 when it could not launch. The run's own end is frozen.py's to write. SIGTERM or SIGINT stop the run (pi-subagents' `stop`) before exiting:
+ * otherwise, 2 when it could not launch. The run's own end is run_release.py's to write. SIGTERM or SIGINT stop the run (pi-subagents' `stop`) before exiting:
  * killing pi alone would leave pi-subagents' runner going, since it is a process of its own.
  *
  * No model runs here: pi-subagents wakes a headless session when its run ends (a completion message, which would

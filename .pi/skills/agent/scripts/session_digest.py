@@ -15,7 +15,7 @@ Prints one JSON object: `sessions` (newest first, at most --sessions), each with
 its user messages, tool use and cost, the failed or blocked tool results, and the
 calls repeated three times or more; `runs` from runs/*/run.yaml (status, cost,
 launches that did not finish, waves launched more than once); `imported`: runs from
-bundles (bundle.py add, runs/imported/), unreviewed by when they were imported: a
+bundles (run_bundle.py add, runs/imported/), unreviewed by when they were imported: a
 release's run or the agent's own on another machine (`kind`), its state and error, each
 child that didn't complete with its error, output and session file, and the agent's own
 sessions during it (`agent_sessions`; all read with agent_sessions). Only signals: the model opens the
@@ -27,9 +27,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 
-import prometheus_version
+import agent_version
 import typer
-from runs import list_runs
+from run_folders import list_runs
 from utils import emit, read_json, read_yaml
 
 SNIPPET = 240  # characters kept of a message, argument or result
@@ -229,7 +229,7 @@ def main(
         "ok": True,
         "agent": agent_dir.name,
         "now": datetime.now().astimezone().isoformat(timespec="seconds"),  # for improvements.yaml `date`
-        "prometheus_version": prometheus_version.installed(agent_dir),
+        "agent_version": agent_version.installed(agent_dir),
         "sessions_dir": str(folder),
         "lessons": lessons,
         "sessions": found,

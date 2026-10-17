@@ -1,4 +1,4 @@
-"""prometheus_version.py names which Prometheus an agent's skill copy came from; refresh stamps and uses it."""
+"""agent_version.py names which Prometheus an agent's skill copy came from; refresh stamps and uses it."""
 import shutil
 import subprocess
 import sys
@@ -6,9 +6,9 @@ import sys
 from conftest import SKILL
 
 sys.path.insert(0, str(SKILL / "scripts"))
-import prometheus_version as pv
+import agent_version as pv
 
-SCAFFOLD = SKILL / "scripts" / "scaffold_agent.py"
+SCAFFOLD = SKILL / "scripts" / "agent_scaffold.py"
 
 
 def fake_prometheus(tmp_path):
@@ -82,12 +82,12 @@ def test_refresh_stamps_the_version_names_it_in_the_commit_and_skips_a_current_a
     assert pv.installed(wf) == version
 
     skipped = run_py([SCAFFOLD, "ver", "--root", tmp_path, "--refresh", "--if-stale"]).data
-    assert skipped["ok"] and "already at" in skipped["skipped"] and skipped["prometheus_version"] == version
+    assert skipped["ok"] and "already at" in skipped["skipped"] and skipped["agent_version"] == version
 
     (wf / ".pi" / "skills" / "agent" / pv.VERSION_FILE).write_text("0.0.1+old\n")
     subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(wf), "commit", "-qam", "old"], check=True)
     refreshed = run_py([SCAFFOLD, "ver", "--root", tmp_path, "--refresh", "--if-stale"]).data
-    assert refreshed["ok"] and refreshed["was"] == "0.0.1+old" and refreshed["prometheus_version"] == version
+    assert refreshed["ok"] and refreshed["was"] == "0.0.1+old" and refreshed["agent_version"] == version
     subject = subprocess.run(["git", "-C", str(wf), "log", "-1", "--format=%s"], capture_output=True, text=True, check=True).stdout.strip()
     assert subject == f"Refresh from prometheus {version} (was 0.0.1+old)"
     # an explicit refresh (no --if-stale) always runs

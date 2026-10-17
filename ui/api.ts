@@ -158,7 +158,7 @@ const json = (s: string) => {
     return null;
   }
 };
-// the agent's state (agent_state.py): wave_running while a wave is out, between_waves, … ; a finished run's own status
+// the agent's state (agent_state.py): run_wave while a wave is out, run_ready, … ; a finished run's own status
 const stateOf = async (cwd: string) => json((await skillScript(cwd, "agent_state.py", [])).out)?.state as string | undefined;
 const runStatus = (runDir: string) => {
   try {
@@ -175,14 +175,14 @@ async function drive(user: string, queued: Call) {
   const update = (patch: Partial<Call>) => save(user, (call = { ...call, ...patch }));
   update({});
   const me = liveOf(call.id);
-  const r = await skillScript(cwd, "run_log.py", [
-    "new", "--note", `API: ${call.request}`,
+  const r = await skillScript(cwd, "run_steps.py", [
+    "start-run", "--note", `API: ${call.request}`,
     ...(Object.keys(call.params).length ? ["--params", JSON.stringify(call.params)] : []),
     ...(call.approve.length ? ["--approve", call.approve.join(",")] : []),
     ...(call.max_cost_usd ? ["--max-cost-usd", String(call.max_cost_usd)] : []),
   ]);
   const started = json(r.out);
-  if (!started?.ok) return update({ status: "failed", finished_at: now(), error: started?.error ?? (r.err.trim().slice(-500) || "run_log.py new failed") });
+  if (!started?.ok) return update({ status: "failed", finished_at: now(), error: started?.error ?? (r.err.trim().slice(-500) || "run_steps.py start-run failed") });
   const runDir: string = started.path;
   update({ run: started.run });
   // the files it sent, into the run's inputs/ (links the agent may have left there are not followed)
@@ -216,7 +216,7 @@ async function drive(user: string, queued: Call) {
       } else {
         // the agent may still be at it: a hand-over's turn about to start, a wave it launched itself
         const state = await stateOf(cwd);
-        if (state === "wave_running" || (await ask(w.socket, "/status").then((s) => s.busy, () => false))) {
+        if (state === "run_wave" || (await ask(w.socket, "/status").then((s) => s.busy, () => false))) {
           await sleep(10_000);
           next = {};
           continue;
@@ -419,7 +419,7 @@ async function cancel(user: string, call: Call, cwd: string, res: ServerResponse
   let note = "";
   if (call.status !== "queued") {
     me.worker?.proc.kill("SIGTERM");
-    const r = json((await skillScript(cwd, "run_log.py", ["stop", "--note", "cancelled by the API caller"])).out);
+    const r = json((await skillScript(cwd, "run_steps.py", ["stop", "--note", "cancelled by the API caller"])).out);
     if (!r?.ok) note = `run ${call.run} stays active: ${r?.error ?? "it couldn't be stopped"}`;
   }
   rmSync(staged(user, call.agent, call.id), { recursive: true, force: true });

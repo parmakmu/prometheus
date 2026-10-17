@@ -30,7 +30,7 @@ def report_state(agent_dir):
 
 
 def emit(obj, code=0):
-    if _agent_dir is not None and isinstance(obj, dict) and (_agent_dir / "plan.yaml").is_file():
+    if _agent_dir is not None and isinstance(obj, dict) and "next" not in obj and (_agent_dir / "plan.yaml").is_file():
         from agent_state import (
             state,  # here, not at the top: agent_state imports the validator, which imports this
         )
@@ -226,7 +226,7 @@ def read_json(path):
         return None
 
 
-# --- what looks like a secret (prometheus's sharing.py before a push; bundle.py) ------
+# --- what looks like a secret (prometheus's share.py before a push; run_bundle.py) ------
 
 # provider keys and tokens, private keys
 SECRET_PATTERNS = [

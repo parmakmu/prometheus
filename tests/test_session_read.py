@@ -26,9 +26,9 @@ def make_sessions(tmp_path):
             line(type="model_change", modelId="m"),
             message("user", "2026-01-01T10:00:01Z", "Run this agent."),
             message("assistant", "2026-01-01T10:00:02Z", [{"type": "thinking", "thinking": "secret"}, {"type": "text", "text": "Launching."},
-                                                           {"type": "toolCall", "id": "c1", "name": "agent_compile", "arguments": {"x": 1}}],
+                                                           {"type": "toolCall", "id": "c1", "name": "agent_compile_wave", "arguments": {"x": 1}}],
                     usage={"cost": {"total": 0.01}}),
-            message("toolResult", "2026-01-01T10:00:03Z", [{"type": "text", "text": "boom " * 1000}], toolName="agent_compile", isError=True)]
+            message("toolResult", "2026-01-01T10:00:03Z", [{"type": "text", "text": "boom " * 1000}], toolName="agent_compile_wave", isError=True)]
     rows += [message("user", f"2026-01-01T10:01:{n:02d}Z", f"later {n}") for n in range(10, 20)]
     (folder / "2026-01-01T10-00-00-000Z_abc.jsonl").write_text("\n".join(rows))
     (folder / "2026-01-02T10-00-00-000Z_def.jsonl").write_text("\n".join(
@@ -48,8 +48,8 @@ def test_show_is_compact_lines_clipped_without_thinking(tmp_path, run_py):
     data = run_py([SCRIPT, "show", "2026-01-01", "--agent", agent_dir, "--to", "5", "--text-chars", "50"], env=env).data
     user, assistant, result = data["text"].splitlines()  # records 1-2 are not conversation
     assert user == "3 10:00:01 U Run this agent."
-    assert assistant == '4 10:00:02 A Launching. -> agent_compile({"x": 1})'
-    assert result.startswith("5 10:00:03 R! agent_compile: boom boom") and len(result) < 90  # a failure keeps the full width
+    assert assistant == '4 10:00:02 A Launching. -> agent_compile_wave({"x": 1})'
+    assert result.startswith("5 10:00:03 R! agent_compile_wave: boom boom") and len(result) < 90  # a failure keeps the full width
     assert "secret" not in data["text"] and "{" not in user
 
 

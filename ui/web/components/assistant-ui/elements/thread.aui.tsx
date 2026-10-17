@@ -583,7 +583,7 @@ type Item = { kind: "step" | "card" | "answer"; msg: string; i: number; part: Pa
 
 // The agent's own record-keeping around a wave (writing its launch and its end into run.yaml, checking on it,
 // closing its mission): the wave's line already says all of it, so as steps they only read as separate events
-const BOOKKEEPING = new Set(["agent_log_start", "agent_log_finish"]);
+const BOOKKEEPING = new Set(["agent_start_wave", "agent_finish_wave"]);
 const isBookkeeping = (p: Part) =>
   p.type === "tool-call" && (BOOKKEEPING.has(p.toolName ?? "") || (p.toolName === "subagent" && ["status", "mission.close"].includes(String(p.args?.action ?? ""))));
 const isPrivate = (p: Part) => p.type === "reasoning" && (p.text ?? "").startsWith(PRIVATE_THOUGHT);

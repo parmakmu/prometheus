@@ -2,11 +2,16 @@
 
 Part of the run protocol (`<skill>/references/run-protocol.md`); read when it sends you here.
 
+The agent is a git repo whose `main` holds the reviewed plan. A run's plan
+changes (resolved stages, gates, stage programs) go to branch `run/<id>`;
+`/agent-revise` works on `revise/<date>-<n>`, `/agent-improve` on
+`improve/<date>-<n>`. Each reaches `main` only through **Reviewing a branch**.
+
 ## Reviewing a branch
 
 After a run ends with a `review`, after a change is ready, or whenever a
 `run/…`, `revise/…` or `improve/…` branch is checked out with no run active
-(`<python> <skill>/scripts/agent_git.py review`, `<python>` being the
+(`<python> <skill>/scripts/agent_repo.py review`, `<python>` being the
 nearest `.venv/bin/python`).
 
 1. Read `git diff main...<branch>` and summarise it in words, without
@@ -35,3 +40,9 @@ critic is recorded (which raises the revision); gates, programs and subagents al
 3. Critic (`<skill>/references/critic-contract.md`, with the changed stages in its task), then
    `agent_record_critique`, which marks the plan ready when it validates.
 4. **Reviewing a branch**.
+
+## What you may edit
+
+The plan directly only before the first run (on `main`) or on a change
+branch, with `gates/`, `scripts/`, `.pi/agents/` and packages
+(`agent_add_package`, into `pyproject.toml`). Nothing else.

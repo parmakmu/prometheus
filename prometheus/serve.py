@@ -52,7 +52,7 @@ from starlette.datastructures import (
 
 from prometheus import a2a
 from prometheus.cli import PrometheusError, run_script
-from prometheus.frozen import Agent, Run, public_needs
+from prometheus.run_release import Agent, Run, public_needs
 
 LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 
@@ -246,13 +246,13 @@ def make_app(agent: Agent, token: str | None = None, max_runs: int = 4, max_uplo
 
     @guarded.get("/runs/{run_id}/bundle")
     def run_bundle(run_id: str, with_files: bool = False):
-        """An ended run's evidence as one file (bundle.py): copy it to where the agent is developed, then
+        """An ended run's evidence as one file (run_bundle.py): copy it to where the agent is developed, then
         /agent-improve <file>. with_files adds the run's inputs, outputs and work: the caller's data."""
         run = service.get_run(run_id)
         if run.running:
             raise HTTPException(409, "the run is still going: bundle it once it ended")
         tmp = tempfile.mkdtemp()
-        made = run_script("bundle.py", "make", "--run", str(run.dir), "--out", tmp, *(["--with-files"] if with_files else []))
+        made = run_script("run_bundle.py", "make", "--run", str(run.dir), "--out", tmp, *(["--with-files"] if with_files else []))
         if not made.get("ok"):
             shutil.rmtree(tmp, ignore_errors=True)
             raise HTTPException(409, made.get("error") or "the bundle could not be made")
