@@ -234,7 +234,7 @@ def test_prune_deletes_old_released_runs_files_and_keeps_their_history(released,
     assert sorted(out["pruned"]) == sorted(r.run_dir.name for r in runs[:2]) and out["missions_removed"] == 2
     for old in runs[:2]:
         assert not (old.run_dir / "work").exists() and not (old.run_dir / "outputs").exists()
-        assert (old.run_dir / "state.json").is_file() and (old.run_dir / "events.jsonl").is_file()  # the history stays
+        assert (old.run_dir / "run.yaml").is_file() and (old.run_dir / "events.jsonl").is_file()  # the history stays
         assert not (run_release.Path(os.environ["PI_SUBAGENTS_TEMP_ROOT"]) / "async-subagent-runs" / f"fake-{old.run_dir.name}-all").exists()
     assert runs[2].outputs["count_file"].read_text() == "1\n" and (paused.dir / "work").is_dir()
 
@@ -286,7 +286,7 @@ def test_a_run_whose_driver_died_ends_as_an_error_and_its_events_end(released, f
     agent, run = paused_run(released, tmp_path)
     gone = subprocess.Popen(["true"])
     gone.wait()
-    run.write_state(state="running", driver={"pid": gone.pid, "started": time.time()})  # a server stopped mid-run
+    run.write_state(status="running", driver={"pid": gone.pid, "started": time.time()})  # a server stopped mid-run
     reopened = run_release.Run.reopen(agent, run.id)
     assert not reopened.running and reopened.wait().error == run_release.INTERRUPTED
     assert list(reopened.events())[-1]["event"] == "end"  # a stream of it ends instead of waiting forever
@@ -295,9 +295,9 @@ def test_a_run_whose_driver_died_ends_as_an_error_and_its_events_end(released, f
 def test_a_driver_pid_another_process_reused_counts_as_dead(released, fake_pi, tmp_path):
     agent, run = paused_run(released, tmp_path)
     # this process holds the pid now, but started after the driver recorded under it: not the driver
-    run.write_state(state="running", driver={"pid": os.getpid(), "started": time.time() - 3600 * 24 * 365})
+    run.write_state(status="running", driver={"pid": os.getpid(), "started": time.time() - 3600 * 24 * 365})
     assert run_release.Run.reopen(agent, run.id).wait().error == run_release.INTERRUPTED
-    run.write_state(state="running", error=None, driver=run_release.cli.import_script("utils").this_process())
+    run.write_state(status="running", error=None, driver=run_release.cli.import_script("utils").this_process())
     assert run_release.Run.reopen(agent, run.id).state == "running"  # the driver itself: alive
 
 

@@ -9,7 +9,6 @@ Creates <root>/<slug>/ from templates/agent/ (at the repo root, outside the skil
   runs/                          one folder per run: state, work files, outputs (see plan_validate.py)
   gates/                         gate scripts, written while planning
   scripts/                       stage programs (a stage's `script:`), written by its first run
-  uploads/                       files the user attaches in the web app's chat; not in git
   .env                           per-machine param values (agent_params.py); not in git
   .pi/skills/agent/           a copy of this skill (rules, validator, compiler, run protocol)
 
@@ -19,8 +18,8 @@ The template holds README.md, pyproject.toml (Python deps for `uv sync`),
 batcher) and the plan skeleton.
 
 --refresh rewrites the template files and the skill copy in an existing
-agent. It never touches plan.yaml, .env, runs/, uploads/, gates/, scripts/ or agents
-the plan added.
+agent. It never touches plan.yaml, .env, runs/, gates/, scripts/ or agents
+the plan added. It removes an empty uploads/ (older agents had one); one with files stays, out of git.
 
 The agent is its own git repo (agent_repo.py); both modes commit the result.
 --if-stale (with --refresh) skips an agent that is up to date (agent_version.up_to_date: the same
@@ -132,6 +131,24 @@ def rehome_sessions(agent_dir: Path):
     return n
 
 
+def retire_uploads(agent_dir: Path):
+    """Agents have no uploads/ any more (the web app puts chat attachments in your files folder). An empty one goes; one
+    with files stays, kept out of git through .git/info/exclude (the template's .gitignore no longer names it, and a
+    commit adds everything), since .env may point into it. What to tell the user, or None."""
+    uploads = agent_dir / "uploads"
+    if not uploads.is_dir():
+        return None
+    if not any(uploads.iterdir()):
+        uploads.rmdir()
+        return None
+    exclude = agent_dir / ".git" / "info" / "exclude"
+    lines = exclude.read_text(encoding="utf-8").splitlines() if exclude.exists() else []
+    if "uploads/" not in lines:
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        exclude.write_text("\n".join([*lines, "uploads/"]) + "\n", encoding="utf-8")
+    return "uploads/ (agents no longer use it: move its files out, point .env at them, then delete it)"
+
+
 def refresh_refusal(agent_dir: Path):
     """Why a refresh must wait, or None: its commit would land on a run or change branch."""
     if run := active_run(agent_dir):
@@ -203,7 +220,9 @@ def main(
     written, kept = [], []
     if refresh and (rehomed := rehome_sessions(agent_dir)):
         written.append(f".pi/sessions ({rehomed} conversation{'s' if rehomed > 1 else ''} moved to this folder)")
-    for directory in ("runs", "gates", "scripts", "uploads"):
+    if refresh and (left := retire_uploads(agent_dir)):
+        kept.append(left)
+    for directory in ("runs", "gates", "scripts"):
         (agent_dir / directory).mkdir(parents=True, exist_ok=True)
     for directory in ("gates", "scripts"):  # git drops empty folders: checking out main after a run would delete them
         (agent_dir / directory / ".gitkeep").touch()

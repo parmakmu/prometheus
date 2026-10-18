@@ -68,7 +68,7 @@ def test_an_ended_run_is_bundled_with_the_callers_files_only_when_asked(agent):
         assert r.status_code == 200 and r.headers["content-disposition"].endswith(f'counter-v1.0-{run_id}.tgz"'), r.text
         with tarfile.open(fileobj=io.BytesIO(r.content)) as tar:
             names = tar.getnames()
-        assert "bundle.json" in names and "run/state.json" in names
+        assert "bundle.json" in names and "run/run.yaml" in names
         assert ("run/inputs/source/lines.txt" in names) is has_input, names
     assert c.get("/runs/nope/bundle").status_code == 404
 

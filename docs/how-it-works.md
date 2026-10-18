@@ -26,7 +26,6 @@ prometheus asks you a few questions, and when it's done, your request has become
   .pi/            the agent itself: extension, subagents, skill copy
   .env            this machine's values (not in git)
   runs/           one folder per run (not in git)
-  uploads/        files attached in the web app's chat (not in git)
 ```
 
 You run that folder whenever the job comes round again. Here's what that looked like for emails-to-excel: a run where models did everything, one where the reviewed programs did the routine work, and one on emails the agent had already seen:

@@ -293,10 +293,10 @@ function route(req: IncomingMessage, res: ServerResponse) {
     if (req.method === "POST" && rest === "/discard-branch") return discardBranch(user, cwd, q.get("name") ?? "", res);
     if (req.method === "PUT" && rest === "/file") return saveAgentFile(user, cwd, q.get("path") ?? "", req, res);
   } else return send(res, 404, "not found");
-  // files attached in a chat: uploads/ in prometheus's or the agent's folder (not in git), which its sandbox reads at
-  // the same path; of prometheus's folder the page sees only that
+  // files attached in a chat: an agent's go to your files folder (files/<slug>/: they outlive runs and prunes, and
+  // every sandbox reads it), the planner's to inputs/ in prometheus's folder (not in git), of which the page sees only that
   if (rest === "/upload") {
-    const base = path.join(cwd, "uploads");
+    const base = agent === "prometheus" ? path.join(cwd, "inputs") : path.join(filesOf(user), agent.slice(2));
     if (req.method === "PUT") return upload(base, q.get("path") ?? "", req, res, q.get("unique") === "1");
     if (req.method === "DELETE") {
       const p = inside(base, q.get("path") ?? "");
@@ -306,7 +306,7 @@ function route(req: IncomingMessage, res: ServerResponse) {
     }
   }
   if (agent === "prometheus" && req.method === "GET" && (rest === "/tree" || rest === "/download")) {
-    const base = path.join(cwd, "uploads");
+    const base = path.join(cwd, "inputs");
     mkdirSync(base, { recursive: true });
     const rel = q.get(rest === "/tree" ? "dir" : "path") ?? "";
     const at = inside(cwd, rel);

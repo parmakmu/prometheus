@@ -392,6 +392,32 @@ function hasRun(root: string): boolean {
   }
 }
 
+/** Why the compiled wave `workflow` names must not launch, or undefined. Compile reads the plan, gates and programs
+ * from what is checked out and records that commit in the wave's record (.compiled/<wave>.json `commit`); a `git
+ * switch` before the launch, clean or not, would run another branch's scripts/ and gates. (Not a guard on
+ * agent_start_wave: that records a launch already made.) */
+function checkCompiledCommit(root: string, workflow: string): string | undefined {
+  const wave = /[\\/]\.compiled[\\/]([^\\/]+)\.js$/.exec(workflow)?.[1];
+  if (!wave) return undefined;
+  let commit: string | undefined;
+  try {
+    commit = JSON.parse(fs.readFileSync(workflow.replace(/\.js$/, ".json"), "utf8")).commit;
+  } catch {
+    return undefined; // no record to compare with
+  }
+  if (!commit) return undefined; // a released run's wave: no repository to switch
+  let head = "";
+  try {
+    head = execFileSync("git", ["rev-parse", "--verify", "-q", "HEAD"], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    // no commit checked out: not the one compiled from
+  }
+  if (head === commit) return undefined;
+  return `wave ${wave} was compiled from commit ${commit.slice(0, 8)}, but ${currentBranch(root) ?? "a detached HEAD"}` +
+    `${head ? ` (${head.slice(0, 8)})` : ""} is checked out now: its programs and gates would come from there. Do not launch it. ` +
+    "Compile it again with agent_compile_wave, which switches back to the run's branch or says what stops it (then tell the user; do not change branches yourself), and launch the call it returns.";
+}
+
 async function check(pi: ExtensionAPI, root: string, signal?: AbortSignal) {
   const v = await runScript(pi, root, "plan_validate.py", ["plan.yaml"], signal);
   const c = await runScript(pi, root, "run_compile.py", ["--check"], signal);
@@ -421,6 +447,11 @@ export default function agentExtension(pi: ExtensionAPI) {
     if (event.toolName === "agent_finish_wave" && wave && autoRecorded.has(wave))
       return { block: true, reason: `/agent-auto already recorded wave ${wave}: there is nothing to record. Follow its hand-over message.` };
     if (event.toolName === "agent_start_run") autoRecorded.clear();
+    const workflow = (event.input as { workflow?: unknown }).workflow;
+    if (event.toolName === "subagent" && typeof workflow === "string") {
+      const stale = checkCompiledCommit(root, path.resolve(ctx.cwd, workflow));
+      if (stale) return { block: true, reason: stale };
+    }
     const input = event.input as { path?: string; command?: string };
     const shellCommand = event.toolName === "bash" || event.toolName === "powershell" ? (input.command ?? "") : "";
     const packageFile =
@@ -617,13 +648,14 @@ export default function agentExtension(pi: ExtensionAPI) {
     } catch (e: any) {
       return ctx.ui.notify(`${e.message}. Use /agent-run instead.`, "error");
     }
-    const { state, moves = [] } = await step("agent_state.py", []);
+    const { state, moves = [], hint } = await step("agent_state.py", []);
     // not from an unfinished change: starting a run would commit it as it is and run main's plan
     if (moves.includes("agent_start_run") && state !== "change_draft") {
       const r = await step("run_steps.py", ["start-run", "--note", "started by /agent-auto"]);
       if (!r.ok) return ctx.ui.notify(r.error ?? "cannot start a run", "error");
     } else if (!moves.includes("agent_compile_wave")) {
-      return ctx.ui.notify(`/agent-auto starts from a ready plan or a run between waves; the agent is ${state}: use /agent-run.`, "warning");
+      // other_branch has no moves at all: its hint is the only thing that says what to do
+      return ctx.ui.notify(`/agent-auto starts from a ready plan or a run between waves; the agent is ${state}${hint ? ` (${hint})` : ""}: use /agent-run.`, "warning");
     }
     autopilot = true;
     autoRecorded.clear();
@@ -635,6 +667,8 @@ export default function agentExtension(pi: ExtensionAPI) {
       show(`Wave ${c.wave} ${c.launched === false ? "reused" : "started"}`, `${c.stages.join(", ")}${c.notes?.length ? ` (${c.notes.join("; ")})` : ""}`);
       let f: any = c; // every stage reused: compile_wave recorded the wave, with agent_finish_wave's result, and launched nothing
       if (c.launched !== false) {
+        const stale = checkCompiledCommit(root, c.call.workflow);
+        if (stale) return handOver(stale, c);
         ctx.ui.setStatus("agent-auto", `agent-auto: wave ${c.wave} running`);
         let launched: any;
         try {

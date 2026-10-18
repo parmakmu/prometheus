@@ -90,6 +90,7 @@ CASES = [
     ("param env not a variable name", INV, lambda p: p["params"]["mail_dir"].__setitem__("env", "MAIL-DIR"), "not a valid environment variable name", "error"),
     ("two params read one variable", INV, lambda p: p["params"]["budget_file"].__setitem__("env", "MAIL_DIR"), "like param 'mail_dir'", "error"),
     ("secret with a default", COMP, lambda p: p["params"]["notion_token"].__setitem__("default", "x"), "a secret has no default", "error"),
+    ("secret per run", COMP, lambda p: p["params"]["notion_token"].__setitem__("per_run", True), "a secret can't be per_run", "error"),
     ("secret in a path", INV, lambda p: p["params"]["report_dir"].__setitem__("type", "secret") or p["params"]["report_dir"].pop("default"), "cannot be part of a path", "error"),
     ("program with a folder", INV, lambda p: st(p, "extract")["program"].__setitem__("file", "../x.py"), "must be a file name", "error"),
     ("program on a judgment stage", INV, lambda p: st(p, "review").__setitem__("program", {"file": "r.py"}), "a judgment stage has none", "error"),

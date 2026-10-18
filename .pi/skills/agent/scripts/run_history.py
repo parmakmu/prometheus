@@ -15,7 +15,7 @@ prune  deletes the work/ folders of finished runs beyond the newest N (default 1
        launches is kept. run.yaml and .compiled/ stay, so the history stays; an earlier run
        whose work/ is gone is no longer reused from (compile_wave, reuse_earlier). The active
        run is never touched. On a release's folder (prometheus/run_release.py) it prunes its runs the
-       same way, with their inputs/ and outputs/ (state.json and events.jsonl stay); a run that
+       same way, with their inputs/ and outputs/ (run.yaml, call.json and events.jsonl stay); a run that
        waits for an answer is not finished, and the newest --keep-failed failed ones (default 10)
        stay whole on top of --keep: they are what a bundle (run_bundle.py) is made from. It also removes
        pi-subagents' empty per-launch folders in the agent's own session folder
@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-from run_folders import active_run, list_released_runs, list_runs, read_run, read_wave
+from run_folders import active_run, is_release_run, list_runs, read_run, read_wave
 from utils import (
     SUBAGENT_RUN_ID_RE,
     emit,
@@ -83,13 +83,12 @@ def prune(agent_dir: AGENT = ".", keep: Annotated[int, typer.Option(help="finish
           dry_run: Annotated[bool, typer.Option("--dry-run", help="say what would go; delete nothing")] = False):
     """Delete the work/ of old finished runs and pi-subagents' records of their launches."""
     root = agent_root(agent_dir)
-    finished = [(rid, d, read_run(d).get("launches") or [], ["work"]) for rid, d in list_runs(root)
-                if read_run(d).get("status") in ("done", "stopped")]
-    failed = []
-    for rid, d in list_released_runs(root):  # a release's runs: state.json (prometheus/run_release.py)
-        state = read_json(d / "state.json") or {}
-        if state.get("state") in ("complete", "failed", "stopped", "error"):
-            (failed if state["state"] in ("failed", "error") else finished).append((rid, d, state.get("launches") or [], ["work", "inputs", "outputs"]))
+    finished, failed = [], []  # an agent's own runs end done or stopped; a release's can fail (kept for a bundle)
+    for rid, d in list_runs(root):
+        state = read_run(d)
+        if state.get("status") in ("done", "stopped", "failed", "error"):
+            folders = ["work", "inputs", "outputs"] if is_release_run(d) else ["work"]
+            (failed if state["status"] in ("failed", "error") else finished).append((rid, d, state.get("launches") or [], folders))
     old = (finished[:-keep] if keep > 0 else finished) + (failed[:-keep_failed] if keep_failed > 0 else failed)
     kept = [r for r in finished + failed if r not in old]
     pruned, freed, gone_launches = [], 0, set()

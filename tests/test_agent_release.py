@@ -170,12 +170,12 @@ def test_the_frozen_compile_is_one_wave_when_approved_else_wave_by_wave(agent, r
     args = [SCRIPTS / "run_compile.py", "--agent", agent, "--frozen", run_dir, "--params", '{"source": "/data/in.txt"}']
     first = run_py(args)  # save not approved: count runs first, and the run asks before save
     assert first.data["ok"] and (first.data["wave"], first.data["stages"]) == ("w1", ["count"]), first
-    (run_dir / "state.json").write_text('{"done": ["count"], "launches": [{"wave": "w1"}]}')
+    (run_dir / "run.yaml").write_text('{"stages": {"count": "done"}, "launches": [{"wave": "w1"}]}')
     asks = run_py(args)
     assert asks.returncode == 1 and [a["stage"] for a in asks.data["preflight"]["approvals_needed"]] == ["save"]
-    (run_dir / "state.json").write_text('{"done": ["count", "save"], "launches": [{"wave": "w1"}, {"wave": "w2"}]}')
+    (run_dir / "run.yaml").write_text('{"stages": {"count": "done", "save": "done"}, "launches": [{"wave": "w1"}, {"wave": "w2"}]}')
     assert run_py(args).data == {"ok": True, "done": True}
-    (run_dir / "state.json").unlink()
+    (run_dir / "run.yaml").unlink()
     r = run_py([*args, "--approve", "save"])
     assert r.data["ok"] and r.data["wave"] == "all" and r.data["stages"] == ["count", "save"], r
     assert r.data["call"]["workflow"] == str((run_dir / ".compiled" / "all.js").resolve())

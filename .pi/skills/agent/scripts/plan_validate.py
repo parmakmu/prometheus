@@ -136,6 +136,7 @@ class Param(M):
     env: Str | None = None  # the environment variable; default: the name in upper case
     default: Any = None
     required: StrictBool = True
+    per_run: StrictBool = False  # asked for each run (a query): kept on the run, never in .env
 
 
 class Input(M):
@@ -1109,6 +1110,8 @@ class Checker:
             env_names.setdefault(env, name)
             if spec.type == "secret" and spec.default not in (None, ""):
                 err(f"param '{name}': a secret has no default; its value stays in the environment or .env")
+            if spec.type == "secret" and spec.per_run:
+                err(f"param '{name}': a secret can't be per_run; nobody gives its value in a run, it stays in the environment or .env")
         for where, ref, is_path, embedded, secret_ok in self.param_refs:
             if ref not in params:
                 err(f"{where}: references undefined param '${{{ref}}}'")

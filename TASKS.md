@@ -8,11 +8,6 @@ frozen release as code, with no orchestrator. GitLab; users are developers; ever
 
 ## Open
 
-
-
-- [ ] 38. per-item reuse in map stages: a batch child writes one result per item (its id), a store keyed by item
-  content + stage fingerprint, split leaves known items out, merge restores item order. Until an agent runs over a
-  growing input; 68 reuses a map stage whole
 - [ ] 28. live: emails-to-excel with an approval in the browser
 
 ## Done (details in git history and `docs/design.md`)
@@ -43,6 +38,10 @@ frozen release as code, with no orchestrator. GitLab; users are developers; ever
   file name; JSON-object items only counted) and fails naming the missing and repeated ones
 - [x] 74. results state conclusions: a finished run's `report` (`do`: open nothing when every deliverable was
   checked); a new run starts without asking whether inputs changed. Live: run 2026-10-17-2, 5 tool calls in 11 s
+- [x] 77. a wave launches only from the commit it was compiled from: the `subagent` call and `/agent-auto` check
+  `.compiled/<wave>.json` `commit` against HEAD (review of 8c0011e, 2026-10-18)
+- [x] 38. per-item reuse in map stages: the merge stores each item's record (after its gate), the split leaves out
+  items an earlier run stored, the merge restores them in item order; `pattern: map` only (2026-10-18)
 
 ## Dropped
 

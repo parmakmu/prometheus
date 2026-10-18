@@ -1,9 +1,14 @@
-"""An agent's runs: each execution of its plan is a folder runs/<id>/ (id: <date>-<n>).
+"""An agent's runs: each execution of its plan is a folder runs/<id>/ (id: <date>-<n>; a release's run
+(prometheus/run_release.py): <utc time>-<random>, with its caller's call.json and an events.jsonl beside).
 
-  run.yaml    id, status (active | done | stopped), revision, started_at, finished_at, note,
-              stages {key: running | done} (absent = pending), launches [one entry per wave
-              launch], critiques [{run_id, after_waves}] (critic results recorded while the run resolved stages;
-              plan_edit.py caps them each time). Written by run_steps.py and plan_edit.py.
+  run.yaml    id, status, started_at, finished_at, stages {key: running | done} (absent = pending), launches
+              [one entry per wave launch], given_params and preapproved (a caller's values and approvals), the
+              same for both kinds. status: an agent's run is active (between waves, or a wave running), then
+              done or stopped (a failed wave leaves it active, for a relaunch); a release's run is running or
+              input_required (waiting for its caller's answer), then done, failed, stopped or error. An
+              agent's run also has revision, note, max_cost_usd, critiques [{run_id, after_waves}] (critic
+              results recorded while the run resolved stages; plan_edit.py caps them each time); a release's
+              driver, cancel, needs and error. Written by run_steps.py and plan_edit.py, or run_release.Run.
   work/       the children's cwd: stage outputs, decisions, batches, scripts
   .compiled/  per wave launched: <wave>.js, the script pi-subagents runs (the wave as data, `const W`,
               then wave_runner.js), and <wave>.json: the compile's result (the call), `inputs` (each
@@ -22,7 +27,7 @@ from utils import read_json, read_yaml, write_yaml
 
 RUNS = "runs"
 RUN_ID_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})-(\d+)$")
-HEADER = "# Run state written by the run protocol (run_steps.py). Do not edit by hand.\n"
+HEADER = "# Run state, written by the agent's scripts (or a release's runner: run_release.py). Do not edit by hand.\n"
 
 
 class Run(NamedTuple):
@@ -44,30 +49,22 @@ class Run(NamedTuple):
 
 
 def list_runs(agent_dir):
-    """[(id, dir)] of the agent's runs, oldest first."""
+    """[(id, dir)] of the runs here, oldest first: an agent's by id (<date>-<n>), a release's by when each started
+    (its run.yaml's started_at), since two of its ids from the same second sort by their random suffix."""
     base = Path(agent_dir) / RUNS
-    names = [p.name for p in base.iterdir() if (p / "run.yaml").is_file()] if base.is_dir() else []
-    key = lambda n: (m.group(1), int(m.group(2))) if (m := RUN_ID_RE.match(n)) else (n, 0)
-    return [(n, base / n) for n in sorted(names, key=key)]
+    found = [p for p in base.iterdir() if (p / "run.yaml").is_file()] if base.is_dir() else []
+    key = lambda p: (m.group(1), int(m.group(2))) if (m := RUN_ID_RE.match(p.name)) else (str(read_run(p).get("started_at") or ""), 0)
+    return [(p.name, p) for p in sorted(found, key=lambda p: (key(p), p.name))]
 
 
-def list_released_runs(agent_dir):
-    """[(id, dir)] of a release's runs (prometheus/run_release.py: state.json, no run.yaml), oldest first: by when each
-    started (its call.json, written once), since two ids from the same second sort by their random suffix."""
-    base = Path(agent_dir) / RUNS
-    found = [p for p in base.iterdir() if (p / "state.json").is_file() and not (p / "run.yaml").exists()] if base.is_dir() else []
-    started = lambda p: (p / "call.json").stat().st_mtime_ns if (p / "call.json").exists() else 0
-    return [(p.name, p) for p in sorted(found, key=lambda p: (started(p), p.name))]
+def is_release_run(run_dir):
+    """Whether a run is a release's (prometheus/run_release.py), which keeps its caller's call beside its run.yaml."""
+    return (Path(run_dir) / "call.json").is_file()
 
 
 def stages_done(run_dir):
-    """The stages a run finished: an agent's run (run.yaml) or a release's (state.json)."""
-    if state := read_run(run_dir):
-        return {k for k, v in (state.get("stages") or {}).items() if v == "done"}
-    try:
-        return set(json.loads((Path(run_dir) / "state.json").read_text(encoding="utf-8")).get("done") or [])
-    except (OSError, ValueError):
-        return set()
+    """The stages a run finished."""
+    return {k for k, v in (read_run(run_dir).get("stages") or {}).items() if v == "done"}
 
 
 def read_wave(run_dir, wave):

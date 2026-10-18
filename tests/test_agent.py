@@ -111,11 +111,9 @@ def test_refresh_keeps_the_lessons_section_of_the_role_file(env):
     assert refreshed.count("## Lessons for this agent") == 1
 
 
-def test_env_and_uploads_stay_out_of_git(env):
+def test_env_stays_out_of_git(env):
     assert ".env" in (env.b / ".gitignore").read_text(encoding="utf-8").splitlines()
     assert env.git("ls-files", ".env").stdout.strip() == ""
-    # the web app's chat uploads: a folder that exists and stays out of git
-    assert (env.b / "uploads").is_dir() and "uploads/" in (env.b / ".gitignore").read_text(encoding="utf-8").splitlines()
     (env.b / ".env").write_text("", encoding="utf-8")
 
 
@@ -246,6 +244,10 @@ def test_children_outcomes_are_named(env):
 def test_map_stage_launched_three_batch_children(env):
     keys = [e["key"] for e in env.w1_result["log"] if e["key"].startswith("find-") and e["key"][5:].isdigit()]
     assert len(keys) == 3
+    # and its merge stored each email's record, for a later run to leave that email out (TASKS 38)
+    listed = json.loads((env.run_dir / "work" / "find" / "items.json").read_text(encoding="utf-8"))
+    stored = list((env.run_dir / "work" / "find" / "items").glob("*.json"))
+    assert listed["named"] and len(stored) == len(listed["items"]) > 0
 
 
 def test_report_written_to_the_runs_outputs(env):
@@ -926,6 +928,29 @@ def test_plan_edit_guard_once_a_run_exists(env):
 def test_git_guard(env):
     blocked = [s["blocked"] for s in env.agent_ext_report["steps"][6:8]]
     assert blocked == [True, False]
+
+
+@skip_extensions
+def test_a_wave_launches_only_from_the_commit_it_was_compiled_from(ext):
+    # TASKS 77: a `git switch` between compile and launch would run another branch's programs and gates
+    agent = ext.tmp / "switched"
+    compiled = agent / "runs" / "r1" / ".compiled"
+    compiled.mkdir(parents=True)
+    (agent / ".pi").mkdir()  # an agent folder: plan.yaml and .pi/
+    (agent / "plan.yaml").write_text("goal: g\n", encoding="utf-8")
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(agent)]
+    for args in (["init", "-q", "-b", "main"], ["add", "plan.yaml"], ["commit", "-qm", "x"]):
+        _subprocess.run([*git, *args], check=True)
+    head = _subprocess.run([*git, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    for wave, record in (("w1", {"commit": head}), ("w2", {"commit": "0" * 40}), ("w3", {})):  # w3: a released run's
+        (compiled / f"{wave}.js").write_text("const W = {};\n", encoding="utf-8")
+        (compiled / f"{wave}.json").write_text(json.dumps(record), encoding="utf-8")
+    steps = [{"toolCall": {"toolName": "subagent", "input": {"async": True, "workflow": f"runs/r1/.compiled/{w}.js"}}}
+             for w in ("w1", "w2", "w3")]
+    steps.append({"toolCall": {"toolName": "subagent", "input": {"action": "close"}}})  # no workflow: not a launch
+    report = drive(ext, ext.tmp / ".ext" / "agent.ts", agent, steps)
+    assert [s["blocked"] for s in report["steps"]] == [False, True, False, False]
+    assert "compiled from commit 00000000, but main" in report["steps"][1]["reason"], report["steps"][1]
 
 
 @skip_extensions

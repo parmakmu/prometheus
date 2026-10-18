@@ -94,6 +94,23 @@ def test_refresh_stamps_the_version_names_it_in_the_commit_and_skips_a_current_a
     assert "skipped" not in run_py([SCAFFOLD, "ver", "--root", tmp_path, "--refresh"]).data
 
 
+def test_refresh_removes_an_empty_uploads_folder_and_keeps_one_with_files_out_of_git(tmp_path, run_py):
+    assert run_py([SCAFFOLD, "old", "--root", tmp_path, "--request", "x"]).data["ok"]
+    agent = tmp_path / "old"
+    assert not (agent / "uploads").exists()  # new agents have none: chat attachments go to your files folder
+    (agent / "uploads").mkdir()
+    assert run_py([SCAFFOLD, "old", "--root", tmp_path, "--refresh"]).data["ok"]
+    assert not (agent / "uploads").exists()
+
+    (agent / "uploads").mkdir()
+    (agent / "uploads" / "mail.eml").write_text("hi")
+    kept = run_py([SCAFFOLD, "old", "--root", tmp_path, "--refresh"]).data["kept"]
+    assert any(k.startswith("uploads/") for k in kept), kept
+    assert (agent / "uploads" / "mail.eml").exists()
+    tracked = subprocess.run(["git", "-C", str(agent), "ls-files", "uploads"], capture_output=True, text=True, check=True).stdout
+    assert tracked == ""
+
+
 def test_a_dirty_refresh_since_committed_unchanged_is_up_to_date(tmp_path):
     skill, git = fake_prometheus(tmp_path)
     (skill / "scripts" / "a.py").write_text("two\n")

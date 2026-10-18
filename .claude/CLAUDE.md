@@ -40,14 +40,16 @@ exports: `load_agent`, `Agent`, `Run`, `Result`, `PrometheusError`), `params-and
   secrets), a run form generated from its interface, paths only as uploads and outputs only in the run; no Docker or
   CI here: deploying it is the service team's. It also speaks A2A 1.0 (HTTP+JSON binding; `prometheus/a2a.py`, the
   owner chose A2A only, no MCP) on the same runs: card at `/.well-known/agent-card.json` (no token), file parts
-  (`raw`) for path params, a data part for text params and `approve`, URL parts refused, outputs as artifact links.
+  (`raw`) for path params, a data part for text params and `approve`, URL parts refused, outputs as artifact links (a text output up to 64 KB inline too, as a text part; the batcher skips a text part beside a file).
   Released runs pause instead of refusing (A2A's input-required): `run_release.Run` drives waves in code (compile_wave
-  `--frozen` reads `state.json`; one launch `all` when nothing asks), stops at a decision or an unapproved side
+  `--frozen` reads its `run.yaml`; one launch `all` when nothing asks), stops at a decision or an unapproved side
   effect, `Run.answer()` / `POST /runs/<id>/answer` / an A2A message with the taskId resumes it, in any process.
   The Agent Card carries the release's interface as extension `urn:prometheus:a2a:interface:v1`. Agents call agents
   with `pattern: a2a` (an `a2a:` block: url, files, params, approve, token): batcher's `a2a` op, no model;
-  approving the callee's side effects makes the stage a side effect. Released runs reuse each other (`reuse_earlier`
-  reads `state.json` too: `run_folders.list_released_runs`, `stages_done`); `run_history.py prune` / `prometheus prune` /
+  approving the callee's side effects makes the stage a side effect. A release's run keeps `run.yaml` as an agent's does
+  (2026-10-18: `status`, `stages`, `launches`, `preapproved`, plus `driver`/`cancel`/`needs`/`error`; `done` is the
+  public `complete`, `run_release.state_of`; `is_release_run`: its `call.json`), so released runs reuse each other
+  through the same `run_folders.list_runs` and `stages_done`; `run_history.py prune` / `prometheus prune` /
   `serve --keep` delete old runs' files (and orphaned pi-subagents mission files), keeping their history; a release's
   newest failed runs stay whole (`--keep-failed`). A failed released run is fixed from a bundle (2026-10-16; not an
   `/agent-doctor`): `prometheus bundle` / `GET /runs/<id>/bundle` (`run_bundle.py make`: the run, pi-subagents' records via
@@ -123,7 +125,9 @@ Doing the work
 - Explicit acceptance on writers and gated stages: `{level, preserveStagedIndex: true, review: {required: false}}`.
 - The same judgment on the same inputs is made once (`reuse_earlier`; fingerprint: items, input contents not places,
   subagent file, program, gates, settings, pi-subagents version; `reuse: false`; a map stage whole: its items' contents
-  and batch size, a reused map is one reused layer item; per item is TASKS 38; outputs anywhere inside the run, not
+  and batch size, a reused map is one reused layer item; else a `pattern: map` one per item (2026-10-18): the merge stores
+  each item's record in `work/<stage>/items/<key>.json` after its gate (reused ones too: the newest store is whole), the
+  split leaves out items an earlier finished run's store holds (`<stage>/items` fingerprint: without `over` and batch); outputs anywhere inside the run, not
   only work/, are copied). A wave all of whose stages are reused is recorded at compile, not launched
   (`nothing_to_launch`; `run_steps.record_without_launch`; `launched: false` with agent_finish_wave's result). A launched wave is two files in
   `.compiled/`: `<wave>.js` (its data, `const W`, and the runner) and `<wave>.json` (the call, `inputs` = fingerprints,
@@ -134,7 +138,8 @@ Doing the work
 Launching
 - Waves are derived (`plan_validate.derive_waves`); `ends_with` resolve > review > approval > none.
 - The compiler writes data (`const W = {…}` + `wave_runner.js`), passed as a `workflow` path, not text.
-- Guards: ready plan to start; commit only a launchable wave; refuse an unrecorded launch (`scriptDigest`); hold
+- Guards: ready plan to start; commit only a launchable wave; refuse an unrecorded launch (`scriptDigest`); launch only
+  from the commit compiled from (`<wave>.json` `commit` = HEAD, checked on the `subagent` call and in `/agent-auto`); hold
   after `review`; side effects only with `--approve`; a relaunch reuses unchanged completed children and map batches.
 - A layer stops launching after a child fails with no `fix`. Map stages split/merge on `batcher`; a map's gate runs
   after the merge or on the reduce child.
@@ -160,7 +165,7 @@ Runs and changes
   come from one definition. Tests: model check of the actions, a walk of the real scripts, conformance (a real move
   lands where its action said). "Has had a run" is `agent_repo.has_run`: `runs/`, else main's history (the first
   run's commit, merges; no forced empty commit: `prometheus pull` allows only refreshes on main).
-- Params are typed (`path`/`text`/`secret`), values in `.env`, which is never loaded into Pi's environment (all
+- Params are typed (`path`/`text`/`secret`), values in `.env` (a `per_run: true` one, a query: on the run, `given_params`, never `.env`; 2026-10-18), which is never loaded into Pi's environment (all
   children share it). A secret appears only in a program's `args` or its gate, as `"${ENV}"`; the batcher adds the
   ones a command names (`secrets_for`). Gate values are shell-quoted. Judgment over outside content runs as `reader`
   (no shell; the validator warns otherwise).
@@ -185,6 +190,9 @@ Web app
 - The page loads history before Pi: the router answers the first sync from the session file (`ui/history.ts`, the
   one snapshot builder); hovering warms a worker; a refreshed agent's idle worker restarts (not during a run).
 - Terminal via `pty_relay.py` (stdlib), not `node-pty`.
+- Chat attachments (2026-10-18): an agent's go to your files folder (`files/<slug>/`: outlives runs and prunes, so a
+  path in `.env` keeps working), the planner's to its `inputs/`; agents have no `uploads/` (refresh removes an empty
+  one, keeps one with files out of git via `.git/info/exclude`).
 - An agent is called on its own through its run API (`ui/api.ts`, `/a/<slug>/api`): a call is a run with its own
   values (`given_params` on the run, over `.env`, never secrets; `preapproved`), in a session of its own; questions
   wait in `needs_input` for the caller; one at a time per agent, queued; keys per agent, hashed, outside sandboxes.
@@ -192,7 +200,7 @@ Web app
 
 - Review fixes (2026-10-09): `install` refreshes with `--no-lock` until you confirm (uv lock may build the agent's
   packages); `share` scans the history it pushes too; serve's and A2A's async routes run blocking work in a thread pool;
-  a run records its driver's pid (`state.json` `driver`), so a run whose process died ends as an error; `Run.answer`
+  a run records its driver's pid (`run.yaml` `driver`), so a run whose process died ends as an error; `Run.answer`
   and `cancel` hold a file lock (`runs/<id>/.lock`); a cancel is seen before and right after a launch, from any process;
   the batcher's a2a op follows links (endpoint, artifacts) only on the plan's origin; uploads are capped as they
   arrive (`LimitBody`); an empty serve token is none.

@@ -11,7 +11,8 @@ What a message carries: a file part (`raw`, base64, with `filename`) per file of
 `metadata.param` (or not, when the agent has one path param; several files for one param make a folder), and one
 data part {"params": {...}, "approve": [...]} with the text params and the side effects the run may perform. Text parts
 are kept as the request's words and not read. URL parts are refused (the server fetches nothing a caller names).
-Outputs come back as artifacts whose part is a `url` to download it (with the same token). Errors are google.rpc.Status
+Outputs come back as artifacts whose part is a `url` to download it (with the same token); a small text file (up to
+INLINE_MAX) also comes as a text part before it. Errors are google.rpc.Status
 objects with an ErrorInfo (domain a2a-protocol.org). Push notifications and the extended card are not offered.
 """
 import base64
@@ -19,6 +20,7 @@ import binascii
 import datetime
 import hmac
 import json
+import mimetypes
 import uuid
 from pathlib import Path
 
@@ -35,6 +37,7 @@ CONTENT_TYPE = "application/a2a+json"
 STATES = {"complete": "TASK_STATE_COMPLETED", "stopped": "TASK_STATE_CANCELED", "input_required": "TASK_STATE_INPUT_REQUIRED"}
 TERMINAL = {"TASK_STATE_COMPLETED", "TASK_STATE_FAILED", "TASK_STATE_CANCELED", "TASK_STATE_REJECTED"}
 CONTEXT_FILE = "a2a.json"  # in the run folder: the task's contextId, so a restarted server answers the same
+INLINE_MAX = 64 * 1024  # an output file of text this small comes in its artifact as a text part too, not only as a url
 # the card's machine-readable interface (the release's, exactly): a new URI for a breaking change to its shape, as A2A asks
 INTERFACE_EXTENSION = "urn:prometheus:a2a:interface:v1"
 
@@ -186,12 +189,24 @@ def task_of(run: Run, base_url: str, history: dict | None = None) -> dict:
         status["message"] = {"messageId": f"{run.id}-status", "role": "ROLE_AGENT", "parts": [{"text": why}], "taskId": run.id, "contextId": context}
     task = {"id": run.id, "contextId": context, "status": status, "metadata": {"agent": run.agent.name, "version": run.agent.version}}
     if state == "TASK_STATE_COMPLETED":
-        task["artifacts"] = [{"artifactId": oid, "name": oid, "parts": [{"url": f"{base_url}/runs/{run.id}/outputs/{oid}",
-                                                                          "filename": path.name + (".zip" if path.is_dir() else "")}]}
+        task["artifacts"] = [{"artifactId": oid, "name": oid, "parts": output_parts(f"{base_url}/runs/{run.id}/outputs/{oid}", path)}
                              for oid, path in run.planned_outputs.items() if path and path.exists()]
     if history:
         task["history"] = [history]
     return task
+
+
+def output_parts(url: str, path: Path) -> list[dict]:
+    """An output's artifact parts: its download url, after its text when it is a small text file (an answer, a
+    summary), so a caller gets it without a second request."""
+    parts = [{"url": url, "filename": path.name + (".zip" if path.is_dir() else "")}]
+    if path.is_file() and path.stat().st_size <= INLINE_MAX:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            return parts
+        parts.insert(0, {"text": text, "mediaType": mimetypes.guess_type(path.name)[0] or "text/plain"})
+    return parts
 
 
 def read_context(run: Run) -> str:

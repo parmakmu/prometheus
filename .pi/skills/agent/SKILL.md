@@ -59,7 +59,8 @@ edits, never by rewriting the file.
    concrete and small. A stage whose schema, batch size, agent or gate
    depends on a discovery is **provisional** (`intent`, `resolves_after`, no
    detail): never guess detail to satisfy the validator. Everything outside
-   the agent is a typed param (plan-schema "Params"). `pauses_after: true`
+   the agent is a typed param (plan-schema "Params"); one whose value differs
+   every run (a question, a search) is `per_run: true`. `pauses_after: true`
    only if the user must see a result before work builds on it and no
    decision or side effect already pauses there. A stage a model child does
    gets `instructions`: what to do and how, in full (it is the child's brief;

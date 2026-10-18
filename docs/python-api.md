@@ -104,7 +104,7 @@ One run of a release. You get one from [`Agent.start`](#agentstart), or from [`R
 | Attribute | What it is |
 |---|---|
 | `id` | the run's id, such as `"20261016-101010-abcd"` |
-| `dir` | its folder: `call.json`, `state.json`, `events.jsonl`, `inputs/`, `outputs/`, `work/` |
+| `dir` | its folder: `call.json`, `run.yaml`, `events.jsonl`, `inputs/`, `outputs/`, `work/` |
 | `state` | `"running"`, `"input_required"`, `"complete"`, `"failed"`, `"stopped"` or `"error"` |
 | `running` | whether `state` is `"running"` |
 
@@ -201,7 +201,7 @@ How a run stopped: what [`Agent.run`](#agentrun) and [`Run.wait`](#runwait) retu
 | `error` | why it failed or stopped, else `None` |
 | `needs` | when it waits: `{"approve": [...], "decide": [...]}` |
 | `run_dir` | the run's folder |
-| `record` | the run's `state.json`: its waves, each with pi-subagents' record folder |
+| `record` | the run's `run.yaml`, as an agent's own run keeps it: `status` (`done` where `state` says `"complete"`), `stages` done, and its waves, each with pi-subagents' record folder |
 
 In `needs`, each entry of `approve` has the side effect's `stage`, `title`, `why`, the paths it `writes`, and its `done_when`. Each entry of `decide` has the decision's `stage`, `title`, the lines to `show_user`, and `write_answer_to`, the file where `Run.answer` keeps your answer for the stages after it.
 

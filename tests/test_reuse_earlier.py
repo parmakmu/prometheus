@@ -1,6 +1,7 @@
 """A model stage with no side effect whose inputs and definition are unchanged since an earlier run
 finished it takes that run's outputs instead of running again (compile_wave reuse_earlier)."""
 import importlib.util
+import json
 import sys
 
 from conftest import SKILL
@@ -207,3 +208,50 @@ def test_a_stage_writing_into_the_runs_outputs_is_reused_but_not_one_writing_out
     finish(c, outside(c.run_dir))
     _, again = compile_with("2026-01-02-2", outside)
     assert any("map" in step for step in again["spec"]["steps"])
+
+
+def map_of(result, key="summarise"):
+    """The map step for `key`, with its split's request and its merge's, or None."""
+    m = next((step["map"] for step in result["spec"]["steps"] if step.get("map", {}).get("key") == key), None)
+    return m and {**m, "split_req": json.loads(m["split"]["task"].removeprefix(cw.BATCH_REQUEST))}
+
+
+def test_a_map_stage_maps_only_the_items_no_earlier_run_mapped(tmp_path):
+    # TASKS 38: one email more is not a reason to map them all again. The split gets the item stores of earlier runs
+    # that finished the stage with the same item fingerprint (the batch size not in it), the merge this run's store
+    (tmp_path / "mail").mkdir()
+    for n in range(3):
+        (tmp_path / "mail" / f"{n}.eml").write_text(f"Subject: {n}\n\nbody {n}")
+    c, first = compile_map_run(tmp_path, "2026-01-01-1")
+    m = map_of(first)
+    assert m["split_req"]["stores"] == [] and m["merge"]["store"] == str(c.work / "summarise" / "items")
+    assert m["split_req"]["items_file"] == m["merge"]["items_file"] and "summarise/items" in c.fingerprints
+    finish_map(c, "2026-01-01-1")
+    (c.work / "summarise" / "items").mkdir(parents=True)
+    (c.work / "summarise" / "items" / "k.json").write_text('{"item": "x", "record": "x: ok"}')
+
+    (tmp_path / "mail" / "3.eml").write_text("Subject: new\n\nmore")
+    c, grown = compile_map_run(tmp_path, "2026-01-01-2")
+    assert map_of(grown)["split_req"]["stores"] == [str(tmp_path / "runs" / "2026-01-01-1" / "work" / "summarise" / "items")]
+    assert any("left out of its batches" in n for n in grown["notes"]) and "reuse" not in items(grown["spec"])["digest"]
+
+    _, rebatched = compile_map_run(tmp_path, "2026-01-01-3", batch=3)  # not reused whole, but item by item
+    assert len(map_of(rebatched)["split_req"]["stores"]) == 1
+
+    (tmp_path / "mail" / "3.eml").unlink()  # the first run's items again: reused whole, and its store comes along
+    c, same = compile_map_run(tmp_path, "2026-01-01-4")
+    assert items(same["spec"])["summarise"]["reuse"]["run"] == "2026-01-01-1" and "summarise/items" in c.fingerprints
+    c.copy_reused()
+    assert (c.work / "summarise" / "items" / "k.json").is_file()
+
+
+def test_a_map_reduce_stage_is_not_reused_item_by_item(tmp_path):
+    (tmp_path / "mail").mkdir()
+    (tmp_path / "mail" / "a.eml").write_text("Subject: hi\n\nhello")
+    run_dir = tmp_path / "runs" / "2026-01-01-1"
+    run_dir.mkdir(parents=True)
+    stage = {**MAP_STAGES[0], "pattern": "map_reduce"}
+    c = cw.Compiler(tmp_path, {"stages": [stage], "inputs": [{"id": "emails", "kind": "folder", "path": str(tmp_path / "mail")}]},
+                    {}, run_dir, {}, set())
+    m = map_of(c.compile({"id": "w1", "stages": ["summarise"]}, reuse=True))
+    assert "items_file" not in m["split_req"] and "summarise/items" not in c.fingerprints

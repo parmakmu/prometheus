@@ -76,7 +76,7 @@ Check: `/agent-history` shows each run's cost, so you can compare the next run w
 Use this when you want an agent to run without you watching the chat, for example from a scheduled job.
 
 1. Give the run its values first: edit the agent's `.env`, or use the agent's **Settings** in the web app.
-2. Optionally, set `AGENT_NOTIFY_COMMAND` (for example `notify-send prometheus`, or a `curl` to a webhook), so you hear when the run stops.
+2. Optionally, set `AGENT_NOTIFY_COMMAND` (for example `notify-send prometheus`, or a `curl` to a webhook), so you hear when the run stops. Set it in the job's environment, not in `.env`: see [Environment variables](commands.md#environment-variables).
 3. In the agent's folder, run `pi -p "/agent-auto"`.
 
 It runs every wave that needs nobody and stops at the first one that does, such as an approval. Start the agent with `prometheus emails-to-excel` to answer it, and type `/agent-run` to go on.

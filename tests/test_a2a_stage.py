@@ -148,6 +148,7 @@ def test_run_batcher_calls_an_agent_and_downloads_its_outputs(served, tmp_path):
     code, out, err = call(request, COUNTER_TOKEN="t0k")
     assert code == 0, err
     assert out["state"] == "TASK_STATE_COMPLETED" and (tmp_path / "counted" / "count.txt").read_text() == "3\n"
+    assert out["artifacts"] == [str(tmp_path / "counted" / "count.txt")]  # its inline text is not a second file
     code, out, err = call({**request, "approve": []}, COUNTER_TOKEN="t0k")
     assert code == 1 and "asks before it goes on" in err and "approve save" in err
     code, out, err = call(request, COUNTER_TOKEN="wrong")

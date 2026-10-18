@@ -110,3 +110,64 @@ def test_a_command_gets_only_the_secrets_it_names(run_py, tmp_path, monkeypatch)
     req = {"op": "run", "command": 'echo "tok=${API_TOKEN} other=${OTHER}"', "secrets": ["API_TOKEN"], "env_file": str(tmp_path / ".env")}
     r = run_py([SKILL / "scripts" / "run_batcher.py", json.dumps(req)], cwd=tmp_path)
     assert r.data["program"]["stdout"].strip() == "tok=s3cret other=", r
+
+
+def batcher(run_py, req, cwd=None):
+    return run_py([SKILL / "scripts" / "run_batcher.py", json.dumps(req)], cwd=cwd)
+
+
+def test_items_an_earlier_merge_stored_are_left_out_and_merged_back_in_item_order(run_py, tmp_path):
+    # TASKS 38: per-item reuse. Run 1 maps three emails and stores each one's line; run 2's folder has moved, m2
+    # changed and m4 is new: only those two are mapped, and m1's and m3's lines come back, renamed to the new folder
+    one, two = tmp_path / "one", tmp_path / "two"
+    one.mkdir()
+    for i in (1, 2, 3):
+        (one / f"m{i}.eml").write_text(f"m{i}", encoding="utf-8")
+    split = batcher(run_py, {"op": "split", "source": str(one), "batch": 2, "outdir": str(tmp_path / "b1"),
+                             "items_file": str(tmp_path / "items1.json"), "stores": []}).data
+    assert (split["total"], split["known"], len(split["batches"])) == (3, 0, 2)
+    (tmp_path / "r0.txt").write_text(f"{one}/m2.eml: two\n{one}/m1.eml: one\n", encoding="utf-8")  # any order in a batch
+    (tmp_path / "r1.txt").write_text(f"{one}/m3.eml: three\n", encoding="utf-8")
+    merged = batcher(run_py, {"op": "merge", "inputs": [str(tmp_path / "r0.txt"), str(tmp_path / "r1.txt")],
+                              "output": str(tmp_path / "m1.txt"), "items_file": str(tmp_path / "items1.json"),
+                              "store": str(tmp_path / "store1")})
+    assert merged.returncode == 0 and merged.data["items"] == {"checked": 3, "unnamed": 0, "reused": 0, "stored": 3}, merged
+    assert (tmp_path / "m1.txt").read_text().splitlines() == [f"{one}/m1.eml: one", f"{one}/m2.eml: two", f"{one}/m3.eml: three"]
+    assert len(list((tmp_path / "store1").glob("*.json"))) == 3
+
+    two.mkdir()
+    for i, text in ((1, "m1"), (2, "m2 changed"), (3, "m3"), (4, "m4")):
+        (two / f"m{i}.eml").write_text(text, encoding="utf-8")
+    split = batcher(run_py, {"op": "split", "source": str(two), "batch": 2, "outdir": str(tmp_path / "b2"),
+                             "items_file": str(tmp_path / "items2.json"), "stores": [str(tmp_path / "store1")]}).data
+    assert (split["total"], split["known"], len(split["batches"])) == (4, 2, 1)
+    assert (tmp_path / "b2" / "0.txt").read_text().splitlines() == [str(two / "m2.eml"), str(two / "m4.eml")]
+    (tmp_path / "s0.txt").write_text(f"{two}/m4.eml: four\n{two}/m2.eml: two again\n", encoding="utf-8")
+    merged = batcher(run_py, {"op": "merge", "inputs": [str(tmp_path / "s0.txt")], "output": str(tmp_path / "m2.txt"),
+                              "items_file": str(tmp_path / "items2.json"), "store": str(tmp_path / "store2")})
+    assert merged.returncode == 0 and merged.data["items"] == {"checked": 4, "unnamed": 0, "reused": 2, "stored": 4}, merged
+    assert (tmp_path / "m2.txt").read_text().splitlines() == [
+        f"{two}/m1.eml: one", f"{two}/m2.eml: two again", f"{two}/m3.eml: three", f"{two}/m4.eml: four"]
+    assert len(list((tmp_path / "store2").glob("*.json"))) == 4  # the reused ones too: the newest store is whole
+
+
+def test_a_merge_whose_gate_fails_stores_nothing(run_py, tmp_path):
+    (tmp_path / "list.txt").write_text("alpha\nbeta\n", encoding="utf-8")
+    batcher(run_py, {"op": "split", "source": str(tmp_path / "list.txt"), "batch": 5, "outdir": str(tmp_path / "b"),
+                     "items_file": str(tmp_path / "items.json"), "stores": []})
+    (tmp_path / "r.json").write_text(json.dumps([{"item": "beta", "ok": 1}, {"item": "alpha", "ok": 1}, {"total": 2}]))
+    req = {"op": "merge", "inputs": [str(tmp_path / "r.json")], "output": str(tmp_path / "m.json"),
+           "items_file": str(tmp_path / "items.json"), "store": str(tmp_path / "store"), "gate": "false"}
+    assert batcher(run_py, req, cwd=tmp_path).returncode == 1 and not (tmp_path / "store").exists()
+    r = batcher(run_py, {**req, "gate": None}, cwd=tmp_path)
+    assert r.returncode == 0 and r.data["items"]["stored"] == 2, r  # a record naming no item is not stored, and goes last
+    assert [x.get("item") for x in json.loads((tmp_path / "m.json").read_text())] == ["alpha", "beta", None]
+
+
+def test_items_without_a_name_are_never_left_out(run_py, tmp_path):
+    (tmp_path / "items.json").write_text(json.dumps([{"a": 1}]), encoding="utf-8")
+    (tmp_path / "store").mkdir()
+    split = batcher(run_py, {"op": "split", "source": str(tmp_path / "items.json"), "batch": 1, "outdir": str(tmp_path / "b"),
+                             "items_file": str(tmp_path / "list.json"), "stores": [str(tmp_path / "store")]}).data
+    assert (split["known"], len(split["batches"])) == (0, 1)
+    assert json.loads((tmp_path / "list.json").read_text())["named"] is False

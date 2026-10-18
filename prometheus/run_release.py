@@ -149,10 +149,22 @@ class Result:
     cost_usd: float | None = None
     error: str | None = None
     needs: dict | None = None
-    record: dict = field(default_factory=dict)  # the run's state.json: its waves, each with pi-subagents' record folder
+    record: dict = field(default_factory=dict)  # the run's run.yaml: its stages and waves, each with pi-subagents' record folder
 
 
 ENDED = {"complete", "failed", "stopped", "error"}  # a run's own states besides running and input_required
+
+
+def state_of(record: dict) -> str:
+    """A released run's state as callers see it (Result.state, serve, A2A), from its run.yaml's status: the same words,
+    but `done`, as every run records it, is `complete`; running until the first write."""
+    status = record.get("status") or "running"
+    return "complete" if status == "done" else status
+
+
+def mark_done(state: dict, stages: list | None) -> dict:
+    """A run's stages (run.yaml), with `stages` done."""
+    return {**(state.get("stages") or {}), **{s: "done" for s in stages or []}}
 INTERRUPTED = "the process running it stopped before it ended: start it again"
 
 
@@ -183,11 +195,12 @@ def what_it_needs(preflight: dict) -> dict:
 class Run:
     """A released agent's run, driven wave by wave in code (no model decides anything). It stops when it ends, or at
     a decision or an unapproved side effect (`input_required`), until answer() gives what it needs. Its state is in
-    the run folder (state.json), so a run paused by one process can be answered and resumed by another."""
+    the run folder (run.yaml, as an agent's own run keeps it: run_folders.py), so a run paused by one process can be
+    answered and resumed by another."""
 
     def __init__(self, agent: Agent, run_dir: Path, values: dict, outputs: dict[str, Path | None]):
         self.agent, self.dir, self.values, self.planned_outputs = agent, run_dir, values, outputs
-        self.events_file, self.state_file = run_dir / "events.jsonl", run_dir / "state.json"
+        self.events_file = run_dir / "events.jsonl"
         self.thread: threading.Thread | None = None
         self.process: subprocess.Popen | None = None
         self.cancelled = threading.Event()
@@ -199,7 +212,7 @@ class Run:
 
     @classmethod
     def reopen(cls, agent: Agent, run_id: str) -> Run | None:
-        """A run of `agent` from its folder (call.json, state.json), or None: one started by another process."""
+        """A run of `agent` from its folder (call.json, run.yaml), or None: one started by another process."""
         run_dir = agent.folder / "runs" / run_id
         try:
             call = json.loads((run_dir / "call.json").read_text(encoding="utf-8"))
@@ -210,22 +223,20 @@ class Run:
 
     # --- state and events ---------------------------------------------------------
     def read_state(self) -> dict:
-        try:
-            return json.loads(self.state_file.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return {}
+        return cli.import_script("run_folders").read_run(self.dir)
 
     def write_state(self, **changes) -> dict:
+        run_folders = cli.import_script("run_folders")
         with self.lock:
             state = {**self.read_state(), **changes}
-            self.state_file.write_text(json.dumps(state, indent=1), encoding="utf-8")
+            run_folders.Run(self.id, self.dir, state).save()
         return state
 
     @property
     def state(self) -> str:
         """The run's state; a run whose driver died (its process is gone: a server restarted) ends as an error."""
         state = self.read_state()
-        name = state.get("state", "running")
+        name = state_of(state)
         driver = state.get("driver") or {}
         if name == "running" and not (self.thread and self.thread.is_alive()) \
                 and cli.import_script("utils").process_alive(driver.get("pid"), driver.get("started")) is False:
@@ -273,12 +284,13 @@ class Run:
     # --- driving ------------------------------------------------------------------
     def compile(self) -> dict:
         return run_script("run_compile.py", "--agent", str(self.agent.folder), "--frozen", str(self.dir),
-                          "--params", json.dumps(self.values), "--approve", ",".join(self.read_state().get("approve") or []))
+                          "--params", json.dumps(self.values), "--approve", ",".join(self.read_state().get("preapproved") or []))
 
     def finish(self, state: str, error: str | None = None):
         launches = self.read_state().get("launches") or []
         cost = round(sum(r.get("cost_usd") or 0 for r in launches), 6)
-        self.write_state(state=state, error=error, needs=None)
+        self.write_state(status="done" if state == "complete" else state, error=error, needs=None,
+                         finished_at=datetime.datetime.now(datetime.UTC).isoformat())
         self.log(event="end", state=state, error=error, cost_usd=cost)
 
     def drive(self, compiled: dict | None = None):
@@ -292,7 +304,7 @@ class Run:
                     preflight = compiled.get("preflight") or {}
                     if preflight.get("decisions_needed") or preflight.get("approvals_needed"):
                         needs = what_it_needs(preflight)
-                        self.write_state(state="input_required", needs=needs)
+                        self.write_state(status="input_required", needs=needs)
                         return self.log(event="input_required", wave=compiled.get("wave"), needs=needs)
                     return self.finish("error", describe_refusal(self.agent, compiled))
                 wave = compiled["wave"]
@@ -301,7 +313,7 @@ class Run:
                     state = self.read_state()
                     self.write_state(launches=[*(state.get("launches") or []), {"wave": wave, "stages": compiled.get("stages"),
                                                                                 "status": "done", "cost_usd": 0.0, "launched": False}],
-                                     done=[*(state.get("done") or []), *(compiled.get("stages") or [])])
+                                     stages=mark_done(state, compiled.get("stages")))
                     self.log(event="wave_end", wave=wave, state="complete", reused=True, cost=None)
                     compiled = None
                     continue
@@ -326,7 +338,7 @@ class Run:
                 if self.cancel_requested() or record.get("state") == "stopped":
                     return self.finish("stopped", record.get("error") or "canceled")
                 if end.get("state") in ("complete", "completed") and value.get("status") == "done":
-                    self.write_state(done=[*(state.get("done") or []), *(compiled.get("stages") or [])])
+                    self.write_state(stages=mark_done(state, compiled.get("stages")))
                     compiled = None
                     continue
                 failed = value.get("at") or [k for k, c in (value.get("children") or {}).items() if c.get("status") == "failed"]
@@ -361,8 +373,8 @@ class Run:
         """Give a paused run what it asked for (side effects approved, decisions made), and let it go on."""
         with self.exclusive():  # two answers at once: one goes on, the other is refused (never two drivers)
             state = self.read_state()
-            if state.get("state") != "input_required":
-                raise PrometheusError(f"run {self.id} is {state.get('state')}, not waiting for an answer")
+            if state_of(state) != "input_required":
+                raise PrometheusError(f"run {self.id} is {state_of(state)}, not waiting for an answer")
             needs = state.get("needs") or {}
             asked = {d["stage"]: d for d in needs.get("decide") or []}
             if unknown := [s for s in decisions or {} if s not in asked]:
@@ -372,7 +384,8 @@ class Run:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(json.dumps({"stage": stage, "answer": value, "recorded_at": datetime.datetime.now(datetime.UTC).isoformat()}, indent=2),
                                 encoding="utf-8")
-            self.write_state(state="running", needs=None, approve=sorted({*(state.get("approve") or []), *approve}), driver=cli.import_script("utils").this_process())
+            self.write_state(status="running", needs=None, preapproved=sorted({*(state.get("preapproved") or []), *approve}),
+                             driver=cli.import_script("utils").this_process())
         self.log(event="resumed", approved=list(approve), decided=sorted(decisions or {}))
         self.go()
 
@@ -559,7 +572,8 @@ class Agent:
             (run_dir / "call.json").write_text(json.dumps({"agent": self.name, "version": self.version, "params": values,
                                                            "approve": list(approve)}, indent=1), encoding="utf-8")
             run = Run(self, run_dir, values, self.resolve_outputs(run_dir, values))
-            run.write_state(state="running", approve=sorted(approve), done=[], launches=[], driver=cli.import_script("utils").this_process())
+            run.write_state(id=run_id, status="running", started_at=datetime.datetime.now(datetime.UTC).isoformat(),
+                            preapproved=sorted(approve), stages={}, launches=[], driver=cli.import_script("utils").this_process())
             compiled = run.compile()
             preflight = compiled.get("preflight") or {}
             if not compiled.get("ok") and not (preflight.get("decisions_needed") or preflight.get("approvals_needed")):
@@ -620,7 +634,7 @@ def read_bundle_call(bundle: Path, agent: Agent) -> tuple[dict, list[str], set[s
         with tarfile.open(bundle) as tar:
             info = json.load(tar.extractfile("bundle.json"))
             call = json.load(tar.extractfile("run/call.json"))
-            state = json.load(tar.extractfile("run/state.json"))
+            state = cli.import_script("utils").rt_yaml().load(tar.extractfile("run/run.yaml").read().decode("utf-8")) or {}
             if info.get("agent") != agent.name:
                 raise PrometheusError(f"{bundle.name} is a run of {info.get('agent')}, not {agent.name}")
             files = get_cache() / "bundles" / bundle.name.removesuffix(".tgz")
@@ -646,4 +660,4 @@ def read_bundle_call(bundle: Path, agent: Agent) -> tuple[dict, list[str], set[s
                 missing.append(name)
         else:
             values[name] = value
-    return values, sorted({*(call.get("approve") or []), *(state.get("approve") or [])}), in_run, missing
+    return values, sorted({*(call.get("approve") or []), *(state.get("preapproved") or [])}), in_run, missing

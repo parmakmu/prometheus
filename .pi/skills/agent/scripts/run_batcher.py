@@ -15,6 +15,10 @@ split  {"op":"split","source":PATH,"glob":"*.eml"?,"batch":N,"outdir":PATH}
        a .jsonl file, a .csv file (header repeated in every batch), or any
        other text file (one item per line). Writes <outdir>/<i>.txt (or .csv)
        and prints {"total":N,"batches":[{"index":i,"file":PATH,"count":k}]}.
+       With "items_file":PATH and "stores":[DIR,...] (per-item reuse): writes every item, in order, to
+       items_file ({named, items: [{name, key, known}]}; key: a hash of a file's name and contents, else of
+       the item), and leaves out of the batches each item a store has <key>.json for (its result from an
+       earlier run); prints "known": K too. Only when every item has a name (not JSON objects).
 
 merge  {"op":"merge","inputs":[PATH,...],"output":PATH,"batches":[PATH,...]?}
        Concatenates by the output's extension: .json (arrays are flattened,
@@ -26,6 +30,11 @@ merge  {"op":"merge","inputs":[PATH,...],"output":PATH,"batches":[PATH,...]?}
        the merge, naming them. Items that are JSON objects have no name and are
        only counted. Prints {"output":PATH,"count":N,"items":{"checked","unnamed"}};
        with "gate" (as in run), the gate's result too, checking the merged output.
+       With "items_file" (the split's) and "store":DIR: the stored results of the items the split left out
+       come back in (an earlier run's path for an item renamed to this run's), the check covers every item,
+       records go in the items' order (one naming no item last), and once the gate passed each record that
+       names exactly one item is written to DIR/<key>.json, the reused ones too, so this run's store is whole;
+       "items" adds "reused" and "stored".
 
 run    {"op":"run","command":CMD,"gate":CMD?,"gate_json":BOOL?,"timeout":S?,"secrets":[ENV]?,"env_file":PATH?}
        Runs a stage's program, then its gate, each through the shell (so
@@ -52,6 +61,7 @@ Can also be run directly: run_batcher.py '<json request>'.
 import base64
 import csv
 import fnmatch
+import hashlib
 import io
 import json
 import os
@@ -111,6 +121,36 @@ def items_from(source, glob):
     return [l for l in text.splitlines() if l.strip()], None
 
 
+def name_of(item):
+    """The name a result gives an item, or None (a JSON object or list has none): a CSV row by its first cell, a line
+    of JSON by its value, anything else (a path, a line of text) as written."""
+    if isinstance(item, list):
+        return item[0] if item else None
+    try:
+        value = json.loads(item)
+    except ValueError:
+        return item
+    return None if isinstance(value, (dict, list)) else str(value)
+
+
+def key_of(item, folder):
+    """What an item's stored result is found by: a hash of a file's name and contents, else of the item itself."""
+    if folder:
+        path = Path(item)
+        return hashlib.sha256(b"file\0" + path.name.encode() + b"\0" + path.read_bytes()).hexdigest()
+    return hashlib.sha256(b"item\0" + json.dumps(item, ensure_ascii=False).encode()).hexdigest()
+
+
+def list_items(items, folder, stores):
+    """Each item's name, key and stored result (the first of `stores` that has its key), or None. Only items that all
+    have a name are looked up: a result is matched to its item by the name it gives it."""
+    listed = [{"name": name_of(it), "key": key_of(it, folder), "known": None} for it in items]
+    named = all(it["name"] is not None for it in listed)
+    for it in listed if named else []:
+        it["known"] = next((str(p) for s in stores if (p := Path(s) / f"{it['key']}.json").is_file()), None)
+    return {"named": named, "items": listed}
+
+
 def split(req):
     batch = req.get("batch")
     if not isinstance(batch, int) or batch <= 0:
@@ -119,6 +159,13 @@ def split(req):
     if not source or not outdir:
         fail("split needs source and outdir")
     items, header = items_from(source, req.get("glob"))
+    known = 0
+    if items_file := req.get("items_file"):
+        # every item, in order, for the merge: those an earlier run's merge stored a result for are left out of the batches
+        listed = list_items(items, Path(source).is_dir(), req.get("stores") or [])
+        write_json(items_file, listed)
+        items = [it for it, entry in zip(items, listed["items"]) if not entry["known"]]
+        known = len(listed["items"]) - len(items)
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     batches = []
@@ -134,7 +181,7 @@ def split(req):
             path = (outdir / f"{index}.txt").resolve()
             path.write_text("\n".join(chunk) + "\n", encoding="utf-8")
         batches.append({"index": index, "file": str(path), "count": len(chunk)})
-    return {"total": len(items), "batches": batches}
+    return {"total": len(items) + known, "batches": batches, **({"known": known} if items_file else {})}
 
 
 def batch_items(batches):
@@ -143,17 +190,14 @@ def batch_items(batches):
     for path in map(Path, batches):
         if path.suffix == ".csv":
             with path.open(encoding="utf-8", newline="") as fh:
-                names += [row[0] for row in list(csv.reader(fh))[1:] if row]  # a row is named by its first cell
-            continue
-        for line in (l for l in path.read_text(encoding="utf-8").splitlines() if l.strip()):
-            try:
-                value = json.loads(line)
-            except ValueError:
-                value = line  # a path or a line of text
-            if isinstance(value, (dict, list)):
+                rows = [row for row in list(csv.reader(fh))[1:] if row]
+        else:
+            rows = [l for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
+        for name in map(name_of, rows):
+            if name is None:
                 unnamed += 1
             else:
-                names.append(str(value))
+                names.append(name)
     return names, unnamed
 
 
@@ -165,8 +209,20 @@ def strings_in(value):
     return [str(value)] if value is not None else []
 
 
-def check_items(names, records, kind):
-    """Fail unless each name is named by exactly one record: a JSON record (any string value), a line, a CSV row."""
+def rename_in(value, old, new):
+    """`value` with the item's old name (an earlier run's path) written as its name in this run."""
+    if isinstance(value, str):
+        return value.replace(old, new)
+    if isinstance(value, dict):
+        return {k: rename_in(v, old, new) for k, v in value.items()}
+    if isinstance(value, list):
+        return [rename_in(v, old, new) for v in value]
+    return value
+
+
+def attribute_records(names, records, kind):
+    """For each record, the indexes of the items it names. Fails unless each item is named by exactly one record: a
+    JSON record (any string value), a line, a CSV row."""
     def forms(name):  # a batch file lists files by their path; a result may name them by file name
         return {name, Path(name).name} if "/" in name else {name}
 
@@ -176,16 +232,58 @@ def check_items(names, records, kind):
         base = Path(name).name
         return any(v == name or ("/" in name and Path(v).name == base) for v in record)
 
-    found = {name: sum(names_it(r, name) for r in records) for name in names}
-    missing = [n for n, k in found.items() if k == 0]
-    twice = [n for n, k in found.items() if k > 1]
+    named = [[i for i, name in enumerate(names) if names_it(r, name)] for r in records]
+    found = [sum(i in n for n in named) for i in range(len(names))]
+    missing = [names[i] for i, k in enumerate(found) if k == 0]
+    twice = [names[i] for i, k in enumerate(found) if k > 1]
     if missing or twice:
         show = lambda xs: ", ".join(Path(x).name if "/" in x else x for x in xs[:10]) + (f" and {len(xs) - 10} more" if len(xs) > 10 else "")
         fail("the merged result does not name every item of the split exactly once"
              + (f"; missing: {show(missing)}" if missing else "") + (f"; named more than once: {show(twice)}" if twice else ""))
+    return named
+
+
+def read_records(inputs, ext):
+    """The batch outputs' records, in order (a JSON value, a CSV row or a line), and the CSV header."""
+    header, records = None, []
+    for p in inputs:
+        text = Path(p).read_text(encoding="utf-8")
+        if ext == ".json":
+            data = json.loads(text) if text.strip() else []
+            records.extend(data if isinstance(data, list) else [data])
+        elif ext == ".csv":
+            rows = list(csv.reader(io.StringIO(text)))
+            if rows:
+                header = same_header(header, rows[0], p)
+                records.extend(rows[1:])
+        else:
+            records.extend(l for l in text.splitlines() if l.strip())
+    return records, header
+
+
+def same_header(header, other, where):
+    if header is not None and other != header:
+        fail(f"{where} has a different CSV header")
+    return other
+
+
+def write_records(output, ext, records, header):
+    if ext == ".json":
+        output.write_text(json.dumps(records, ensure_ascii=False, indent=1), encoding="utf-8")
+    elif ext == ".csv":
+        with output.open("w", encoding="utf-8", newline="") as fh:
+            w = csv.writer(fh)
+            if header is not None:
+                w.writerow(header)
+            w.writerows(records)
+    else:
+        output.write_text("\n".join(records) + ("\n" if records else ""), encoding="utf-8")
 
 
 def merge(req):
+    """The merged output, and with an `items_file` (the split's list of every item) the records to store: each item's
+    own one, so a later run with the same items leaves it out of its batches. Records an earlier run stored come back
+    in, and every record goes at its item's place: the items' order, whatever the batches were."""
     inputs, output = req.get("inputs"), req.get("output")
     if not isinstance(inputs, list) or not output:
         fail("merge needs inputs (list) and output")
@@ -195,45 +293,57 @@ def merge(req):
     output = Path(output)
     ext = output.suffix.lower()
     output.parent.mkdir(parents=True, exist_ok=True)
-    count = 0
-    if ext == ".json":
-        merged = []
-        for p in inputs:
-            text = Path(p).read_text(encoding="utf-8")
-            data = json.loads(text) if text.strip() else []
-            merged.extend(data if isinstance(data, list) else [data])
-        output.write_text(json.dumps(merged, ensure_ascii=False, indent=1), encoding="utf-8")
-        count, records, kind = len(merged), [strings_in(r) for r in merged], "values"
-    elif ext == ".csv":
-        header, rows = None, []
-        for p in inputs:
-            with Path(p).open(encoding="utf-8", newline="") as fh:
-                data = list(csv.reader(fh))
-            if not data:
-                continue
-            if header is None:
-                header = data[0]
-            elif data[0] != header:
-                fail(f"{p} has a different CSV header")
-            rows.extend(data[1:])
-        with output.open("w", encoding="utf-8", newline="") as fh:
-            w = csv.writer(fh)
-            if header is not None:
-                w.writerow(header)
-            w.writerows(rows)
-        count, records, kind = len(rows), rows, "values"
-    else:
-        lines = []
-        for p in inputs:
-            lines.extend(l for l in Path(p).read_text(encoding="utf-8").splitlines() if l.strip())
-        output.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
-        count, records, kind = len(lines), lines, "lines"
-    result = {"output": str(output.resolve()), "count": count}
-    if batches := req.get("batches"):
+    records, header = read_records(inputs, ext)
+    listed = read_json_file(req["items_file"]) if req.get("items_file") else None
+    per_item = bool(listed and listed.get("named"))
+    if per_item:
+        for item in (it for it in listed["items"] if it["known"]):
+            stored = read_json_file(item["known"])
+            if ext == ".csv":
+                header = same_header(header, stored.get("header"), item["known"])
+            records.append(rename_in(stored["record"], stored["item"], item["name"]))
+    kind = "values" if ext in (".json", ".csv") else "lines"
+    searchable = [strings_in(r) for r in records] if ext == ".json" else records
+    result, entries = {"output": str(output.resolve()), "count": len(records)}, []
+    if per_item:
+        items = listed["items"]
+        named = attribute_records([it["name"] for it in items], searchable, kind)
+        # one record per item is that item's to store; one naming several, or none, stays out of the store
+        entries = [{"key": items[n[0]]["key"], "item": items[n[0]]["name"], "record": r, **({"header": header} if ext == ".csv" else {})}
+                   for r, n in zip(records, named) if len(n) == 1]
+        place = [n[0] if n else len(items) for n in named]  # a record naming no item goes last
+        records = [r for _, _, r in sorted(zip(place, range(len(records)), records))]
+        result["items"] = {"checked": len(items), "unnamed": 0, "reused": sum(1 for it in items if it["known"]),
+                           "stored": len(entries)}
+    elif batches := req.get("batches"):
         names, unnamed = batch_items(batches)
-        check_items(names, records, kind)
+        attribute_records(names, searchable, kind)
         result["items"] = {"checked": len(names), "unnamed": unnamed}
-    return result
+    write_records(output, ext, records, header)
+    return result, entries
+
+
+def store_items(store, entries):
+    """Write each item's record to `store` (this run's), one file per item key; written whole, then renamed."""
+    if not store:
+        return
+    Path(store).mkdir(parents=True, exist_ok=True)
+    for e in entries:
+        tmp = Path(store) / f".{e['key']}.{os.getpid()}.tmp"
+        tmp.write_text(json.dumps({k: v for k, v in e.items() if k != "key"}, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(Path(store) / f"{e['key']}.json")
+
+
+def read_json_file(path):
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        fail(f"cannot read {path}: {exc}")
+
+
+def write_json(path, data):
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    Path(path).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
 
 def dotenv(path):
@@ -377,7 +487,11 @@ def a2a(req):
     out.mkdir(parents=True, exist_ok=True)
     written = []
     for artifact in task.get("artifacts") or []:
-        for n, part in enumerate(artifact.get("parts") or []):
+        parts = artifact.get("parts") or []
+        has_file = any("url" in p or "raw" in p for p in parts)
+        for n, part in enumerate(parts):
+            if has_file and "text" in part:
+                continue  # a file's text beside the file itself (prometheus serve inlines small ones): one file, not two
             fallback = f"{Path(str(artifact.get('artifactId') or 'artifact')).name or 'artifact'}-{n}"
             name = Path(str(part.get("filename") or "")).name
             name = fallback if name in ("", ".", "..") else name
@@ -409,9 +523,10 @@ def main(argv):
     if op == "split":
         result = split(req)
     elif op == "merge":
-        result = merge(req)
+        result, entries = merge(req)
         if (g := gate(req, req.get("timeout") or 600)) is not None:
             result["gate"] = g
+        store_items(req.get("store"), entries)  # after the gate: a result it refused is never reused
     elif op == "run":
         result = run(req)
     elif op == "a2a":

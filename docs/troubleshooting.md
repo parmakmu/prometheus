@@ -167,6 +167,16 @@ The run asks you for a folder or another value.
 
 **Fix.** Give the value. For a file or folder, give an absolute path (`~/…` is fine). See [Params, `.env` and secrets](params-and-secrets.md).
 
+### A value given for each run
+
+```text
+'<name>' is given for each run: set it once a run has started
+```
+
+**Cause.** The param is `per_run`: its value belongs to one run and is never saved in `.env`, so it can't be set while no run is active, for example from the web app's **Settings**.
+
+**Fix.** Start the run with `/agent-run`. It asks for the value, or takes it from what you type after the command (`/agent-run what changed in the Q3 numbers?`).
+
 ### Input path is relative or missing
 
 ```text
@@ -261,7 +271,7 @@ the merged result does not name every item of the split exactly once; missing: �
 
 **Cause.** A map stage splits its items (emails, rows, lines) into batches, and each batch's child writes a result for each of its items. When the results are merged, every item must appear in exactly one of them. Here a batch's child skipped an item, wrote one twice, or named items differently from its batch file, so the stage's output would silently be incomplete.
 
-**Fix.** A relaunch keeps the batches that completed, so it would fail the same way. Change the stage's `instructions` to say what each result must contain and how it names its item, for example by the email's file name: during the run, ask the agent for the change (it resolves the pending stage); after it, with `/agent-revise`. The changed stage runs all its batches again.
+**Fix.** A relaunch keeps the batches that completed, so it would fail the same way. Items an earlier run mapped are checked too, with the result it stored for them. Change the stage's `instructions` to say what each result must contain and how it names its item, for example by the email's file name: during the run, ask the agent for the change (it resolves the pending stage); after it, with `/agent-revise`. The changed stage runs all its batches again.
 
 ### The run reached its budget
 
@@ -558,7 +568,7 @@ no run '<run>' of a release of <slug> in <releases folder>
 run <run> is still running: bundle it once it ended (or cancel it)
 a wave of run <run> is running: bundle it once the wave ended
 <agent> has no run to bundle yet
-<folder> is not a run (no run.yaml, nor a release's state.json and call.json)
+<folder> is not a run (no run.yaml)
 ```
 
 **Cause.** `prometheus bundle` looks for a release's run in the releases folder of the machine it runs on, and `/agent-bundle` for one of the agent's own runs in its `runs/`. Neither bundles a run while it's still working: a release's run until it ended, an agent's run while a wave runs.
@@ -840,6 +850,16 @@ wave <w> was already launched as pi-subagents run <id> … and not recorded
 **Cause.** The session ended between launching the wave and recording the launch, so launching again would run the wave twice.
 
 **What the agent does.** The agent records the existing launch, then waits for it or records its result.
+
+### Branch switched before the launch
+
+```text
+wave <w> was compiled from commit <sha>, but <branch> (<sha>) is checked out now: its programs and gates would come from there. Do not launch it. …
+```
+
+**Cause.** Between compiling the wave and launching it, another commit was checked out, usually by a `git switch`. The wave would have run that branch's programs and gates instead of the run's own.
+
+**What the agent does.** It doesn't launch, and compiles the wave again, which switches back to the run's branch. If you left files uncommitted on the other branch, the compile can't switch and tells you so: commit or stash them, switch back with `git switch run/<id>`, and run `/agent-run` again. `/agent-auto` stops and hands the run to the model the same way.
 
 ### The wave's process is gone
 

@@ -11,9 +11,11 @@ A param reads the environment variable its `env:` names, else its name in upper
 case (email_folder -> EMAIL_FOLDER). Values come from the process environment
 first, then `.env` in the agent root (pydantic-settings), then the plan's
 default; values a run was started with (`run_steps.py start-run --params`, an API call) win
-over all of them for that run. `.env` is per machine and not in git, and never loaded
+over all of them for that run. A `per_run: true` param (a query) never reads or writes `.env`: its
+value is the run's own (given at start, or set once the run asks), else the environment, else the default. `.env` is per machine and not in git, and never loaded
 into pi's environment: the batcher adds the secrets a command names (run_compile.py).
 """
+import os
 import re
 from pathlib import Path
 
@@ -72,7 +74,12 @@ def load(root: Path, specs):
     given = (run.state.get("given_params") or {}) if run else {}
     values = {}
     for name, s in specs.items():
-        value = given.get(name) if kind(s) != "secret" and given.get(name) is not None else getattr(settings, name, None)
+        if kind(s) != "secret" and given.get(name) is not None:
+            value = given[name]
+        elif s.get("per_run"):  # never .env: a value saved there would answer the next run too
+            value = os.environ.get(env_name(name, s)) or None
+        else:
+            value = getattr(settings, name, None)
         if value is None and kind(s) != "secret" and s.get("default") not in (None, ""):
             value = str(s["default"])
         values[name] = value
@@ -119,14 +126,25 @@ def problems_with(specs, new):
 
 
 def set_values(root: Path, specs, new):
-    """Write {name: value} to `.env` for declared params that are not secrets;
-    returns a list of problems (nothing is written when there are any)."""
+    """Write {name: value} to `.env` for declared params that are not secrets, and to the active run for per_run
+    ones; returns a list of problems (nothing is written when there are any)."""
     specs = {n: spec_of(s) for n, s in (specs or {}).items()}
-    if problems := problems_with(specs, new):
+    problems = problems_with(specs, new)
+    per_run = {n: v for n, v in new.items() if n in specs and specs[n].get("per_run")}
+    run = run_folders.active_run(root) if per_run else None
+    if per_run and not run:
+        problems += [f"'{n}' is given for each run: set it once a run has started" for n in per_run]
+    if problems:
         return problems
+    if run:
+        run_dir = (Path(root) / run.dir).resolve()
+        run.state.setdefault("given_params", {}).update({n: resolve(n, specs[n], v, run_dir) for n, v in per_run.items()})
+        run.save()
     path = Path(root) / ENV_FILE
-    if not path.exists():
-        path.write_text(ENV_HEADER, encoding="utf-8")
     for n, v in new.items():
+        if n in per_run:
+            continue
+        if not path.exists():
+            path.write_text(ENV_HEADER, encoding="utf-8")
         set_key(path, env_name(n, specs[n]), str(v), quote_mode="auto")
     return []

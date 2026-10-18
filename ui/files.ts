@@ -1,4 +1,4 @@
-/** Files: your input files, uploads, an agent's outputs and folder, and what changed on its branch. */
+/** Files: your input files, chat attachments, an agent's outputs and folder, and what changed on its branch. */
 import { lstatSync, createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
@@ -34,9 +34,13 @@ export function listFiles(user: string, dir: string, res: ServerResponse) {
   const d = inside(base, dir);
   if (!d || !existsSync(d) || !statSync(d).isDirectory()) return send(res, 404, "no such folder");
   const entries = readdirSync(d, { withFileTypes: true })
-    .map((e) => {
-      const s = statSync(path.join(d, e.name));
-      return { name: e.name, dir: e.isDirectory(), size: s.size, modified: s.mtime.toISOString() };
+    .flatMap((e) => {
+      try {
+        const s = statSync(path.join(d, e.name));
+        return [{ name: e.name, dir: e.isDirectory(), size: s.size, modified: s.mtime.toISOString() }];
+      } catch {
+        return []; // a link with nothing behind it
+      }
     })
     .sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name));
   send(res, 200, { root: base, dir: path.relative(base, d), path: d, entries });

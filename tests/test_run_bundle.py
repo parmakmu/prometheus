@@ -54,7 +54,7 @@ def fake_released_run(tmp_path, slug="mailer", state="failed"):
     (records / "child-1").mkdir()
     (records / "child-1" / "status.json").write_text(json.dumps({"runId": "child-1", "state": "failed",
                                                                  "transcriptPath": "/etc/passwd"}), encoding="utf-8")  # not pi-subagents': never taken
-    (run / "state.json").write_text(json.dumps({"state": state, "error": "stage read failed", "launches": [
+    (run / "run.yaml").write_text(json.dumps({"status": state, "error": "stage read failed", "launches": [
         {"wave": "w1", "stages": ["read"], "subagent_run_id": "wave-1", "status": "failed", "cost_usd": 0.01}]}), encoding="utf-8")
     env = {**os.environ, "PI_SUBAGENTS_TEMP_ROOT": str(root), "TMPDIR": str(tmp_path / "tmp"), "MAILER_KEY": SECRET}
     return run, env
@@ -72,7 +72,7 @@ def test_a_bundle_holds_the_run_and_what_pi_subagents_kept_of_it(tmp_path, run_p
     assert r.data["warnings"] == ["run/pi.log: looks like an API key or token"], r  # the param's value replaced, the other reported
     files = read_bundle(r.data["bundle"])
     assert Path(r.data["bundle"]).name == "mailer-v1.0-20261016-101010-abcd.tgz"
-    assert {"run/call.json", "run/state.json", "run/events.jsonl", "run/pi.log", "run/.compiled/w1.json",
+    assert {"run/call.json", "run/run.yaml", "run/events.jsonl", "run/pi.log", "run/.compiled/w1.json",
             "subagents/async-subagent-runs/wave-1/status.json", "subagents/async-subagent-runs/child-1/status.json",
             "subagents/artifacts/child-1_reader_output.md", "sessions/pi-subagent-session-AbC/child-1/run-0/session.jsonl"} <= set(files)
     assert not any(n.startswith(("run/inputs", "run/work")) for n in files)  # the caller's data only when asked
@@ -126,7 +126,7 @@ def test_prune_keeps_failed_runs_for_a_bundle_then_takes_all_pi_subagents_kept(t
     assert not (pis / "async-subagent-runs" / "wave-1").exists() and not (pis / "async-subagent-runs" / "child-1").exists()
     assert not (pis / "artifacts" / "child-1_reader_output.md").exists()
     assert not (tmp_path / "tmp" / "pi-subagent-session-AbC" / "child-1" / "run-0" / "session.jsonl").exists()
-    assert (run / "state.json").is_file() and not (run / "work").exists() and Path("/etc/passwd").is_file()
+    assert (run / "run.yaml").is_file() and not (run / "work").exists() and Path("/etc/passwd").is_file()
 
 
 def make_bundle(tmp_path, run_py, *extra):
@@ -173,7 +173,7 @@ def test_a_bundle_of_another_agent_or_with_a_path_out_is_refused(tmp_path, run_p
     assert "is a run of mailer, not other" in run_py([SCRIPTS / "run_bundle.py", "add", bundle, "--agent", other]).data["error"]
     evil = tmp_path / "evil.tgz"
     with tarfile.open(evil, "w:gz") as tar:
-        for name, data in (("bundle.json", json.dumps({"format": 1, "agent": "other", "version": "v1", "run": "x"}).encode()),
+        for name, data in (("bundle.json", json.dumps({"format": 2, "agent": "other", "version": "v1", "run": "x"}).encode()),
                            ("../../escaped.txt", b"x")):
             member = tarfile.TarInfo(name)
             member.size = len(data)

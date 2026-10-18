@@ -169,3 +169,21 @@ def test_a_runs_given_values_win_over_env_for_that_run_only(tmp_path):
     (run / "run.yaml").write_text("status: done\ngiven_params: {table: given}\n", encoding="utf-8")
     assert wp.load(tmp_path, SPECS)["table"] == "from-env"
     assert wp.problems_with(SPECS, {"api_token": "x"}) and not wp.problems_with(SPECS, {"table": "x"})
+
+
+def test_a_per_run_value_is_kept_on_the_run_never_in_dotenv(tmp_path, monkeypatch):
+    # a query: answered for this run, asked again for the next; .env never reads or keeps it
+    specs = {**SPECS, "query": {"description": "q", "type": "text", "per_run": True}}
+    (tmp_path / ".env").write_text("QUERY=stale\n", encoding="utf-8")
+    assert wp.load(tmp_path, specs)["query"] is None
+    assert wp.set_values(tmp_path, specs, {"query": "q1"}) == ["'query' is given for each run: set it once a run has started"]
+    run = tmp_path / "runs" / "2026-10-18-1"
+    run.mkdir(parents=True)
+    (run / "run.yaml").write_text("status: active\n", encoding="utf-8")
+    assert wp.set_values(tmp_path, specs, {"query": "q1", "table": "t"}) == []
+    assert wp.load(tmp_path, specs)["query"] == "q1"
+    assert "QUERY=stale" in (tmp_path / ".env").read_text(encoding="utf-8") and "q1" not in (tmp_path / ".env").read_text(encoding="utf-8")
+    (run / "run.yaml").write_text("status: done\n", encoding="utf-8")
+    assert wp.load(tmp_path, specs)["query"] is None  # the next run asks again
+    monkeypatch.setenv("QUERY", "from-the-job")  # an unattended run (pi -p "/agent-auto") sets it in its environment
+    assert wp.load(tmp_path, specs)["query"] == "from-the-job"

@@ -150,6 +150,8 @@ def compile_wave(a):
 
 
 def start_wave(a):
+    # it records a launch the subagent tool already made (it needs the launch's id), so a guard here can't stop one:
+    # no guard_on_run_branch, which would only leave a running launch unrecorded. The entry keeps its branch and commit.
     guard_between_waves(a)
     guard(not a.plan_error, f"{a.plan_error}. No wave compiles from this plan, so none can have launched from it")
     return [a.update(wave=True)]
@@ -254,6 +256,7 @@ def require(agent_dir, action, *args):
 
 
 # --- invariants: true in every state (Quint's vals) -------------------------------------------------
+# Properties of moves ("never launch from a plan that can't run") are not here: they are the actions' guards.
 
 INVARIANTS = {
     "a wave runs only in an active run": lambda a: not a.wave or a.run,

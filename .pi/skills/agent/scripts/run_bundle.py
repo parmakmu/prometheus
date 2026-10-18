@@ -6,13 +6,13 @@ Usage:
   run_bundle.py show [--run DIR | --agent DIR]
   run_bundle.py add FILE [--agent DIR]
 
-make   writes <slug>-<version>-<run>.tgz from a run folder: a release's (prometheus/run_release.py: call.json, state.json;
+make   writes <slug>-<version>-<run>.tgz from a run folder: a release's (prometheus/run_release.py: call.json, run.yaml;
        `kind: release`, its version, and its commit from RELEASE.json) or the agent's own (run.yaml: `kind: run`, version r<revision>, the
        commit of its branch; for an agent copied elsewhere, which has no prometheus). With --agent and no --run: that
        agent's active run, else its last. The bundle holds bundle.json (agent, version, commit, run, state, error, the
        prometheus, Pi and pi-subagents versions, each launch's children with their status, error, output and where
        their session is in the bundle, and `paths`: each file pi-subagents named, to where it is in the bundle), run/
-       (a release's call.json, state.json, events.jsonl, pi.log; an agent's run.yaml; .compiled/), subagents/
+       (run.yaml, .compiled/; a release's call.json, events.jsonl, pi.log), subagents/
        (pi-subagents' records of the run's launches, utils.launch_records: each wave's folder and its children's),
        sessions/ (the children's session files) and, for an agent's run, agent-sessions/ (its own Pi sessions that
        overlap the run: `sessions`). --with-files adds the run's data folders (a release's inputs/, outputs/ and work/,
@@ -22,8 +22,8 @@ make   writes <slug>-<version>-<run>.tgz from a run folder: a release's (prometh
 show   prints what the bundle would say (bundle.json without `paths`) and a release's last events, packing
        nothing: `prometheus runs <slug> <run>` on the machine the run ran on.
 add    unpacks a bundle into the agent's runs/imported/<version>-<run>/ (once; again is a no-op), for /agent-improve:
-       session_digest.py reads it as evidence. It is not one of the agent's runs (runs.list_runs and
-       list_released_runs never see it), so nothing is reused from it. Refused for another agent's bundle; `warnings`
+       session_digest.py reads it as evidence. It is not one of the agent's runs (run_folders.list_runs never
+       sees it), so nothing is reused from it. Refused for another agent's bundle; `warnings`
        when the commit that ran isn't in this repository or not on main (the fix starts from other code).
 """
 import datetime
@@ -39,7 +39,7 @@ from typing import Annotated
 import agent_params
 import agent_repo
 import typer
-from run_folders import Run, active_run, list_runs, read_run
+from run_folders import Run, active_run, is_release_run, list_runs, read_run
 from session_digest import default_sessions_dir, moment, session_start
 from utils import (
     SECRET_PATTERNS,
@@ -54,9 +54,9 @@ from utils import (
 )
 
 app = typer.Typer(add_completion=False)
-FORMAT = 1
+FORMAT = 2  # 2: a release's run keeps run.yaml, as an agent's does (was state.json)
 IMPORTED = Path("runs") / "imported"
-RUN_FILES = ("call.json", "state.json", "events.jsonl", "pi.log", ".compiled")
+RUN_FILES = ("call.json", "run.yaml", "events.jsonl", "pi.log", ".compiled")
 DATA_FOLDERS = ("inputs", "outputs", "work")
 AGENT_RUN_FILES = ("run.yaml", ".compiled")  # an agent's own run: its params are paths of its machine, not in the run
 AGENT_DATA_FOLDERS = ("work",)
@@ -144,14 +144,14 @@ def describe_children(folder: Path, paths: dict, run_dir: Path) -> list[dict]:
 def describe_release_run(run_dir: Path, ended: bool):
     """A release's run (prometheus/run_release.py): its facts for bundle.json, its launches, and its files and data folders;
     `ended`: refuse one still running (a bundle)."""
-    state, call = read_json(run_dir / "state.json"), read_json(run_dir / "call.json")
-    if ended and state.get("state") == "running":
+    state, call = read_run(run_dir), read_json(run_dir / "call.json")
+    if ended and state.get("status") == "running":
         refuse(f"run {run_dir.name} is still running: bundle it once it ended (or cancel it)")
     agent_dir = run_dir.parent.parent  # releases/<slug>/<version>/runs/<id>
     release = read_json(agent_dir / "RELEASE.json") or {}  # written when it was unpacked (prometheus/run_release.py)
     facts = {"kind": "release", "agent": call.get("agent") or agent_name(agent_dir), "version": call.get("version"),
              "commit": release.get("commit"),
-             "state": state.get("state"), "error": state.get("error")}
+             "state": state.get("status"), "error": state.get("error")}
     return agent_dir, facts, state.get("launches") or [], RUN_FILES, DATA_FOLDERS
 
 
@@ -194,14 +194,14 @@ def collect(run_dir: Path | None, agent_dir: Path | None, with_files: bool, ende
         if run_dir is None:
             refuse(f"{(agent_dir or Path('.')).resolve().name} has no run to bundle yet")
     run_dir = run_dir.resolve()
-    if (run_dir / "run.yaml").is_file():
-        agent_dir, facts, launches, run_files, data_folders = describe_agent_run(run_dir, ended)
-        sessions = find_agent_sessions(agent_dir, read_run(run_dir))
-    elif isinstance(read_json(run_dir / "state.json"), dict) and isinstance(read_json(run_dir / "call.json"), dict):
+    if not (run_dir / "run.yaml").is_file():
+        refuse(f"{run_dir} is not a run (no run.yaml)", 2)
+    if is_release_run(run_dir):
         agent_dir, facts, launches, run_files, data_folders = describe_release_run(run_dir, ended)
         sessions = []
     else:
-        refuse(f"{run_dir} is not a run (no run.yaml, nor a release's state.json and call.json)", 2)
+        agent_dir, facts, launches, run_files, data_folders = describe_agent_run(run_dir, ended)
+        sessions = find_agent_sessions(agent_dir, read_run(run_dir))
 
     entries = {}  # name in the bundle -> file
     for name in run_files + (data_folders if with_files else ()) + (str(CHILD_RECORDS),):
@@ -233,7 +233,7 @@ def collect(run_dir: Path | None, agent_dir: Path | None, with_files: bool, ende
     return agent_dir, info, entries
 
 
-RUN_OPTION = Annotated[Path | None, typer.Option("--run", help="a run folder: a release's (state.json) or the agent's own (run.yaml)")]
+RUN_OPTION = Annotated[Path | None, typer.Option("--run", help="a run folder: a release's or the agent's own")]
 AGENT_OPTION = Annotated[Path | None, typer.Option("--agent", help="without --run: the agent whose active (else last) run to take")]
 EVENTS_SHOWN = 20
 

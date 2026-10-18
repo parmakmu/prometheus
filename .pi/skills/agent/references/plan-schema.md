@@ -58,7 +58,18 @@ params:
     description: API token for the CRM
     type: secret
     env: CRM_API_TOKEN      # default: the name in upper case
+  question:
+    description: what to look up this time
+    type: text
+    per_run: true           # asked for each run, kept on the run, never in .env
 ```
+
+A `per_run` param is one whose value differs every run (a question, a
+search, a date). Its value is the run's own: given when the run starts, or
+asked for when it is missing, and never saved to `.env`, so the next run
+asks again. A model stage reads it through a text input
+(`{id: question, kind: text, path: ${question}}`), which puts the value in
+the child's task.
 
 | type | value | `${name}` compiles to |
 |---|---|---|
@@ -78,7 +89,7 @@ paths resolve in `runs/<id>/work/`, the children's `cwd`.
 - *warning* a literal absolute path in an input or output `path` or a gate command.
 - **rule** a param's variable is a valid name, not a system or tool one
   (`PATH`, `HOME`, `PI_…`), and not shared with another param.
-- **rule** a secret has no `default` and is never part of a path.
+- **rule** a secret has no `default`, is never part of a path, and is never `per_run`.
 - *warning* a param nothing uses (secrets excepted).
 
 ## Inputs and outputs

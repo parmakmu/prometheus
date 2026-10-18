@@ -11,7 +11,7 @@ const paths = new Map<string, string>(); // attachment id → path on the server
 // "image" is what makes the chat draw a picture's own thumbnail; anything else is shown by its type icon
 const kind = (file: File) => (file.type.startsWith("image/") ? "image" : "file");
 
-// The file goes to the uploads/ folder of the one you're talking to: the agent's, or prometheus's for the planner.
+// The file goes to your files folder under the agent's name (files/<slug>/), or to prometheus's inputs/ for the planner.
 export const uploadsOf = (slug: string | null) => {
   const base = slug ? `/a/${slug}` : "/p";
   return { put: (name: string) => `${base}/upload?unique=1&path=${encodeURIComponent(name)}`, del: (name: string) => `${base}/upload?path=${encodeURIComponent(name)}` };

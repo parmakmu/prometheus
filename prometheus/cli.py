@@ -604,7 +604,7 @@ def prune(
 def find_released_run(slug: str, run_id: str) -> Path:
     """A release's run folder, whichever release it ran."""
     from prometheus.run_release import get_releases
-    found = [d for d in (get_releases() / slug).glob(f"*/runs/{run_id}") if (d / "state.json").is_file()]
+    found = [d for d in (get_releases() / slug).glob(f"*/runs/{run_id}") if (d / "run.yaml").is_file()]
     if not found:
         raise PrometheusError(f"no run {run_id!r} of a release of {slug} in {get_releases() / slug}")
     return found[0]
@@ -613,17 +613,16 @@ def find_released_run(slug: str, run_id: str) -> Path:
 def list_released_runs(slug: str) -> list[dict]:
     """Every run of every release of `slug` here, oldest first: id, version (the one it was called as), state, start,
     cost, error."""
-    from prometheus.run_release import get_releases
+    from prometheus.run_release import get_releases, state_of
     run_folders, read_json = import_script("run_folders"), import_script("utils").read_json
     found = []
     for folder in (get_releases() / slug).glob("*"):
-        for run_id, run_dir in run_folders.list_released_runs(folder):
-            state, call = read_json(run_dir / "state.json") or {}, read_json(run_dir / "call.json") or {}
-            started = (run_dir / "call.json").stat().st_mtime if (run_dir / "call.json").exists() else 0
-            found.append({"run": run_id, "version": call.get("version"), "state": state.get("state"), "started": started,
+        for run_id, run_dir in run_folders.list_runs(folder):
+            state, call = run_folders.read_run(run_dir), read_json(run_dir / "call.json") or {}
+            found.append({"run": run_id, "version": call.get("version"), "state": state_of(state), "started": state.get("started_at"),
                           "cost_usd": round(sum(x.get("cost_usd") or 0 for x in state.get("launches") or []), 4),
                           "error": state.get("error")})
-    return sorted(found, key=lambda r: r["started"])
+    return sorted(found, key=lambda r: str(r["started"] or ""))
 
 
 @app.command("runs", short_help="a release's runs here, or how one went", rich_help_panel="Releases")
@@ -637,7 +636,7 @@ def show_runs(
     if run_id is None:
         found = list_released_runs(slug)
         for r in found:
-            r["started"] = datetime.datetime.fromtimestamp(r["started"]).astimezone().isoformat(timespec="seconds")
+            r["started"] = r["started"] and datetime.datetime.fromisoformat(r["started"]).astimezone().isoformat(timespec="seconds")
         if as_json:
             print(json.dumps(found, indent=1))
             return
@@ -651,12 +650,14 @@ def show_runs(
         for r in found:
             color = {"complete": "green", "failed": "red", "error": "red", "input_required": "yellow"}.get(r["state"], "")
             table.add_row(r["run"], r["version"], f"[{color}]{r['state']}[/]" if color else str(r["state"]),
-                          r["started"][:16].replace("T", " "), f"${r['cost_usd']:.4f}", (r["error"] or "")[:80])
+                          (r["started"] or "")[:16].replace("T", " "), f"${r['cost_usd']:.4f}", (r["error"] or "")[:80])
         console.print(table)
         return
+    from prometheus.run_release import state_of
     shown = run_script("run_bundle.py", "show", "--run", str(find_released_run(slug, run_id)))
     if not shown.get("ok"):
         raise PrometheusError(shown.get("error") or "run_bundle.py failed")
+    shown["state"] = state_of({"status": shown.get("state")})  # what the run recorded, as callers see it
     if as_json:
         print(json.dumps(shown, indent=1))
         return

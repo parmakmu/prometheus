@@ -9,7 +9,9 @@ When `agent_compile_wave` is not `ok`, handle its `preflight`, then compile agai
 - `missing_params` — ask each value in plain chat (a value, not a choice):
   what it is for (its `description`); for files and folders an absolute path
   (`~/…` is fine) with an example. Set with `agent_set_params` and
-  compile again; it rejects relative or missing input paths.
+  compile again; it rejects relative or missing input paths. A `per_run`
+  param is asked every run and kept for this run only: if the user's note
+  already says it, set it from the note instead of asking.
 - `missing_secrets` — never ask for or read a secret, and never read or
   print `.env`. Tell the user the variable and its purpose: add
   `NAME=value` to the agent's `.env` (or the environment). When they say

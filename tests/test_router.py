@@ -262,15 +262,24 @@ def test_the_router_runs_an_agents_git_in_its_sandbox(tmp_path, run_py, backend)
         stop(proc)
 
 
-def test_an_upload_does_not_follow_a_link_an_agent_left(tmp_path, run_py):
+def test_an_agents_attachment_goes_to_your_files_folder_and_follows_no_link(tmp_path, run_py):
     agent = agent_home(tmp_path, run_py)
+    attached = tmp_path / "ada" / "files" / "s"  # your files folder, under the agent's name: not the agent's folder
     outside = tmp_path / "outside"
     outside.mkdir()
-    (agent / "uploads").mkdir(exist_ok=True)
-    (agent / "uploads" / "link").symlink_to(outside)
-    (agent / "uploads" / "dangling").symlink_to(outside / "new.txt")
+    attached.mkdir(parents=True)
+    (attached / "link").symlink_to(outside)
+    (attached / "dangling").symlink_to(outside / "new.txt")
+    head = {"X-Forwarded-User": "ada", "X-Proxy-Secret": SECRET}
     proc, port = start(TRUST_USER_HEADER="x-forwarded-user", PROXY_SECRET=SECRET, USERS_ROOT=str(tmp_path))
     try:
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/a/s/upload?unique=1&path=mail.eml", method="PUT", data=b"hi",
+                                     headers={"Host": "localhost", **head})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            assert json.loads(r.read())["path"] == str(attached / "mail.eml")
+        assert not (agent / "uploads").exists()
+        code, body = get(port, "/files?dir=s", head)
+        assert code == 200 and "mail.eml" in body, body
         for target in ("link/x.txt", "link/deep/x.txt", "dangling"):
             req = urllib.request.Request(f"http://127.0.0.1:{port}/a/s/upload?path={target}", method="PUT", data=b"payload",
                                          headers={"Host": "localhost", "X-Forwarded-User": "ada", "X-Proxy-Secret": SECRET})
@@ -282,22 +291,22 @@ def test_an_upload_does_not_follow_a_link_an_agent_left(tmp_path, run_py):
         stop(proc)
 
 
-def test_the_planner_has_uploads_and_the_page_sees_only_them(tmp_path, run_py):
+def test_the_planner_has_inputs_and_the_page_sees_only_them(tmp_path, run_py):
     home = agent_home(tmp_path, run_py).parent.parent
-    (home / "uploads").mkdir()
-    (home / "uploads" / "away").symlink_to(home / ".pi")
+    (home / "inputs").mkdir()
+    (home / "inputs" / "away").symlink_to(home / ".pi")
     head = {"X-Forwarded-User": "ada", "X-Proxy-Secret": SECRET}
     proc, port = start(TRUST_USER_HEADER="x-forwarded-user", PROXY_SECRET=SECRET, USERS_ROOT=str(tmp_path))
     try:
         req = urllib.request.Request(f"http://127.0.0.1:{port}/p/upload?unique=1&path=sample.txt", method="PUT", data=b"hi",
                                      headers={"Host": "localhost", **head})
         with urllib.request.urlopen(req, timeout=10) as r:
-            assert json.loads(r.read())["path"] == str(home / "uploads" / "sample.txt")
-        code, body = get(port, "/p/tree?dir=uploads", head)
+            assert json.loads(r.read())["path"] == str(home / "inputs" / "sample.txt")
+        code, body = get(port, "/p/tree?dir=inputs", head)
         assert code == 200 and "sample.txt" in body, body
-        assert get(port, "/p/download?path=uploads/sample.txt", head) == (200, "hi")
-        for bad in ("/p/tree?dir=", "/p/tree?dir=.pi", "/p/tree?dir=uploads/../.pi", "/p/tree?dir=uploads/away",
-                    "/p/download?path=.pi/APPEND_SYSTEM.md", "/p/download?path=uploads/away/APPEND_SYSTEM.md"):
+        assert get(port, "/p/download?path=inputs/sample.txt", head) == (200, "hi")
+        for bad in ("/p/tree?dir=", "/p/tree?dir=.pi", "/p/tree?dir=inputs/../.pi", "/p/tree?dir=inputs/away",
+                    "/p/download?path=.pi/APPEND_SYSTEM.md", "/p/download?path=inputs/away/APPEND_SYSTEM.md"):
             assert get(port, bad, head)[0] == 404, bad
     finally:
         stop(proc)

@@ -33,6 +33,22 @@ The plan refers to a param as `${email_folder}` in input and output paths, in st
 | `text` | a table name, URL, account id, anything that is not a path | the value, exactly as given |
 | `secret` | keys, tokens, passwords | `"${ENV_NAME}"`, which the shell of a stage program or its gate expands; the value itself is never written anywhere |
 
+### Values that change every run
+
+A param whose value is different each time, such as a question to answer or a term to search for, is marked `per_run: true`:
+
+```yaml
+params:
+  question:
+    description: what to look up this time
+    type: text
+    per_run: true
+```
+
+Its value belongs to one run. `/agent-run` asks for it, or takes it from what you typed after the command, and keeps it on that run instead of in `.env`, so the next run asks again rather than quietly answering the last question. An unattended run (`pi -p "/agent-auto"`) reads it from the environment it was started with. Callers of a released agent give it like any other value. A secret can't be `per_run`.
+
+### Where secrets reach
+
 A secret can be used only in a stage program's `args` and in that stage's gate. Those are the commands the batcher runs, which no model can steer, so no model child ever gets a secret.
 
 That's deliberate. Every child of a run shares one sandbox and one environment, and a child reading an email can be told by that email to send what it finds somewhere. So a stage that needs a token to call a service does it with a program, or through a connector.
@@ -67,7 +83,7 @@ It is in the agent's `.gitignore`, so it is never committed, and exports leave i
 - **Paths and text:** run `/agent-run`. If a required value is missing, the agent asks for it in chat and writes it to `.env`. For files and folders, give an absolute path (`~/…` is fine). A relative input path, or one that doesn't exist, is refused and asked for again. You can also edit `.env` yourself.
 - **Secrets:** add them yourself, to `.env` or to the environment you start Pi from. The agent never asks for a secret's value. When one is missing, it tells you which variable to set and what it is for, then waits. You don't need to restart Pi: `.env` is read afresh each time it's needed.
 
-To point the next run at different input, change the value in `.env` (or tell `/agent-run` that the input changed). Values persist across runs.
+To point the next run at different input, change the value in `.env` (or tell `/agent-run` that the input changed). Values persist across runs, except a `per_run` param's, which each run asks for.
 
 ## What happens to secrets
 

@@ -56,7 +56,8 @@ def test_a_message_becomes_a_task_whose_outputs_are_artifacts(agent):  # noqa: F
     task = r.json()["task"]
     assert (task["contextId"], task["status"]["state"]) == ("ctx-1", "TASK_STATE_COMPLETED")
     assert task["artifacts"] == [{"artifactId": "count_file", "name": "count_file",
-                                  "parts": [{"url": f"{PUBLIC}/runs/{task['id']}/outputs/count_file", "filename": "count.txt"}]}]
+                                  "parts": [{"text": "3\n", "mediaType": "text/plain"},  # small text: inline too
+                                            {"url": f"{PUBLIC}/runs/{task['id']}/outputs/count_file", "filename": "count.txt"}]}]
     assert c.get(f"/runs/{task['id']}/outputs/count_file").content == b"3\n"
     assert c.get(f"/tasks/{task['id']}").json()["status"]["state"] == "TASK_STATE_COMPLETED"
     listed = c.get("/tasks", params={"contextId": "ctx-1"}).json()

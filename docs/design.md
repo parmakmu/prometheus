@@ -141,6 +141,7 @@ The same reasoning applies to the `subagent` tool itself. pi-subagents starts a 
 - It hashes an input's contents, not where it lives. When the emails moved from `scratch/` to the agent's `uploads/`, an unchanged stage paid for a model again only because its path had changed.
 - It includes the agent's settings and pi-subagents' version, either of which can change a builtin subagent's model or prompt.
 - A map stage (one that splits its items into batches) is fingerprinted as a whole: its items' contents, batch size, instructions, subagent and model. At first map stages had none, so email-summaries judged the same eight emails on every run, and nothing after a map could be reused either.
+- A merged map stage (`pattern: map`) is also reused item by item. One email more used to change the whole stage's fingerprint, so every email was judged again. Now the merge stores each item's record in the run, keyed by the item (a file's name and contents, or the line or row itself), under a fingerprint of the stage without what it maps over or its batch size. The next run's split leaves out the items an earlier run that finished the stage has stored, and its merge puts their records back in item order, so only new or changed items reach a model. A record names its item, which is how the merge already checked coverage, so the batch children's contract didn't change. A `map_reduce` stage still counts whole, since its reduce combines batches rather than keeping one result per item.
 - Outputs count anywhere inside the run, not only in `work/`. email-summaries writes `outputs/summaries.json`, and was judged again on its second run until this changed.
 
 **What is never reused.** Side effects, because doing them is the point. A stage that reads an app or a URL, or whose subagent has a connector, because what it reads there is not in any file the fingerprint could cover. An output written outside the run, to a path you chose, because every run overwrites it and there is nothing to copy from.
@@ -327,7 +328,7 @@ A release is a tag, `v<major>.<minor>`, on `main`. The tag's message holds the i
 
 ### Released runs pause instead of refusing
 
-**The rule.** A released run that reaches a decision or an unapproved side effect stops and waits, in what A2A calls `input-required`. `Run.answer()`, `POST /runs/<id>/answer` or an A2A message with the task's id lets it go on, from any process, because the run's state is in its folder (`state.json`). A run records the process driving it and when that process started, so a run whose process died ends as an error.
+**The rule.** A released run that reaches a decision or an unapproved side effect stops and waits, in what A2A calls `input-required`. `Run.answer()`, `POST /runs/<id>/answer` or an A2A message with the task's id lets it go on, from any process, because the run's state is in its folder (`run.yaml`, the same file an agent's own run keeps). A run records the process driving it and when that process started, so a run whose process died ends as an error.
 
 **Without it.** A decision stopped a released run with nothing to resume, and a run whose server restarted would have waited forever, even after another process got the same pid.
 

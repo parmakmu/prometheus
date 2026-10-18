@@ -614,6 +614,11 @@
      "default": true,
      "title": "Required",
      "type": "boolean"
+    },
+    "per_run": {
+     "default": false,
+     "title": "Per Run",
+     "type": "boolean"
     }
    },
    "required": [

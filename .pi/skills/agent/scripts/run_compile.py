@@ -14,7 +14,8 @@ that at the agent's gates/ folder.
 It refuses a wave already launched but not recorded (see unrecorded_launch).
 A model stage an earlier run finished on the same inputs is not launched again:
 its outputs are copied from that run (reuse_earlier; fingerprints in the
-`inputs` of runs/<id>/.compiled/<wave>.json).
+`inputs` of runs/<id>/.compiled/<wave>.json). A merged map stage that can't be
+reused whole maps only the items no earlier run stored a record for (reuse_items).
 Before compiling, it commits pending changes to the agent's plan
 (agent_repo.py) and returns the commit, so the launch is reproducible; that is
 the only change it makes to the agent. Git is required.
@@ -30,7 +31,7 @@ a user review, resolving provisional stages).
 --check     planning check: compile every concrete pending wave (no run needed)
 --frozen    a released agent's run (agent_release.py), in this folder, with --params and --approve from
             the caller and no active run, commit or .env: the next wave after the stages its
-            state.json records as done, or the whole plan as one (`all`) when nothing in it asks
+            run.yaml records as done, or the whole plan as one (`all`) when nothing in it asks
             anyone; a decision or an unapproved side effect is in "preflight", for the caller
             to answer; {"ok": true, "done": true} when no stage is left
 
@@ -71,8 +72,8 @@ from ruamel.yaml.error import YAMLError
 from run_folders import (
     RUNS,
     active_run,
-    list_released_runs,
     list_runs,
+    read_run,
     read_wave,
     read_wave_spec,
     stages_done,
@@ -94,6 +95,7 @@ HERE = Path(__file__).resolve().parent
 PARAM_RE = re.compile(r"\$\{([^}]*)\}")
 GATES_RE = re.compile(r"(?<![\w./-])\.\./gates/")
 BATCHER = "batcher"
+BATCH_REQUEST = "BATCH_TOOL_REQUEST "  # the line run_batcher.py reads its request from
 SINGLE = {"script", "worker", "scout", "reviewer"}
 RUNNER = HERE / "wave_runner.js"  # appended to every compiled wave
 
@@ -411,7 +413,7 @@ class Compiler:
         fix = self.item(key, st, in_wave, fix_task, output=output)
         fix["key"], fix["label"] = f"{key}-fix", f"{st.get('title', key)} (fix the program)"
         return {"key": key, "label": st.get("title", key), "agent": BATCHER, "cwd": str(self.work),
-                "task": "BATCH_TOOL_REQUEST " + json.dumps(req), "fix": fix}
+                "task": BATCH_REQUEST + json.dumps(req), "fix": fix}
 
     def consumed_path(self, cid):
         """Where an id a stage reads is: an input's path, or the path of the stage output that produces it."""
@@ -435,7 +437,7 @@ class Compiler:
             req["timeout"] = timeout
         req.update(self.secrets_for(req))
         return {"key": key, "label": st.get("title", key), "agent": BATCHER, "cwd": str(self.work),
-                "task": "BATCH_TOOL_REQUEST " + json.dumps(req)}
+                "task": BATCH_REQUEST + json.dumps(req)}
 
     def batcher_gate(self, st):
         """{gate, gate_json} for batcher, which runs the stage's gate itself (no acceptance on a command runner)."""
@@ -512,7 +514,7 @@ class Compiler:
                  ("\nThis is one batch of a larger set. Work only on the items in your batch file; "
                   "the output path above is replaced by your batch output path below.\n"),)),
              "split": {"key": f"{key}-split", "agent": BATCHER, "label": f"Split items: {key}", "cwd": str(self.work),
-                       "task": "BATCH_TOOL_REQUEST " + json.dumps(split_req)}}
+                       "task": BATCH_REQUEST + json.dumps(split_req)}}
         if st.get("context"):
             m["context"] = st["context"]
         if model := self.model(st):
@@ -549,12 +551,13 @@ class Compiler:
         return {"review": review}
 
     # --- wave ------------------------------------------------------------------------
-    def fingerprint(self, key, item, review, in_wave):
+    def fingerprint(self, key, item, review, in_wave, skip=None):
         """What a model stage's output depends on, hashed: its child and review items (this run's
         folder masked), the contents of what it reads, its subagent's file, program and gates.
         None when that can't be known: it reads an app or url, a returned result, or the output of
         a stage in this wave that has no fingerprint (a program). A map stage's item is its map step: its
-        batch size, instructions, subagent and model; what it maps over is among its reads."""
+        batch size, instructions, subagent and model; what it maps over is among its reads. `skip`: a read
+        left out (what a map stage maps over, for the fingerprint its items are stored under)."""
         text = canonical([item, review]).replace(str(self.run_dir), "<run>")
         # an input's place is masked: its contents are hashed below, so the same files moved elsewhere (run
         # 2026-10-05-1: scratch/emails to uploads/emails) still reuse
@@ -566,6 +569,8 @@ class Compiler:
                     text = text.replace(form, f"<input {cid}>")
         h = hashlib.sha256(text.encode())
         for cid in self.stages[key].get("reads") or []:
+            if cid == skip:
+                continue
             if cid in self.inputs:
                 inp = self.inputs[cid]
                 if inp.get("kind") == "text":
@@ -598,28 +603,33 @@ class Compiler:
                 digest_tree(f, h)
         return h.hexdigest()
 
+    def can_reuse(self, key):
+        """Whether a stage's work may be taken from an earlier run: a model stage with no side effect, not resumed,
+        not `reuse: false`, its outputs inside the run (work/, or outputs/ by a relative param: an earlier run has
+        them at the same place to copy from; one written elsewhere, a path the user chose, is overwritten by each
+        run), and no subagent with connector tools, which may act on or read what no file shows."""
+        st = self.stages[key]
+        outs = [self.out_path(o) for o in st.get("writes") or [] if isinstance(o, dict)]
+        tools = agent_tools(project_subagents(self.agent_dir).get(st.get("agent")) or {})
+        return not (stage_kind(st) not in ("judgment", "deterministic") or st.get("resumes") or st.get("reuse") is False
+                    or not outs or not all(o and Path(o).is_relative_to(self.run_dir) for o in outs)
+                    or any(t.startswith("mcp:") for t in tools))
+
     def reuse_earlier(self, key, item, review, in_wave):
         """Mark a model stage with no side effect `reuse` when an earlier run finished it with the same
         fingerprint: the same judgment on the same inputs is not made again. compile_wave's main copies
         its outputs from that run's work/. A map stage (`item`: its map step) counts as finished there when
-        its merge or reduce completed, or it was reused itself. Not for a subagent with connector tools,
-        which may act on or read what no file shows. Returns that run's id, or None."""
+        its merge or reduce completed, or it was reused itself. Returns that run's id, or None."""
         st = self.stages[key]
         outs = [self.out_path(o) for o in st.get("writes") or [] if isinstance(o, dict)]
-        tools = agent_tools(project_subagents(self.agent_dir).get(st.get("agent")) or {})
-        if (stage_kind(st) not in ("judgment", "deterministic") or st.get("resumes")
-                or st.get("reuse") is False
-                # its outputs inside the run (work/, or outputs/ by a relative param): an earlier run has them at the same
-                # place to copy from; one written elsewhere (a path the user chose) is overwritten by each run
-                or not outs or not all(o and Path(o).is_relative_to(self.run_dir) for o in outs)
-                or any(t.startswith("mcp:") for t in tools)):  # a connector: outside state no file shows
+        if not self.can_reuse(key):
             return None
         fp = self.fingerprint(key, item, review, in_wave)
         if not fp:
             return None
         self.fingerprints[key] = fp
         # an agent's runs, or a release's (prometheus/run_release.py): the same judgment, made once across calls too
-        for rid, d in reversed(list_runs(self.agent_dir) + list_released_runs(self.agent_dir)):
+        for rid, d in reversed(list_runs(self.agent_dir)):
             if rid == self.run_id or key not in stages_done(d):
                 continue
             for path in (d / ".compiled").glob("*.json"):
@@ -632,6 +642,42 @@ class Compiler:
                     self.reused_from[key] = rid
                     return rid
         return None
+
+    def item_store(self, key):
+        """Where a map stage's merge stores each item's record in this run, one file per item (run_batcher.py merge)."""
+        return self.work / key / "items"
+
+    def item_fingerprint(self, key, m, review, in_wave):
+        """What each item's record of a merged map stage depends on besides the item itself: the stage's fingerprint
+        without what it maps over, and without its split (the batch size: an item's record is its own). Recorded as
+        `<key>/items` among the wave's fingerprints, so a later run finds the records this run stores. None when the
+        stage's work can't be reused, or it is a map_reduce (its batch results are combined, not one per item)."""
+        st = self.stages[key]
+        if st.get("pattern") != "map" or not self.can_reuse(key):
+            return None
+        fp = self.fingerprint(key, {k: v for k, v in m.items() if k != "split"}, review, in_wave,
+                              skip=(st.get("map") or {}).get("over"))
+        if fp:
+            self.fingerprints[f"{key}/items"] = fp
+        return fp
+
+    def reuse_items(self, key, m, fp):
+        """Hand the map step's split the item stores of earlier runs that finished the stage with item fingerprint
+        `fp`, newest first (each holds every item its run covered: a merge stores the reused records too), so it leaves
+        the items they hold out of the batches; and its merge the split's list of items and this run's store. Returns
+        how many stores it found."""
+        stores = []
+        for rid, d in reversed(list_runs(self.agent_dir)):
+            store = d / self.item_store(key).relative_to(self.run_dir)
+            if rid == self.run_id or key not in stages_done(d) or not store.is_dir():
+                continue
+            if any(((read_json(p) or {}).get("inputs") or {}).get(f"{key}/items") == fp for p in (d / ".compiled").glob("*.json")):
+                stores.append(str(store))
+        items_file = str(self.work / key / "items.json")
+        split = json.loads(m["split"]["task"].removeprefix(BATCH_REQUEST))
+        m["split"]["task"] = BATCH_REQUEST + json.dumps({**split, "items_file": items_file, "stores": stores})
+        m["merge"].update({"items_file": items_file, "store": str(self.item_store(key))})
+        return len(stores)
 
     def reuse_finished(self, wid, steps):
         """Mark the layer children that completed in the wave's last (failed or blocked) launch with
@@ -755,6 +801,8 @@ class Compiler:
                 steps.append({"layer": items})
             for s in maps:
                 step = self.map_step(s, self.stages[s], in_wave_done)
+                # before the whole stage's: recorded even when the stage is reused whole, whose store is copied too
+                item_fp = self.item_fingerprint(s, step["map"], reviews.get(s), in_wave_done) if reuse else None
                 if reuse and (rid := self.reuse_earlier(s, step["map"], reviews.get(s), in_wave_done)):
                     # the same items and stage as an earlier run: its merged (or reduced) output is copied, and the
                     # stage stands in the wave as one reused item, so its split, batches and merge aren't launched
@@ -763,6 +811,9 @@ class Compiler:
                     self.notes.append(f"{s}: reused from run {rid} (same items and stage): its output is copied, not mapped again")
                     children.append(s)
                     continue
+                if item_fp and (n := self.reuse_items(s, step["map"], item_fp)):
+                    self.notes.append(f"{s}: items {'an earlier run' if n == 1 else f'{n} earlier runs'} already mapped "
+                                      "with this stage are left out of its batches; their results are merged back in")
                 steps.append(step)
                 children += [f"{s}-split", f"{s}-<n>", f"{s}-merge" if self.stages[s].get("pattern") == "map" else f"{s}-reduce"]
             for s, review in reviews.items():
@@ -814,8 +865,11 @@ class Compiler:
         """Copy each reused stage's outputs from the earlier run into this one, at the same place in the run."""
         for key, rid in self.reused_from.items():
             src = self.run_dir.parent / rid
-            for o in self.stages[key].get("writes") or []:
-                rel = Path(self.out_path(o)).relative_to(self.run_dir)
+            rels = [Path(self.out_path(o)).relative_to(self.run_dir) for o in self.stages[key].get("writes") or []]
+            # a map stage's item store, so a later run with some items changed still finds the rest here
+            if (src / (store := self.item_store(key).relative_to(self.run_dir))).is_dir():
+                rels.append(store)
+            for rel in rels:
                 (self.run_dir / rel).parent.mkdir(parents=True, exist_ok=True)
                 if (src / rel).is_dir():
                     shutil.copytree(src / rel, self.run_dir / rel, dirs_exist_ok=True)
@@ -845,7 +899,7 @@ def asks_someone(st, approvals):
 def compile_frozen(agent_dir, plan, run_dir, values, approvals, state=None, reuse=False):
     """The next wave of a released agent's run, run by code with no model deciding anything.
 
-    `state` (the run's state.json) names the stages done and the waves launched. A first wave of a plan in which
+    `state` (the run's run.yaml) names the stages done and the waves launched. A first wave of a plan in which
     nothing asks the caller anything is the whole plan (`all`): the runner orders every stage by `after` and stops
     at the first failure, in one launch. Otherwise the waves are derived as in an agent's own run, so a decision or an
     unapproved side effect starts a wave whose compile returns a preflight: the caller answers, and the run goes on.
@@ -853,7 +907,8 @@ def compile_frozen(agent_dir, plan, run_dir, values, approvals, state=None, reus
     runs); the result then carries the compiler as "_compiler", for save_wave to save fingerprints and copy outputs.
     Returns compile()'s result, or {"ok": True, "done": True} when no stage is left."""
     state = state or {}
-    done, launches = set(state.get("done") or []), state.get("launches") or []
+    done = {k for k, v in (state.get("stages") or {}).items() if v == "done"}
+    launches = state.get("launches") or []
     stages = [s for s in plan.get("stages") or [] if isinstance(s, dict) and s.get("id")]
     if not done and not launches and not any(asks_someone(s, approvals) for s in stages):
         wave = {"id": FROZEN_WAVE, "stages": [s["id"] for s in stages], "ends_with": "none"}
@@ -926,9 +981,8 @@ def main(
         values, problems = frozen_values(agent_dir, plan.get("params") or {}, given if isinstance(given, dict) else {})
         if problems:
             refuse("; ".join(problems), 2)
-        state = read_json(Path(frozen) / "state.json") or {}
         result = compile_frozen(agent_dir, plan, Path(frozen).resolve(), values, {a.strip() for a in approve.split(",") if a.strip()},
-                                state if isinstance(state, dict) else {}, reuse=True)
+                                read_run(frozen), reuse=True)
         compiler = result.pop("_compiler", None)
         launchable = result.get("ok") and not result.get("done")
         emit(save_wave(frozen, result, compiler) if launchable else result, 0 if result.get("ok") else 1)

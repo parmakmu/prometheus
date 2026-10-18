@@ -111,9 +111,28 @@ It also speaks [A2A](https://a2a-protocol.org) 1.0 (HTTP+JSON binding) on the sa
 
 - A caller reads the Agent Card first. It needs no token, and carries the release's interface.
 - A message has a file part for each input file (`raw`, base64, and `filename`; `metadata.param` names the param when the agent takes several files) and a data part such as `{"params": {...}, "approve": ["build-workbook"]}`. URL parts are refused.
-- The answer is a task whose artifacts link to the outputs. A task that waits for an answer is `TASK_STATE_INPUT_REQUIRED`, and a message with its `taskId` and a data part `{"approve": [...], "decisions": {...}}` answers it.
+- The answer is a task whose artifacts link to the outputs. A small text output (up to 64 KB, such as an answer or a summary) also comes inline, as a text part before its link, so the caller needs no second request. A task that waits for an answer is `TASK_STATE_INPUT_REQUIRED`, and a message with its `taskId` and a data part `{"approve": [...], "decisions": {...}}` answers it.
 
 An agent built with prometheus calls another one with a stage of `pattern: a2a`.
+
+## Environment variables
+
+Set these in your shell, or in whatever starts prometheus or an agent, such as a scheduled job or a service's unit file. None of them is read from an agent's `.env`, which holds only the agent's params and is never loaded into Pi's environment.
+
+| Variable | Read by | Does | Default |
+|---|---|---|---|
+| `PROMETHEUS_AGENTS` | `prometheus`, the planner | the agents folder; wins over `config.toml` | `~/agents` |
+| `PROMETHEUS_HOME` | `prometheus` | the planner's folder; wins over `config.toml` | `~/.prometheus` |
+| `PROMETHEUS_RELEASES` | `run`, `install`, `serve`, `load_agent` | where releases are unpacked and run. It holds their runs, so it's kept, not a cache | `$XDG_DATA_HOME/prometheus/releases` (`~/.local/share/…`) |
+| `PROMETHEUS_CACHE` | `run --bundle` | where a bundle's files are unpacked to rerun it; safe to delete | `$XDG_CACHE_HOME/prometheus` (`~/.cache/…`) |
+| `PROMETHEUS_CATALOG` | `catalog`, `install` | the catalog file that names installable agents | prometheus's own `catalog.yaml` |
+| `PROMETHEUS_SERVE_TOKEN` | `serve` | the token callers send (`--token`) | none: required unless it listens on loopback only |
+| `PROMETHEUS_PUBLIC_URL` | `serve` | the address callers use behind a proxy (`--public-url`), named in the Agent Card and output links | `http://<host>:<port>` |
+| `AGENT_NOTIFY_COMMAND` | an agent | a command run with a message as its last argument whenever a run stops for you (see [/agent-auto](#agent-auto)) | none: nobody is told |
+| `PI_AGENT_PYTHON` | the extensions | the Python that runs the skill's scripts; `prometheus` sets it for the planner | the nearest `.venv`, else `python3` |
+| `XDG_CONFIG_HOME` | `prometheus` | where `prometheus/config.toml` is | `~/.config` |
+
+A released agent's secret params are environment variables too, named by the plan: see [Params and secrets](params-and-secrets.md). The web app's settings are listed in [`ui/README.md`](../ui/README.md).
 
 ## Planner commands
 
@@ -457,7 +476,7 @@ Otherwise returns `ok: false` and a `preflight` listing what is missing:
 | `budget` | the run's children spent `limits.max_cost_usd` | the model tells you the amount; on your go and a new limit, `budget: <usd>` (it holds for the rest of the run) |
 | `plan_errors` | the plan is not ready or doesn't validate | the plan is fixed first |
 
-When it relaunches a wave whose last launch failed, children that completed and haven't changed are not run again, nor a map's completed batches; `notes` says which. A model stage an earlier run finished on the same inputs is not run again either: its outputs are copied from that run. A map stage counts as a whole: the same items, batch size and stage reuse its merged output, and nothing of it is launched.
+When it relaunches a wave whose last launch failed, children that completed and haven't changed are not run again, nor a map's completed batches; `notes` says which. A model stage an earlier run finished on the same inputs is not run again either: its outputs are copied from that run. A map stage on the same items, batch size and stage reuses its merged output whole, and nothing of it is launched. When only some items are new or changed, a `pattern: map` stage maps just those: the items an earlier run mapped with the same stage keep their results, merged back in their place.
 
 **Refusals:** [the wave was launched but not recorded](troubleshooting.md#launched-but-not-recorded) · [another branch is checked out, with changes](troubleshooting.md#the-runs-branch-isnt-checked-out) · [a wave is running](troubleshooting.md#a-wave-is-running) · [uv is missing](troubleshooting.md#uv-is-not-installed)
 
