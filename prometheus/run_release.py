@@ -16,7 +16,8 @@ asks the caller anything is one wave, one launch. At a decision or a side effect
 (`input_required`, what it needs in Result.needs) until Run.answer() gives it.
 
 A branch, tag or commit that isn't a release runs the same way as a build (load_agent("mailer@improve/2026-10-16-1")):
-to check a fix before releasing it, with a failed run's call from its bundle (read_bundle_call).
+to check a fix before releasing it, with a failed run's call from its bundle (read_bundle_call; its side effects ask
+again).
 
 A param value can be a path (str or Path; a relative one is the caller's, made absolute), bytes or an open file (written
 into the run's inputs/ first). Secrets are never passed: a secret param reads its environment variable, as a program's
@@ -389,10 +390,11 @@ class Run:
         self.log(event="resumed", approved=list(approve), decided=sorted(decisions or {}))
         self.go()
 
-    def bundle(self, out: Path | str = ".", with_files: bool = False) -> Path:
+    def bundle(self, out: Path | str = ".", with_data: bool = False) -> Path:
         """The run's evidence as one file (run_bundle.py make), to fix the agent where it is developed: /agent-improve
-        <file>. `with_files` adds the run's inputs, outputs and work: the caller's data. Refused while it runs."""
-        made = run_script("run_bundle.py", "make", "--run", str(self.dir), "--out", str(out), *(["--with-files"] if with_files else []))
+        <file>. Without what it read unless `with_data`: its records, the children's sessions and output, its inputs,
+        outputs and work, the caller's data. Refused while it runs."""
+        made = run_script("run_bundle.py", "make", "--run", str(self.dir), "--out", str(out), *(["--with-data"] if with_data else []))
         if not made.get("ok"):
             raise PrometheusError(made.get("error") or "run_bundle.py failed", made)
         return Path(made["bundle"])
@@ -626,19 +628,22 @@ def load_build(folder: Path, ref: str) -> Agent:
     return agent
 
 
-def read_bundle_call(bundle: Path, agent: Agent) -> tuple[dict, list[str], set[str], list[str]]:
-    """A bundled run's call (run_bundle.py), for a new run of `agent`: (params, approvals, the params that named the run's
-    outputs: placed in the new run, the params that named files the caller sent but the bundle lacks). The files a
-    bundle carries (--with-files) are unpacked once under the cache's bundles/."""
+def read_bundle_call(bundle: Path, agent: Agent) -> tuple[dict, set[str]]:
+    """A bundled run's call (run_bundle.py, --with-data), for a new run of `agent`: (params, the params that named the
+    run's outputs: placed in the new run). Not its approvals: the side effects ask again, since the new run has this
+    machine's secrets. The bundle's files are unpacked once under the cache's bundles/."""
     try:
         with tarfile.open(bundle) as tar:
             info = json.load(tar.extractfile("bundle.json"))
-            call = json.load(tar.extractfile("run/call.json"))
-            state = cli.import_script("utils").rt_yaml().load(tar.extractfile("run/run.yaml").read().decode("utf-8")) or {}
             if info.get("agent") != agent.name:
                 raise PrometheusError(f"{bundle.name} is a run of {info.get('agent')}, not {agent.name}")
+            if info.get("kind") != "release":
+                raise PrometheusError(f"{bundle.name} is a run of the agent itself, not of a release: only a release's run runs again")
+            if not info.get("with_data"):
+                raise PrometheusError(f"{bundle.name} was made without --with-data: it holds no params or files to run again")
+            call = json.load(tar.extractfile("run/call.json"))
             files = get_cache() / "bundles" / bundle.name.removesuffix(".tgz")
-            if info.get("with_files") and not files.is_dir():
+            if not files.is_dir():
                 staging = files.with_name(f".{files.name}.{secrets.token_hex(4)}")
                 tar.extractall(staging, members=[m for m in tar.getmembers() if m.name.startswith("run/inputs/")], filter="data")
                 try:
@@ -648,16 +653,13 @@ def read_bundle_call(bundle: Path, agent: Agent) -> tuple[dict, list[str], set[s
     except (OSError, KeyError, ValueError, tarfile.TarError) as exc:
         raise PrometheusError(f"cannot read {bundle}: {exc}") from None
     old = f"/runs/{info.get('run')}/"
-    values, in_run, missing = {}, set(), []
+    values, in_run = {}, set()
     for name, value in (call.get("params") or {}).items():
         text = str(value)
         if old + "outputs/" in text:
             in_run.add(name)
         elif old + "inputs/" in text:
-            if info.get("with_files"):
-                values[name] = str(files / "run" / "inputs" / text.split(old + "inputs/", 1)[1])
-            else:
-                missing.append(name)
+            values[name] = str(files / "run" / "inputs" / text.split(old + "inputs/", 1)[1])
         else:
             values[name] = value
-    return values, sorted({*(call.get("approve") or []), *(state.get("preapproved") or [])}), in_run, missing
+    return values, in_run

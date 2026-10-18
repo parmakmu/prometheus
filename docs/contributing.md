@@ -61,7 +61,7 @@ Every result also carries `next`, the agent's state and its legal moves (*from e
 ## Where things are
 
 | Path | Holds |
-|---|---|
+| --- | --- |
 | [`.pi/extensions/prometheus/index.ts`](../.pi/extensions/prometheus/index.ts) | prometheus's commands and planning tools |
 | [`.pi/skills/agent/SKILL.md`](../.pi/skills/agent/SKILL.md) | the planning procedure the model follows |
 | [`.pi/skills/agent/references/`](../.pi/skills/agent/references/) | the model's references: plan schema, classification, critic contract, run protocol, resolving, changing |
@@ -142,7 +142,7 @@ What the code assumes about Pi and pi-subagents, with the versions it was checke
 The docs follow [Divio's four types](https://docs.divio.com/documentation-system/). Each page is one type and doesn't do the others' jobs:
 
 | Type | Pages | It does | It doesn't |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Tutorial | [Tutorial](tutorial.md) | teaches by doing, with a result at every step that works every time; tells the reader what they should see | explain, offer options, or assume knowledge |
 | How-to guide | [How-to guides](how-to.md), [Troubleshooting](troubleshooting.md) | gives the steps to a goal the reader already has; the title says what it achieves ("How to …") | teach, or explain why |
 | Explanation | [How prometheus works](how-it-works.md), [Design decisions](design.md) | gives context, the why, and alternatives, read at leisure | instruct, or list every option |

@@ -1,5 +1,5 @@
-"""A released run's bundle: what goes in (the run, pi-subagents' records of it, the children's sessions), what stays
-out unless asked (the caller's files), and secrets replaced."""
+"""A released run's bundle: what goes in (what the run did, without what it read), what goes in only when asked (the run,
+pi-subagents' records of it, the children's sessions, the caller's files), and secrets and param values replaced."""
 import datetime
 import json
 import os
@@ -16,7 +16,8 @@ SECRET = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123"
 
 def fake_released_run(tmp_path, slug="mailer", state="failed"):
     """A release's run folder in a releases folder, as frozen.Run leaves it, and pi-subagents' records of its one launch: the
-    wave's folder, a failed child's folder, its session file (in the temp folder) and its output (in artifacts/)."""
+    wave's folder, a failed child's folder, its session file (in the temp folder: one failed call, whose result quotes
+    the caller's file and the secret) and its output (in artifacts/)."""
     agent = tmp_path / "releases" / slug / "v1.0"
     run = agent / "runs" / "20261016-101010-abcd"
     (run / ".compiled").mkdir(parents=True)
@@ -40,7 +41,13 @@ def fake_released_run(tmp_path, slug="mailer", state="failed"):
     records = root / "async-subagent-runs"
     session = tmp_path / "tmp" / "pi-subagent-session-AbC" / "child-1" / "run-0" / "session.jsonl"
     session.parent.mkdir(parents=True)
-    session.write_text('{"type":"session"}\n', encoding="utf-8")
+    read = str(run / "inputs" / "folder" / "mail.txt")
+    session.write_text("".join(json.dumps(x) + "\n" for x in (
+        {"type": "session"},
+        {"type": "message", "message": {"role": "assistant", "content": [
+            {"type": "toolCall", "id": "c1", "name": "read", "arguments": {"path": read}}]}},
+        {"type": "message", "message": {"role": "toolResult", "toolCallId": "c1", "toolName": "read", "isError": True,
+                                        "content": [{"type": "text", "text": f"cannot open {read} with {SECRET}"}]}})), encoding="utf-8")
     output = root / "artifacts" / "child-1_reader_output.md"
     output.parent.mkdir(parents=True)
     output.write_text("could not parse mail.txt\n", encoding="utf-8")
@@ -65,33 +72,42 @@ def read_bundle(path):
         return {m.name: tar.extractfile(m).read().decode() for m in tar.getmembers() if m.isfile()}
 
 
-def test_a_bundle_holds_the_run_and_what_pi_subagents_kept_of_it(tmp_path, run_py):
+def test_a_bundle_holds_what_the_run_did_without_what_it_read(tmp_path, run_py):
     run, env = fake_released_run(tmp_path)
     r = run_py([SCRIPTS / "run_bundle.py", "make", "--run", run, "--out", tmp_path / "out"], env=env)
-    assert r.data["ok"] and r.data["redacted"] == ["MAILER_KEY"], r
+    assert r.data["ok"] and not r.data["with_data"] and r.data["files"] == 1 and r.data["redacted"] == ["MAILER_KEY"], r
+    files = read_bundle(r.data["bundle"])
+    assert Path(r.data["bundle"]).name == "mailer-v1.0-20261016-101010-abcd.tgz" and list(files) == ["bundle.json"]
+    text = files["bundle.json"]
+    assert SECRET not in text and str(run) not in text and "the caller's data" not in text and "could not parse" not in text
+    info = json.loads(text)
+    assert (info["agent"], info["version"], info["commit"], info["state"]) == ("mailer", "v1.0", "0123456789ab" + "c" * 28, "failed")
+    assert info["versions"]["prometheus"] == "0.1.0+abc1234 deadbeef" and info["params"] == ["folder"]
+    assert "paths" not in info and "sessions" not in info and "record" not in info["launches"][0]
+    child = info["launches"][0]["children"][0]
+    assert (child["key"], child["status"], child["error"]) == ("read", "failed", "exit 1") and not {"output", "session"} & set(child)
+    assert child["activity"]["tool_calls"] == {"read": 1}, child
+    quoted = "cannot open <folder>/mail.txt with ${MAILER_KEY}"  # the param's value and the secret replaced
+    assert child["activity"]["failed_calls"] == [{"tool": "read", "result": quoted}], child
+    assert r.data["to_check"] == ["run: stage read failed", "read: exit 1", f"read (read): {quoted}"], r
+
+
+def test_a_bundle_with_data_holds_the_run_and_what_pi_subagents_kept_of_it(tmp_path, run_py):
+    run, env = fake_released_run(tmp_path)
+    r = run_py([SCRIPTS / "run_bundle.py", "make", "--run", run, "--out", tmp_path / "out", "--with-data"], env=env)
+    assert r.data["ok"] and r.data["with_data"] and r.data["redacted"] == ["MAILER_KEY"] and r.data["to_check"] == [], r
     assert r.data["warnings"] == ["run/pi.log: looks like an API key or token"], r  # the param's value replaced, the other reported
     files = read_bundle(r.data["bundle"])
-    assert Path(r.data["bundle"]).name == "mailer-v1.0-20261016-101010-abcd.tgz"
     assert {"run/call.json", "run/run.yaml", "run/events.jsonl", "run/pi.log", "run/.compiled/w1.json",
             "subagents/async-subagent-runs/wave-1/status.json", "subagents/async-subagent-runs/child-1/status.json",
             "subagents/artifacts/child-1_reader_output.md", "sessions/pi-subagent-session-AbC/child-1/run-0/session.jsonl"} <= set(files)
-    assert not any(n.startswith(("run/inputs", "run/work")) for n in files)  # the caller's data only when asked
+    assert files["run/inputs/mail.txt"] == "the caller's data\n" and "run/work/notes.md" in files, sorted(files)
     assert not any("passwd" in n for n in files)  # a path outside pi-subagents' folders is never taken
     assert SECRET not in "".join(files.values()) and "${MAILER_KEY}" in files["run/pi.log"]
     info = json.loads(files["bundle.json"])
-    assert (info["agent"], info["version"], info["commit"], info["state"]) == ("mailer", "v1.0", "0123456789ab" + "c" * 28, "failed")
-    assert info["versions"]["prometheus"] == "0.1.0+abc1234 deadbeef"
+    assert info["with_data"] is True
     child = info["launches"][0]["children"][0]
-    assert (child["key"], child["status"], child["error"]) == ("read", "failed", "exit 1"), child
     assert child["session"] == "sessions/pi-subagent-session-AbC/child-1/run-0/session.jsonl" and "could not parse" in child["output"]
-
-
-def test_a_bundle_takes_the_callers_files_only_when_asked(tmp_path, run_py):
-    run, env = fake_released_run(tmp_path)
-    r = run_py([SCRIPTS / "run_bundle.py", "make", "--run", run, "--out", tmp_path, "--with-files"], env=env)
-    files = read_bundle(r.data["bundle"])
-    assert files["run/inputs/mail.txt"] == "the caller's data\n" and "run/work/notes.md" in files, sorted(files)
-    assert json.loads(files["bundle.json"])["with_files"] is True
 
 
 def test_a_running_run_is_not_bundled(tmp_path, run_py):
@@ -137,7 +153,7 @@ def make_bundle(tmp_path, run_py, *extra):
 
 
 def test_a_bundle_is_imported_once_for_improve_and_read_as_evidence(tmp_path, run_py):
-    bundle = make_bundle(tmp_path, run_py)
+    bundle = make_bundle(tmp_path, run_py, "--with-data")
     agent = tmp_path / "agents" / "mailer"
     agent.mkdir(parents=True)
     (agent / "plan.yaml").write_text("format: 1\n", encoding="utf-8")
@@ -164,6 +180,18 @@ def test_a_bundle_is_imported_once_for_improve_and_read_as_evidence(tmp_path, ru
     assert run_py([SCRIPTS / "session_digest.py", "--agent", agent]).data["imported"] == []  # reviewed
 
 
+def test_a_bundle_without_data_is_read_as_evidence_from_what_the_children_did(tmp_path, run_py):
+    bundle = make_bundle(tmp_path, run_py)
+    agent = tmp_path / "agents" / "mailer"
+    agent.mkdir(parents=True)
+    (agent / "plan.yaml").write_text("format: 1\n", encoding="utf-8")
+    assert run_py([SCRIPTS / "run_bundle.py", "add", bundle, "--agent", agent]).data["ok"]
+    found = run_py([SCRIPTS / "session_digest.py", "--agent", agent]).data["imported"][0]
+    child = found["failed_children"][0]
+    assert found["with_data"] is False and (child["output"], child["session"]) == ("", None), child
+    assert child["activity"]["failed_calls"][0]["result"] == "cannot open <folder>/mail.txt with ${MAILER_KEY}", child
+
+
 def test_a_bundle_of_another_agent_or_with_a_path_out_is_refused(tmp_path, run_py):
     import io
     bundle = make_bundle(tmp_path, run_py)
@@ -173,7 +201,7 @@ def test_a_bundle_of_another_agent_or_with_a_path_out_is_refused(tmp_path, run_p
     assert "is a run of mailer, not other" in run_py([SCRIPTS / "run_bundle.py", "add", bundle, "--agent", other]).data["error"]
     evil = tmp_path / "evil.tgz"
     with tarfile.open(evil, "w:gz") as tar:
-        for name, data in (("bundle.json", json.dumps({"format": 2, "agent": "other", "version": "v1", "run": "x"}).encode()),
+        for name, data in (("bundle.json", json.dumps({"format": 3, "agent": "other", "version": "v1", "run": "x"}).encode()),
                            ("../../escaped.txt", b"x")):
             member = tarfile.TarInfo(name)
             member.size = len(data)
@@ -236,7 +264,7 @@ def test_an_agents_own_run_is_bundled_with_its_sessions_and_read_back_as_evidenc
     wave = Path(env["PI_SUBAGENTS_TEMP_ROOT"]) / "async-subagent-runs" / "wave-1" / "workflow-children.jsonl"
     wave.write_text(wave.read_text() + json.dumps({"type": "settle", "key": "read", "result": {"ok": False, "results": [
         {"transcriptPath": ".pi/sessions/subagent-artifacts/child-1_reader_transcript.jsonl"}]}}) + "\n")
-    r = run_py([k / "run_bundle.py", "make", "--agent", elsewhere, "--out", elsewhere / "runs"], cwd=elsewhere, env=env)
+    r = run_py([k / "run_bundle.py", "make", "--agent", elsewhere, "--out", elsewhere / "runs", "--with-data"], cwd=elsewhere, env=env)
     assert r.data["ok"] and r.data["redacted"] == ["MAILER_KEY"], r
     files = read_bundle(r.data["bundle"])
     info = json.loads(files["bundle.json"])
@@ -245,10 +273,10 @@ def test_an_agents_own_run_is_bundled_with_its_sessions_and_read_back_as_evidenc
     assert "run/run.yaml" in files and "subagents/async-subagent-runs/wave-1/status.json" in files
     child = info["launches"][0]["children"][0]
     transcript = "run/work/.pi/sessions/subagent-artifacts/child-1_reader_transcript.jsonl"
-    assert child["key"] == "read" and child["transcript"] == transcript and transcript in files, child  # without --with-files
+    assert child["key"] == "read" and child["transcript"] == transcript and transcript in files, child
     session = "run/work/.pi/sessions/2026-10-16_run/launch-1/run-0/session.jsonl"
     assert child["session"] == session and session in files, child  # the child's own Pi session, in its cwd
-    assert "run/work/data.txt" not in files  # the rest of work/ only when asked
+    assert "run/work/data.txt" in files
 
     home, _ = ready_agent(tmp_path / "home", run_py, "mailer")  # where it is developed
     assert run_py([SCRIPTS / "run_bundle.py", "add", r.data["bundle"], "--agent", home]).data["ok"]

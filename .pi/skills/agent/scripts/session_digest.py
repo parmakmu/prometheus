@@ -17,8 +17,9 @@ calls repeated three times or more; `runs` from runs/*/run.yaml (status, cost,
 launches that did not finish, waves launched more than once); `imported`: runs from
 bundles (run_bundle.py add, runs/imported/), unreviewed by when they were imported: a
 release's run or the agent's own on another machine (`kind`), its state and error, each
-child that didn't complete with its error, output and session file, and the agent's own
-sessions during it (`agent_sessions`; all read with agent_sessions). Only signals: the model opens the
+child that didn't complete with its error and what it did (`activity`: turns, tool calls,
+failed calls' results), and, when it came --with-data, its output and session file and the
+agent's own sessions during it (`agent_sessions`; all read with agent_sessions). Only signals: the model opens the
 files they point at. Nothing is changed.
 """
 import json
@@ -77,7 +78,7 @@ def session_start(path: Path):
     return head.get("timestamp") if isinstance(head, dict) and head.get("type") == "session" else None
 
 
-def digest_session(path: Path):
+def digest_session(path: Path, result_size: int = SNIPPET):
     calls, tools, args_seen, failures, users = {}, Counter(), Counter(), [], []
     cost = turns = records = 0
     started = model = None
@@ -110,7 +111,7 @@ def digest_session(path: Path):
             text = text_of(msg.get("content"))
             if msg.get("isError") or any(word in text[:200].lower() for word in FAILURE):
                 name, args = calls.get(msg.get("toolCallId"), (msg.get("toolName"), ""))
-                failures.append({"tool": name, "call": args, "result": clip(text), "at": entry.get("timestamp")})
+                failures.append({"tool": name, "call": args, "result": clip(text, result_size), "at": entry.get("timestamp")})
     return {
         "file": path.name,
         "plan_session": bool(users) and users[0].startswith(PLAN_SESSIONS),
@@ -183,15 +184,15 @@ def digest_run(run_id: str, run_dir: Path):
 
 
 def digest_import(agent_dir: Path, folder: Path):
-    """A run from a bundle (bundle.json): what ran, how it ended, the children that didn't complete, and the agent's
-    own sessions during it (an agent's run)."""
+    """A run from a bundle (bundle.json): what ran, how it ended, the children that didn't complete, and (--with-data)
+    their output and sessions and the agent's own sessions during it (an agent's run)."""
     info = read_json(folder / "bundle.json") or {}
     where = folder.relative_to(agent_dir)
-    failed = [{**{k: c.get(k) for k in ("key", "agent", "status", "error", "exit_code")}, "wave": launch.get("wave"),
+    failed = [{**{k: c.get(k) for k in ("key", "agent", "status", "error", "exit_code", "activity")}, "wave": launch.get("wave"),
                "output": clip(c.get("output") or "", OUTPUT), "session": f"{where}/{c.get('session') or c.get('transcript')}" if c.get("session") or c.get("transcript") else None}
               for launch in info.get("launches") or [] for c in launch.get("children") or []
               if c.get("status") not in ("completed", "complete", "done")]
-    return {"folder": str(where), **{k: info.get(k) for k in ("kind", "version", "commit", "run", "state", "error", "versions", "with_files")},
+    return {"folder": str(where), **{k: info.get(k) for k in ("kind", "version", "commit", "run", "state", "error", "versions", "with_data")},
             "launches": [{k: x.get(k) for k in ("wave", "status", "cost_usd")} for x in info.get("launches") or []],
             "failed_children": failed, "agent_sessions": [f"{where}/{name}" for name in info.get("sessions") or []]}
 

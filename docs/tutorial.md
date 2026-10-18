@@ -9,7 +9,7 @@ It takes about fifteen minutes, and you don't need any emails of your own. We'll
 ## Before you begin
 
 | You need | Check | Install |
-|---|---|---|
+| --- | --- | --- |
 | Pi 1.3.0 or later | `pi --version` | `npm install -g @earendil-works/pi-coding-agent` |
 | pi-subagents 0.79.0 or later | `grep version ~/.pi/agent/npm/node_modules/pi-subagents/package.json` | `pi install npm:pi-subagents` |
 | Node 22 or later | `node --version` | [nodejs.org](https://nodejs.org) (Pi needs it too) |
@@ -249,7 +249,7 @@ The run writes no programs this time, so there is no branch to review at the end
 Here is what that looked like in real runs of this agent. The middle column is a run on a different folder of emails, which we'll come back to in the next step:
 
 | | First run | New emails | The same emails again |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Model cost of the children | $0.021 | $0.004 | $0 |
 | Stages done by a model | all three | only `discover` | none: `discover`'s report is reused |
 | Branch to review | yes | none | none |

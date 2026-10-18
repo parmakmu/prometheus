@@ -58,18 +58,20 @@ def test_a_run_from_an_upload_ends_with_its_output_to_download(agent):
     assert (agent.folder / "runs" / run_id / "inputs" / "source" / "lines.txt").read_bytes() == b"a\nb\nc\n"
 
 
-def test_an_ended_run_is_bundled_with_the_callers_files_only_when_asked(agent):
+def test_an_ended_run_is_bundled_with_the_callers_data_only_when_asked(agent):
     import io
     import tarfile
     c = client(agent)
     run_id = start(c).json()["id"]
-    for with_files, has_input in ((False, False), (True, True)):
-        r = c.get(f"/runs/{run_id}/bundle", params={"with_files": with_files})
+    for with_data in (False, True):
+        r = c.get(f"/runs/{run_id}/bundle", params={"with_data": with_data})
         assert r.status_code == 200 and r.headers["content-disposition"].endswith(f'counter-v1.0-{run_id}.tgz"'), r.text
         with tarfile.open(fileobj=io.BytesIO(r.content)) as tar:
             names = tar.getnames()
-        assert "bundle.json" in names and "run/run.yaml" in names
-        assert ("run/inputs/source/lines.txt" in names) is has_input, names
+        if with_data:
+            assert {"bundle.json", "run/run.yaml", "run/inputs/source/lines.txt"} <= set(names), names
+        else:
+            assert names == ["bundle.json"], names
     assert c.get("/runs/nope/bundle").status_code == 404
 
 

@@ -326,13 +326,13 @@ def test_a_file_name_cannot_leave_or_be_its_folder(released):
     assert agent.prepare_params(run_dir, {"source": ("", b"c")})["source"] == str(run_dir / "inputs" / "source" / "source-0")
 
 
-def test_a_bundled_run_runs_again_on_a_branch_with_its_files_and_approvals(released, fake_pi, tmp_path, run_py):
+def test_a_bundled_run_runs_again_on_a_branch_with_its_files_and_asks_for_its_side_effects(released, fake_pi, tmp_path, run_py):
     # a release counts blank lines too; the fix, on a branch, is checked on the bundled run's own file before a release
     agent = run_release.load_agent(str(released))
     run = agent.start(params={"source": b"a\n\nb\n"}, approve=["save"], in_run={"report"})  # as serve calls it
     assert run.wait(30).outputs["count_file"].read_text() == "3\n"
-    made = run_py([SKILL / "scripts" / "run_bundle.py", "make", "--run", run.dir, "--out", tmp_path, "--with-files"])
-    assert run.bundle(tmp_path / "api").name == made.data["bundle"].rsplit("/", 1)[-1]  # the same from Python
+    made = run_py([SKILL / "scripts" / "run_bundle.py", "make", "--run", run.dir, "--out", tmp_path, "--with-data"])
+    assert run.bundle(tmp_path / "api", with_data=True).name == made.data["bundle"].rsplit("/", 1)[-1]  # the same from Python
     bare = run_py([SKILL / "scripts" / "run_bundle.py", "make", "--run", run.dir, "--out", tmp_path / "bare"])
     git = git_in(released)
     git("switch", "-q", "-c", "improve/2026-10-16-1")
@@ -342,19 +342,23 @@ def test_a_bundled_run_runs_again_on_a_branch_with_its_files_and_approvals(relea
 
     build = run_release.load_agent(f"{released}@improve/2026-10-16-1")
     assert build.version == "build" and build.side_effects == ["save"] and build.folder != agent.folder
-    values, approve, in_run, missing = run_release.read_bundle_call(Path(made.data["bundle"]), build)
-    assert (approve, in_run, missing) == (["save"], {"report"}, [])  # report named the old run's outputs: the new run's now
+    values, in_run = run_release.read_bundle_call(Path(made.data["bundle"]), build)
+    assert in_run == {"report"}  # report named the old run's outputs: the new run's now
     assert Path(values["source"]).read_text() == "a\n\nb\n"
-    again = build.start(params=values, approve=approve, in_run=in_run).wait(30)
-    assert again.ok and again.outputs["count_file"].read_text() == "2\n" and again.run_dir.parent.parent == build.folder
-    assert run_release.read_bundle_call(Path(bare.data["bundle"]), build)[3] == ["source"]  # no files: the caller's file is missing
+    again = build.start(params=values, in_run=in_run)
+    assert again.wait(30).state == "input_required"  # the bundled run's approval isn't carried over: save asks again
+    again.answer(approve=["save"])
+    done = again.wait(30)
+    assert done.ok and done.outputs["count_file"].read_text() == "2\n" and done.run_dir.parent.parent == build.folder
+    with pytest.raises(run_release.PrometheusError, match="made without --with-data"):
+        run_release.read_bundle_call(Path(bare.data["bundle"]), build)
     with pytest.raises(run_release.PrometheusError, match="no release or commit 'nope'"):
         run_release.load_agent(f"{released}@nope")
     from typer.testing import CliRunner
 
     from prometheus import cli
     said = CliRunner().invoke(cli.app, ["run", f"{released}@improve/2026-10-16-1", "--bundle", bare.data["bundle"]])
-    assert said.exit_code != 0 and "has no files for source" in str(said.exception or said.output), said.output
+    assert said.exit_code != 0 and "made without --with-data" in str(said.exception or said.output), said.output
 
 
 def test_the_runner_machine_lists_runs_shows_one_and_checks_a_release(released, fake_pi, tmp_path, monkeypatch):

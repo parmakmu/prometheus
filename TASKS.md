@@ -40,10 +40,15 @@ frozen release as code, with no orchestrator. GitLab; users are developers; ever
   checked); a new run starts without asking whether inputs changed. Live: run 2026-10-17-2, 5 tool calls in 11 s
 - [x] 77. a wave launches only from the commit it was compiled from: the `subagent` call and `/agent-auto` check
   `.compiled/<wave>.json` `commit` against HEAD (review of 8c0011e, 2026-10-18)
+- [x] 79. bundles without the run's data by default: `bundle.json` alone (statuses, errors, children's `activity`;
+  param values → `<name>`, `to_check` listed), the run as it is with `--with-data` (was `--with-files`); values
+  replaced before texts are clipped; `--bundle` reruns need a data bundle and no longer carry approvals (2026-10-18)
 - [x] 38. per-item reuse in map stages: the merge stores each item's record (after its gate), the split leaves out
   items an earlier run stored, the merge restores them in item order; `pattern: map` only (2026-10-18)
 
 ## Dropped
 
+- [-] 78. replay each fix against its bundle before merging (harness2's probe step): it needs production data and
+  secrets on the developer's machine, and one run of a model stage proves little (2026-10-18)
 - [-] 2–3. devpod checks · 17. release hashes · 21–24. Dockerfile, CI, devpod image (the service team's) · 27.
   `calls:` (A2A instead) · 29. chat web app features (frozen) · 30. model-key proxy (own keys)

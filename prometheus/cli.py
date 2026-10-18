@@ -371,8 +371,8 @@ def run_release(
     param: Annotated[list[str] | None, typer.Option("--param", "-p", help="name=value, once per param (no secrets: those come from the environment)")] = None,
     approve: Annotated[list[str] | None, typer.Option("--approve", "-a", help="a side-effect stage the run may perform, once each")] = None,
     as_json: Annotated[bool, typer.Option("--json", help="print events and the result as JSON lines")] = False,
-    from_bundle: Annotated[Path | None, typer.Option("--bundle", help="run again what a bundled run was given: its params, "
-                                                     "approvals and (bundled --with-files) files; --param overrides")] = None,
+    from_bundle: Annotated[Path | None, typer.Option("--bundle", help="run again what a run bundled --with-data was given: its "
+                                                     "params and files (its side effects ask again); --param overrides")] = None,
 ):
     """Run a released agent from start to end, with no one to ask and no model deciding anything."""
     from prometheus.run_release import load_agent, read_bundle_call
@@ -384,15 +384,12 @@ def run_release(
         values[name] = value
     try:
         loaded = load_agent(agent)
-        in_run, approved = set(), list(approve or [])
+        in_run = set()
         if from_bundle:
-            given, bundled_approve, in_run, missing = read_bundle_call(from_bundle, loaded)
-            if missing := [m for m in missing if m not in values]:
-                raise PrometheusError(f"{from_bundle.name} has no files for {', '.join(missing)} (the caller sent them): bundle the run "
-                                      f"with --with-files, or give them with --param {missing[0]}=<path>")
-            values, approved = {**given, **values}, sorted({*bundled_approve, *approved})
+            given, in_run = read_bundle_call(from_bundle, loaded)
+            values = {**given, **values}
             in_run -= set(values)
-        started = loaded.start(params=values, approve=approved, in_run=in_run)
+        started = loaded.start(params=values, approve=list(approve or []), in_run=in_run)
     except PrometheusError as exc:
         if as_json:
             print(json.dumps({"event": "refused", "error": str(exc)}))
@@ -685,20 +682,26 @@ def show_runs(
 def bundle(
     slug: Annotated[str, typer.Argument(help="the agent")],
     run_id: Annotated[str, typer.Argument(help="the released run (its id, as `prometheus runs` lists it)")],
-    with_files: Annotated[bool, typer.Option("--with-files", help="add the run's inputs, outputs and work: the caller's data")] = False,
+    with_data: Annotated[bool, typer.Option("--with-data", help="add the run as it is: the children's sessions and output, "
+                                                             "its inputs, outputs and work (the caller's data)")] = False,
     out: Annotated[Path, typer.Option(help="folder to write the bundle in")] = Path("."),
 ):
     """Pack a released run's evidence into one file, to fix the agent where it is developed (/agent-improve <bundle>)."""
     made = run_script("run_bundle.py", "make", "--run", str(find_released_run(slug, run_id)), "--out", str(out),
-                      *(["--with-files"] if with_files else []))
+                      *(["--with-data"] if with_data else []))
     if not made.get("ok"):
         raise PrometheusError(made.get("error") or "run_bundle.py failed")
     console.print(f"{made['bundle']} ({made['size_mb']} MB, {made['files']} files"
-                  f"{', with the run' + chr(39) + 's files' if with_files else ''})", highlight=False)
+                  f"{', with the run' + chr(39) + 's data' if with_data else ''})", highlight=False)
     if made.get("redacted"):
         console.print(f"Replaced the values of {', '.join(made['redacted'])} with ${{NAME}}.", highlight=False)
     for warning in made.get("warnings") or []:
         console.print(f"[yellow]warning[/]: {warning}: check before you send it", highlight=False)
+    if made.get("to_check"):
+        console.print("Without the run's data, but these texts are in it and may quote it: check them before you send it",
+                      highlight=False)
+        for text in made["to_check"]:
+            console.print(f"  {text[:300]}", highlight=False, markup=False)
 
 
 def main():

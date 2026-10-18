@@ -54,7 +54,7 @@ The first call for a release unpacks it into `~/.local/share/prometheus/releases
 A release of an agent, unpacked and ready to run. You get one from [`load_agent`](#load_agent).
 
 | Attribute | What it is |
-|---|---|
+| --- | --- |
 | `name` | the agent's slug |
 | `version` | the release, such as `"v1.1"`, or `"build"` |
 | `folder` | the unpacked release, a `Path`; its runs are in `folder / "runs"` |
@@ -85,7 +85,7 @@ agent.start(params: dict | None = None, approve: list[str] = ()) -> Run
 - `params` gives each param a value. What a value can be:
 
   | Value | Becomes |
-  |---|---|
+  | --- | --- |
   | a path (`str` or `Path`) | an absolute path; a relative one is relative to your program, not the run |
   | `bytes`, or an open file | a file in the run's `inputs/<param>` |
   | `(file name, bytes)` | `inputs/<param>/<file name>`, for programs that care about the extension |
@@ -102,7 +102,7 @@ agent.start(params: dict | None = None, approve: list[str] = ()) -> Run
 One run of a release. You get one from [`Agent.start`](#agentstart), or from [`Run.reopen`](#runreopen) for a run another process started.
 
 | Attribute | What it is |
-|---|---|
+| --- | --- |
 | `id` | the run's id, such as `"20261016-101010-abcd"` |
 | `dir` | its folder: `call.json`, `run.yaml`, `events.jsonl`, `inputs/`, `outputs/`, `work/` |
 | `state` | `"running"`, `"input_required"`, `"complete"`, `"failed"`, `"stopped"` or `"error"` |
@@ -132,7 +132,7 @@ for event in run.events():
 Every event is a dict with `time` and `event`. The events:
 
 | `event` | When | Also has |
-|---|---|---|
+| --- | --- | --- |
 | `launched` | a wave was handed to pi-subagents | `wave`, `subagent_run_id`, `status_dir` |
 | `child` | a child changed state | `key`, `state`, `agent`, `child_run_id` |
 | `wave_end` | a wave ended | `wave`, `state`, `subagent_run_id`, `status_dir`, `cost` |
@@ -171,10 +171,10 @@ A running wave is asked to stop, then killed after `grace_s` seconds. A run wait
 Packs the run's evidence into one file, for whoever develops the agent.
 
 ```python
-run.bundle(out: Path | str = ".", with_files: bool = False) -> Path
+run.bundle(out: Path | str = ".", with_data: bool = False) -> Path
 ```
 
-The bundle holds the run's records, pi-subagents' records of its launches, and each child's session and output. `with_files` adds the run's inputs, outputs and work folder, which are your data. The values of the agent's secrets are replaced by `${NAME}`. Where it goes next: [How to fix a released agent after a failed run](how-to.md#how-to-fix-a-released-agent-after-a-failed-run).
+The bundle says what the run did, without what it read: how each stage ended, each child's error, and its tool calls with the results of those that failed, with param values in those texts replaced by `<name>`. `with_data` adds the run as it is: its records, pi-subagents' records of its launches, each child's session and output, and the run's inputs, outputs and work folder, which are your data. The values of the agent's secrets are replaced by `${NAME}` either way. Where it goes next: [How to fix a released agent after a failed run](how-to.md#how-to-fix-a-released-agent-after-a-failed-run).
 
 **Raises** [`PrometheusError`](#prometheuserror) while the run is still going.
 
@@ -193,7 +193,7 @@ Returns `None` when the release has no such run. Use it to answer, cancel, wait 
 How a run stopped: what [`Agent.run`](#agentrun) and [`Run.wait`](#runwait) return.
 
 | Attribute | What it is |
-|---|---|
+| --- | --- |
 | `ok` | `True` when the run completed |
 | `state` | `"complete"`, `"failed"`, `"stopped"`, `"error"`, or `"input_required"` when it waits for an answer |
 | `outputs` | `{output id: Path or None}`: where each of the plan's outputs is |

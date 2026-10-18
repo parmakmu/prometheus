@@ -53,7 +53,9 @@ exports: `load_agent`, `Agent`, `Run`, `Result`, `PrometheusError`), `params-and
   `serve --keep` delete old runs' files (and orphaned pi-subagents mission files), keeping their history; a release's
   newest failed runs stay whole (`--keep-failed`). A failed released run is fixed from a bundle (2026-10-16; not an
   `/agent-doctor`): `prometheus bundle` / `GET /runs/<id>/bundle` (`run_bundle.py make`: the run, pi-subagents' records via
-  `utils.launch_records`, children's sessions; secrets → `${NAME}`; caller files only with `--with-files`) →
+  `utils.launch_records`, children's sessions; secrets → `${NAME}`; 2026-10-18: by default only `bundle.json`, what the
+  run did without what it read (statuses, errors, children's tool calls and failed results, param values → `<name>`,
+  `to_check`), the run as it is only with `--with-data`; a rerun from it doesn't carry approvals) →
   `/agent-improve <bundle.tgz>` (`run_bundle.py add` → `runs/imported/`, never reused from; `session_digest` `imported`) →
   `prometheus run <slug>@<branch> --bundle <file>` (`run_release.load_build`: any non-`v` ref, version `build`) → release.
   Also `Run.bundle()` (embedded), and `/agent-bundle` for an agent's own run in a copy without prometheus (`kind: run`,

@@ -31,7 +31,7 @@ prometheus asks you a few questions, and when it's done, your request has become
 You run that folder whenever the job comes round again. Here's what that looked like for emails-to-excel: a run where models did everything, one where the reviewed programs did the routine work, and one on emails the agent had already seen:
 
 | | Every stage done by a model | Programs run as commands | The same emails again |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Model cost | $0.016 | $0.004 | $0 |
 | Whole run | under 4 minutes | 77 seconds | 29 seconds |
 
@@ -102,7 +102,7 @@ build-workbook   side_effect     a program writes the .xlsx; you approve it firs
 The middle column is the stage's **kind**, and it's the most important thing about a stage, because it decides who does the work and how carefully it's watched:
 
 | Kind | What it means | Who does it |
-|---|---|---|
+| --- | --- | --- |
 | `side_effect` | it changes something outside the run | an agent, but only after you approve it, every single time |
 | `decision` | it's a choice that belongs to you | you, before that part of the run starts |
 | `deterministic` | a program can get it right | a stage program, checked by a gate |
@@ -281,7 +281,7 @@ By now the first run has done more than produce a spreadsheet. It has written tw
 Our answer is: not until you've had a look. Each agent is its own git repository, and its `main` branch holds only what you've reviewed. Anything new waits on a branch of its own:
 
 | Branch | Opened by | Holds |
-|---|---|---|
+| --- | --- | --- |
 | `run/<id>` | a run's first commit | its resolves and the programs it wrote |
 | `revise/<date>-<n>` | `/agent-revise` | a change you asked for |
 | `improve/<date>-<n>` | `/agent-improve` | fixes drawn from earlier runs |
@@ -299,7 +299,7 @@ And if a run didn't change anything, there's nothing to review, so it won't ask.
 This is the moment the whole design is built around. Here are emails-to-excel's real runs, side by side:
 
 | Run | What happened | Model cost | Whole run |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 2 | every stage done by a model | $0.016 | under 4 min |
 | 3 | the models also wrote the two programs, once | $0.021 | |
 | 4 | the programs reused, but run by a model | $0.0105 | about 2.5 min |
@@ -328,7 +328,7 @@ The steps are in [How to run an agent from code](how-to.md#how-to-run-an-agent-f
 ## Words used on this page
 
 | Word | Means |
-|---|---|
+| --- | --- |
 | **agent** | what prometheus builds: a folder `<slug>/` in the agents folder (`~/agents`, or `PROMETHEUS_AGENTS`) that is a Pi agent of its own, with a plan, its programs and gates |
 | **plan** | `plan.yaml`: the job, what counts as done, and the stages |
 | **stage** | one step of the work, such as "extract the fields from every email" |

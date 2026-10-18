@@ -2,25 +2,29 @@
 """A run's evidence as one file, to fix the agent where it is developed.
 
 Usage:
-  run_bundle.py make [--run DIR | --agent DIR] [--with-files] [--out DIR]
+  run_bundle.py make [--run DIR | --agent DIR] [--with-data] [--out DIR]
   run_bundle.py show [--run DIR | --agent DIR]
   run_bundle.py add FILE [--agent DIR]
 
 make   writes <slug>-<version>-<run>.tgz from a run folder: a release's (prometheus/run_release.py: call.json, run.yaml;
-       `kind: release`, its version, and its commit from RELEASE.json) or the agent's own (run.yaml: `kind: run`, version r<revision>, the
-       commit of its branch; for an agent copied elsewhere, which has no prometheus). With --agent and no --run: that
-       agent's active run, else its last. The bundle holds bundle.json (agent, version, commit, run, state, error, the
-       prometheus, Pi and pi-subagents versions, each launch's children with their status, error, output and where
-       their session is in the bundle, and `paths`: each file pi-subagents named, to where it is in the bundle), run/
-       (run.yaml, .compiled/; a release's call.json, events.jsonl, pi.log), subagents/
-       (pi-subagents' records of the run's launches, utils.launch_records: each wave's folder and its children's),
-       sessions/ (the children's session files) and, for an agent's run, agent-sessions/ (its own Pi sessions that
-       overlap the run: `sessions`). --with-files adds the run's data folders (a release's inputs/, outputs/ and work/,
-       the caller's data; an agent's work/), so only when asked. The value of every secret param set (the environment,
-       an agent's .env) is replaced by ${NAME} wherever it appears; text that looks like a key is reported
-       (`warnings`). A running run (a release's) or a running wave (an agent's) is refused.
-show   prints what the bundle would say (bundle.json without `paths`) and a release's last events, packing
-       nothing: `prometheus runs <slug> <run>` on the machine the run ran on.
+       `kind: release`, its version, and its commit from RELEASE.json) or the agent's own (run.yaml: `kind: run`, version
+       r<revision>, the commit of its branch; for an agent copied elsewhere, which has no prometheus). With --agent and
+       no --run: that agent's active run, else its last. Without --with-data it holds only bundle.json, written field by
+       field: agent, version, commit, run, state, error, the stages' statuses, the params' names, the prometheus, Pi and
+       pi-subagents versions, and each launch's children with their status, error, exit code and `activity` (turns,
+       cost, model, tool calls by name, failed calls' results); nothing of the run is copied as it is, since its
+       records, sessions and compiled waves hold what it read, its param values among them. The texts that may still
+       quote it (errors, failed calls' results) have each param's value replaced by <NAME> and are listed in
+       `to_check`. --with-data adds the run as it is: bundle.json with each child's output and where its session is,
+       `paths` (each file pi-subagents named, to where it is in the bundle), run/ (run.yaml, .compiled/, its data
+       folders: a release's call.json, events.jsonl, pi.log, inputs/, outputs/, work/; an agent's work/), subagents/
+       (pi-subagents' records of the run's launches, utils.launch_records), sessions/ (the children's session files)
+       and, for an agent's run, agent-sessions/ (its own Pi sessions that overlap the run: `sessions`). Either way the
+       value of every secret param set (the environment, an agent's .env) is replaced by ${NAME} wherever it appears,
+       and text that looks like a key is reported (`warnings`). A running run (a release's) or a running wave (an
+       agent's) is refused.
+show   prints what a bundle made --with-data would say (bundle.json without `paths`) and a release's last events,
+       packing nothing: `prometheus runs <slug> <run>` on the machine the run ran on.
 add    unpacks a bundle into the agent's runs/imported/<version>-<run>/ (once; again is a no-op), for /agent-improve:
        session_digest.py reads it as evidence. It is not one of the agent's runs (run_folders.list_runs never
        sees it), so nothing is reused from it. Refused for another agent's bundle; `warnings`
@@ -29,8 +33,10 @@ add    unpacks a bundle into the agent's runs/imported/<version>-<run>/ (once; a
 import datetime
 import io
 import json
+import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 from pathlib import Path
@@ -40,7 +46,14 @@ import agent_params
 import agent_repo
 import typer
 from run_folders import Run, active_run, is_release_run, list_runs, read_run
-from session_digest import default_sessions_dir, moment, session_start
+from session_digest import (
+    SNIPPET,
+    clip,
+    default_sessions_dir,
+    digest_session,
+    moment,
+    session_start,
+)
 from utils import (
     SECRET_PATTERNS,
     agent_name,
@@ -54,17 +67,17 @@ from utils import (
 )
 
 app = typer.Typer(add_completion=False)
-FORMAT = 2  # 2: a release's run keeps run.yaml, as an agent's does (was state.json)
+FORMAT = 3  # 3: without --with-data, bundle.json alone (2: a release's run keeps run.yaml, as an agent's does)
 IMPORTED = Path("runs") / "imported"
 RUN_FILES = ("call.json", "run.yaml", "events.jsonl", "pi.log", ".compiled")
 DATA_FOLDERS = ("inputs", "outputs", "work")
 AGENT_RUN_FILES = ("run.yaml", ".compiled")  # an agent's own run: its params are paths of its machine, not in the run
 AGENT_DATA_FOLDERS = ("work",)
 # the children's own sessions and records (input, output, transcript, meta): with the agent in a session, pi-subagents
-# resolves its relative sessionDir in each child's cwd, the run's work/, and names them relative to it. Always bundled:
-# they are the evidence, not the caller's data
+# resolves its relative sessionDir in each child's cwd, the run's work/, and names them relative to it
 CHILD_RECORDS = Path("work") / ".pi" / "sessions"
 OUTPUT_CHARS = 4000  # of a child's output, in bundle.json
+CONTENT = ("output", "session", "transcript")  # a child's fields that hold or point at what it read: --with-data only
 
 
 @app.callback()
@@ -114,8 +127,26 @@ def find_in_bundle(path, paths: dict, run_dir: Path):
     return paths.get(str(Path(path).resolve()))
 
 
+def find_on_disk(path, paths: dict, run_dir: Path) -> Path | None:
+    """A file a record names, here, when it is one a bundle takes (find_in_bundle)."""
+    if find_in_bundle(path, paths, run_dir) is None:
+        return None
+    return Path(path).resolve() if Path(path).is_absolute() else (run_dir / "work" / path).resolve()
+
+
+def describe_activity(session: Path | None) -> dict | None:
+    """What a child did, from its session or transcript, without what it read: turns, cost, model, its tool calls by
+    name, and the results of those that failed, whole (they may quote it: finish)."""
+    if session is None:
+        return None
+    d = digest_session(session, result_size=sys.maxsize)
+    return {"turns": d["assistant_turns"], "cost_usd": d["cost_usd"], "model": d["model"], "tool_calls": d["tool_calls"],
+            "failed_calls": [{"tool": f["tool"], "result": f["result"]} for f in d["failed_or_blocked"]]}
+
+
 def describe_children(folder: Path, paths: dict, run_dir: Path) -> list[dict]:
-    """A wave's children from its record: key, agent, status, error, output (clipped), and their files in the bundle."""
+    """A wave's children from its record: key, agent, status, error, what they did, output, and their files in the
+    bundle."""
     status = read_json(folder / "status.json") or {}
     settled = {}
     try:
@@ -131,12 +162,15 @@ def describe_children(folder: Path, paths: dict, run_dir: Path) -> list[dict]:
         result = settled.get(key) or {}
         first = next(iter(result.get("results") or []), {})  # the child's own result: where its transcript is
         output = str(result.get("output") or result.get("error") or "")
+        transcript = step.get("transcriptPath") or first.get("transcriptPath")
         children.append({
             "key": key, "agent": step.get("agent"), "status": step.get("status"),
-            "error": step.get("error") or result.get("error"), "exit_code": step.get("exitCode"),
-            "output": output[-OUTPUT_CHARS:], "run_id": step.get("runId"),
+            "error": step.get("error") or result.get("error"), "exit_code": step.get("exitCode"), "run_id": step.get("runId"),
+            "activity": describe_activity(find_on_disk(step.get("sessionFile"), paths, run_dir)
+                                          or find_on_disk(transcript, paths, run_dir)),
+            "output": output,
             "session": find_in_bundle(step.get("sessionFile"), paths, run_dir),
-            "transcript": find_in_bundle(step.get("transcriptPath") or first.get("transcriptPath"), paths, run_dir),
+            "transcript": find_in_bundle(transcript, paths, run_dir),
         })
     return children
 
@@ -185,9 +219,63 @@ def find_agent_sessions(agent_dir: Path, run_state: dict) -> list[Path]:
     return found
 
 
-def collect(run_dir: Path | None, agent_dir: Path | None, with_files: bool, ended: bool = True):
-    """(agent folder, bundle.json's facts, {name in the bundle: file}) for a run folder, or the agent's active (else
-    last) run; `ended`: refuse a run (or an agent's wave) still running."""
+def read_given_params(run_dir: Path) -> list[dict]:
+    """The params a run was given: a release's call.json, an agent's launches and `given_params`."""
+    state = read_run(run_dir)
+    return [(read_json(run_dir / "call.json") or {}).get("params") or {}, state.get("given_params") or {},
+            *((x.get("params") or {}) for x in state.get("launches") or [] if isinstance(x, dict))]
+
+
+def find_param_values(run_dir: Path) -> dict:
+    """{value: param name} of the run's params, and of a path's file name; a value under 4 characters is left out (it
+    would be replaced anywhere)."""
+    found = {}
+    for params in read_given_params(run_dir):
+        for name, value in params.items():
+            for text in (str(value), Path(str(value)).name):
+                if len(text) >= 4:
+                    found.setdefault(text, name)
+    return found
+
+
+def finish(info: dict, replace: dict, with_data: bool) -> tuple[dict, list[str], set[str]]:
+    """bundle.json from collect's facts: in its texts (errors, failed calls' results, outputs) each value in `replace`
+    replaced, in one pass, and only then clipped (a clipped value would no longer match); without what the run read
+    unless `with_data` (children's output and files, `paths`, the agent's sessions). (it, the texts left that may quote
+    what the run read, for `to_check`, the values replaced)."""
+    pattern = re.compile("|".join(map(re.escape, sorted(replace, key=len, reverse=True)))) if replace else None
+    to_check, hits = [], set()
+
+    def scrub(text, size: int | None = SNIPPET, where=None):
+        """`text` replaced, then clipped to `size` (None: whole; negative: its end)."""
+        if not text:
+            return text
+        if pattern:
+            text = pattern.sub(lambda m: hits.add(m.group(0)) or replace[m.group(0)], str(text))
+        text = str(text) if size is None else clip(text, size) if size > 0 else str(text)[size:]
+        if where and not with_data:
+            to_check.append(f"{where}: {text}")
+        return text
+
+    error, launches = scrub(info.get("error"), None, "run"), []
+    for launch in info["launches"]:
+        children = []
+        for c in launch["children"]:
+            child = {**c, "error": scrub(c["error"], None, c["key"]), "output": scrub(c["output"], -OUTPUT_CHARS)}
+            if c["activity"]:
+                child["activity"] = {**c["activity"], "failed_calls": [
+                    {**f, "result": scrub(f["result"], where=f"{c['key']} ({f['tool']})")} for f in c["activity"]["failed_calls"]]}
+            children.append(child if with_data else {k: v for k, v in child.items() if k not in CONTENT})
+        launches.append({**launch, "children": children} if with_data
+                        else {**{k: v for k, v in launch.items() if k != "record"}, "children": children})
+    dropped = () if with_data else ("paths", "sessions")
+    return {**{k: v for k, v in info.items() if k not in dropped}, "error": error, "launches": launches}, to_check, hits
+
+
+def collect(run_dir: Path | None, agent_dir: Path | None, ended: bool = True):
+    """(agent folder, run folder, bundle.json's facts, {name in the bundle: file}: all of them, as --with-data takes
+    them) for a run folder, or the agent's active (else last) run; `ended`: refuse a run (or an agent's wave) still
+    running."""
     if run_dir is None:
         runs = list_runs(agent_dir or Path("."))
         run_dir = (active_run(agent_dir or Path(".")) or Run(*runs[-1], {})).dir if runs else None
@@ -204,7 +292,7 @@ def collect(run_dir: Path | None, agent_dir: Path | None, with_files: bool, ende
         sessions = find_agent_sessions(agent_dir, read_run(run_dir))
 
     entries = {}  # name in the bundle -> file
-    for name in run_files + (data_folders if with_files else ()) + (str(CHILD_RECORDS),):
+    for name in run_files + data_folders + (str(CHILD_RECORDS),):
         path = run_dir / name
         for f in sorted(path.rglob("*")) if path.is_dir() else [path] if path.is_file() else []:
             if f.is_file() and not f.is_symlink():
@@ -227,10 +315,11 @@ def collect(run_dir: Path | None, agent_dir: Path | None, with_files: bool, ende
                           "record": f"subagents/{folder.relative_to(subagents_runs_root().parent)}" if folder.is_dir() else None,
                           "children": describe_children(folder, paths, run_dir) if folder.is_dir() else []})
 
-    info = {"format": FORMAT, **facts, "run": run_dir.name, "with_files": with_files,
+    info = {"format": FORMAT, **facts, "run": run_dir.name, "stages": read_run(run_dir).get("stages"),
+            "params": sorted({name for params in read_given_params(run_dir) for name in params}),
             "made_at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"), "versions": read_versions(agent_dir),
             "launches": described, "sessions": [f"agent-sessions/{f.name}" for f in sessions], "paths": paths}
-    return agent_dir, info, entries
+    return agent_dir, run_dir, info, entries
 
 
 RUN_OPTION = Annotated[Path | None, typer.Option("--run", help="a run folder: a release's or the agent's own")]
@@ -240,8 +329,10 @@ EVENTS_SHOWN = 20
 
 @app.command()
 def show(run_dir: RUN_OPTION = None, agent_dir: AGENT_OPTION = None):
-    """What a run's bundle would say (bundle.json, without `paths`), and a release's last events: packs nothing."""
-    _agent_dir, info, _entries = collect(run_dir, agent_dir, False, ended=False)
+    """What a run's bundle made --with-data would say (bundle.json, without `paths`), and a release's last events: packs
+    nothing (it is shown where the run ran)."""
+    _agent_dir, _run_dir, info, _entries = collect(run_dir, agent_dir, ended=False)
+    info = finish(info, {}, with_data=True)[0]
     folder = run_dir.resolve() if run_dir else None
     events = []
     if folder and (folder / "events.jsonl").is_file():
@@ -256,12 +347,16 @@ def show(run_dir: RUN_OPTION = None, agent_dir: AGENT_OPTION = None):
 
 @app.command()
 def make(run_dir: RUN_OPTION = None, agent_dir: AGENT_OPTION = None,
-         with_files: Annotated[bool, typer.Option("--with-files", help="add the run's data folders (a release's inputs/, outputs/ and work/; an agent's work/)")] = False,
+         with_data: Annotated[bool, typer.Option("--with-data", help="add the run as it is: its records, the children's sessions and output, its data folders")] = False,
          out: Annotated[Path, typer.Option(help="folder to write the bundle in")] = Path(".")):
     """Write a run's bundle."""
-    agent_dir, info, entries = collect(run_dir, agent_dir, with_files)
+    agent_dir, run_dir, info, entries = collect(run_dir, agent_dir)
     secrets = find_secrets(agent_dir)
-    redacted, warnings = set(), []
+    params = {} if with_data else {v: f"<{name}>" for v, name in find_param_values(run_dir).items()}
+    info, to_check, hits = finish(info, {**params, **{v: f"${{{env}}}" for v, env in secrets.items()}}, with_data)
+    redacted, warnings = {env for v, env in secrets.items() if v in hits}, []
+    if not with_data:
+        entries = {}
     out.mkdir(parents=True, exist_ok=True)
     target = out.resolve() / f"{info['agent']}-{info['version']}-{info['run']}.tgz"
     with tarfile.open(target, "w:gz") as tar:
@@ -283,9 +378,9 @@ def make(run_dir: RUN_OPTION = None, agent_dir: AGENT_OPTION = None,
                 add(name, path.read_bytes())
             except OSError:
                 continue
-        add("bundle.json", json.dumps({**info, "redacted": sorted(redacted)}, indent=1).encode())
-    emit({"ok": True, "bundle": str(target), "size_mb": round(target.stat().st_size / 1e6, 2), "files": len(entries),
-          "with_files": with_files, "redacted": sorted(redacted), "warnings": warnings})
+        add("bundle.json", json.dumps({**info, "with_data": with_data, "redacted": sorted(redacted)}, indent=1).encode())
+    emit({"ok": True, "bundle": str(target), "size_mb": round(target.stat().st_size / 1e6, 2), "files": len(entries) + 1,
+          "with_data": with_data, "redacted": sorted(redacted), "warnings": warnings, "to_check": to_check})
 
 
 def check_commit(agent_dir: Path, commit: str | None) -> list[str]:

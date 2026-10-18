@@ -8,7 +8,7 @@
  *   /agent-history [n]       the last n runs, and how each stage went in them (no model)
  *   /agent-prune [keep]      delete old finished runs' work/ folders, keeping the newest (default 10; no model)
  *   /agent-revise [change]   change the plan on a branch, for review (no run active; model)
- *   /agent-bundle [run] [--with-files]   pack a run's evidence into one file, for /agent-improve where the agent is developed
+ *   /agent-bundle [run] [--with-data]    pack a run's evidence into one file, for /agent-improve where the agent is developed
  *   /agent-improve [bundle.tgz …] [focus]   propose fixes from the sessions and runs (and released runs' bundles),
  *                            applied on an improve/ branch (no run active; model)
  *
@@ -128,12 +128,11 @@ any branch you mean to cite.
 \`imported\` lists runs from bundles, made somewhere else: a release of this agent (\`kind: release\`) or
 a copy of it run there (\`kind: run\`, with that copy's own sessions in \`agent_sessions\`); \`commit\` is the
 code that ran. Treat them like runs: a failure there is evidence, one that a caller's odd input explains is
-still a one-off. Read a failed child's session, or one of \`agent_sessions\`, with agent_sessions (show <its
-path>); its folder holds the run's records (\`run/\`, \`subagents/\`, and \`run/inputs/\` or \`run/work/\` when
-it came with files). For a release's run, when the branch holds the fix, tell the user they can check it
-before merging with \`prometheus run <slug>@<this branch> --bundle <the bundle file>\` (it runs the
-branch's committed state on the bundle's params and files), and release it after the merge with
-\`prometheus release <slug>\`.
+still a one-off. Most bundles come without the run's data: a failed child's error and \`activity\` (its tool
+calls, failed calls' results) are all there is, and the fix must follow from them and from this agent's own
+files; don't ask for the data. A bundle made with \`with_data\` also has each failed child's output and
+session (read it, or one of \`agent_sessions\`, with agent_sessions: show <its path>) and the run's records
+in its folder (\`run/\`, \`subagents/\`). Release the fix after the merge with \`prometheus release <slug>\`.
 
 1. Find causes, not symptoms: a gate that rejected correct output, a stage program rewritten or
    failing each run, a stage task that left something out, a question the plan should have
@@ -826,7 +825,7 @@ export default function agentExtension(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("agent-bundle", {
-    description: "Pack a run's evidence into one file for whoever develops this agent (changes nothing): /agent-bundle [run id] [--with-files]",
+    description: "Pack a run's evidence into one file for whoever develops this agent (changes nothing): /agent-bundle [run id] [--with-data]",
     handler: async (args, ctx) => {
       const root = findRoot(ctx.cwd);
       if (!root) {
@@ -837,7 +836,7 @@ export default function agentExtension(pi: ExtensionAPI) {
       const run = words.find((w) => !w.startsWith("--"));
       const res = await runScript(pi, root, "run_bundle.py", [
         "make", ...(run ? ["--run", path.join(root, "runs", path.basename(run))] : ["--agent", root]),
-        "--out", path.join(root, "runs"), ...(words.includes("--with-files") ? ["--with-files"] : []),
+        "--out", path.join(root, "runs"), ...(words.includes("--with-data") ? ["--with-data"] : []),
       ]);
       const b = res.data ?? {};
       if (!b.ok) {
@@ -845,11 +844,13 @@ export default function agentExtension(pi: ExtensionAPI) {
         return;
       }
       show("Bundle", [
-        `\`${b.bundle}\` (${b.size_mb} MB, ${b.files} files${b.with_files ? ", with the run's work folder" : ""})`,
+        `\`${b.bundle}\` (${b.size_mb} MB, ${b.files} files${b.with_data ? ", with the run's data" : ""})`,
         "",
         "Copy it to where this agent is developed and run `/agent-improve <file>` there.",
         ...(b.redacted?.length ? [`The values of ${b.redacted.join(", ")} were replaced by \${NAME}.`] : []),
         ...(b.warnings ?? []).map((w: string) => `- **Check before you send it:** ${w}`),
+        ...(b.to_check?.length ? ["", "Without the run's data, but these texts are in it and may quote it; check them before you send it:",
+          ...b.to_check.map((t: string) => `- ${t.slice(0, 300)}`)] : []),
       ].join("\n"));
     },
   });

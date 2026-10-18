@@ -28,7 +28,7 @@ The plan refers to a param as `${email_folder}` in input and output paths, in st
 ### Types
 
 | Type | Use it for | What `${name}` becomes |
-|---|---|---|
+| --- | --- | --- |
 | `path` (default) | files and folders | the path, with `~` expanded; a relative value resolves inside the run's folder (`runs/<id>/`), so runs don't overwrite each other's outputs |
 | `text` | a table name, URL, account id, anything that is not a path | the value, exactly as given |
 | `secret` | keys, tokens, passwords | `"${ENV_NAME}"`, which the shell of a stage program or its gate expands; the value itself is never written anywhere |

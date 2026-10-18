@@ -3,7 +3,7 @@
 **Commands** start with `/`, and you type them in Pi. To run a released agent from Python instead, see the [Python API](python-api.md). prometheus's commands run in the planner (`prometheus`); the others run in an agent (`prometheus <slug>`). The [`prometheus` command](#the-prometheus-command) itself runs in your shell.
 
 | Command | Runs in | Does |
-|---|---|---|
+| --- | --- | --- |
 | [`/agent-new`](#agent-new) | prometheus | plan a new agent for a request |
 | [`/agent-list`](#agent-list) | prometheus | list agents and where each stands |
 | [`/agent-export`](#agent-export) | prometheus | copy an agent somewhere else to run it |
@@ -30,7 +30,7 @@ Inside an agent, each entry names the [states](state-machine.md) it is accepted 
 ### Everyday use
 
 | Command | Does |
-|---|---|
+| --- | --- |
 | `prometheus [pi options]` | Starts the planner: `pi` in the planner's folder, with prometheus's extension, skill and role. Options such as `--resume` go to `pi`. |
 | `prometheus <slug> [pi options]` | Starts that agent: `pi` in `<slug>/` in the agents folder. |
 | `prometheus init [--agents <folder>] [--home <folder>] [--yes]` | Chooses the agents folder and the planner's folder, and saves them. It asks only in a terminal, and never with `--yes`. Then it runs the checks `doctor` runs. |
@@ -48,11 +48,11 @@ Each folder comes from the first of these that is set: the flag, the environment
 A release is a version of an agent that code can run with nobody deciding anything. [How to release an agent](how-to.md#how-to-release-an-agent) walks through it.
 
 | Command | Does |
-|---|---|
+| --- | --- |
 | `prometheus release <slug> [--breaking] [--yes]` | Shows whether the agent's current commit on `main` can run as code, its interface (params, outputs, side effects, decisions), its model stages, and what changed since the last release. Then it tags the commit `v<major>.<minor>`, asking first unless `--yes`. A change that can break callers needs `--breaking`, which raises the major version. |
 | `prometheus run <slug>[@<version or ref>] [options]` | Runs a release, described [below](#prometheus-run). |
 | `prometheus runs <slug> [<run>] [--json]` | Lists the runs of the agent's releases on this machine: id, version, state, start, cost and error. Given a run, it shows how that run went: each wave, the children that failed with their error and output, and its last events. It changes nothing; use it to find the run to bundle. |
-| `prometheus bundle <slug> <run> [--with-files] [--out <folder>]` | Packs a released run into `<slug>-<version>-<run>.tgz`: its records, pi-subagents' records of its launches, and each child's session and output. The run is one that `prometheus run`, `load_agent` or `serve` started, found in the releases folder. `--with-files` adds the run's inputs, outputs and work folder, which are the caller's data. Secret values are replaced by `${NAME}`, and anything else that looks like a key is reported. A running run is refused. From Python, `run.bundle()` does the same. Where the bundle goes next: [How to fix a released agent after a failed run](how-to.md#how-to-fix-a-released-agent-after-a-failed-run). |
+| `prometheus bundle <slug> <run> [--with-data] [--out <folder>]` | Packs a released run into `<slug>-<version>-<run>.tgz`. The run is one that `prometheus run`, `load_agent` or `serve` started, found in the releases folder. By default the bundle says what the run did, without what it read: how each stage ended, each child's error, and its tool calls with the results of those that failed. Errors and failed results can still quote what the run read, so param values in them are replaced by `<name>` and they're listed for you to check. `--with-data` adds the run as it is: its records, pi-subagents' records of its launches, each child's session and output, and the run's inputs, outputs and work folder, which are the caller's data. Secret values are replaced by `${NAME}` either way, and anything else that looks like a key is reported. A running run is refused. From Python, `run.bundle()` does the same. Where the bundle goes next: [How to fix a released agent after a failed run](how-to.md#how-to-fix-a-released-agent-after-a-failed-run). |
 | `prometheus serve <slug>[@v] [options]` | Serves one release over HTTP and A2A, described [below](#prometheus-serve). |
 
 ### Sharing
@@ -60,7 +60,7 @@ A release is a version of an agent that code can run with nobody deciding anythi
 Agents are shared through plain git, so any git host works. The how-to guides start at [How to share an agent with your team](how-to.md#how-to-share-an-agent-with-your-team).
 
 | Command | Does |
-|---|---|
+| --- | --- |
 | `prometheus share <slug> <git url> [--yes]` | Refuses files that look like secrets (keys, tokens, a `.env` in git), shows what goes out (the agent's own code, its packages and the lessons from its runs), then pushes `main` and its releases. On GitLab, the push can create a new project, if your instance allows it. |
 | `prometheus install <git url, folder or catalog name>@<v1 or v1.2> [--as <slug>] [--yes]` | Installs one release, frozen, for a machine that only runs it: fetches only that tag (the newest 1.x for `@v1`), unpacks it into `~/.local/share/prometheus/releases/<slug>/<version>/` (`PROMETHEUS_RELEASES`), and shows the agent's own code, packages and lessons before keeping it. No repository is kept and nothing is refreshed. Installing an installed version again changes nothing; a tag that has moved since is refused. |
 | `prometheus install <git url, folder or catalog name> [--as <slug>] [--yes]` | Clones the agent and refreshes it from your prometheus, so its extension, skill copy and template files are your own trusted copies. Then it shows the agent's own code (gates, programs, subagent profiles), packages and lessons, and keeps it only if you say so (`--yes` keeps it without asking). |
@@ -77,10 +77,10 @@ prometheus run <slug>[@v1 | @v1.2 | @<branch or commit>] [-p name=value]… [-a 
 Runs a release. It comes from the agent's repository when that is in the agents folder (its tags decide), else from the releases installed here. After `@`, a branch, tag or commit that isn't a release runs that commit's committed state as a build, the same way.
 
 | Option | Does |
-|---|---|
+| --- | --- |
 | `-p name=value` | sets a param. Not a secret: secrets come from the environment. |
 | `-a stage` | approves a side effect up front. |
-| `--bundle <file>` | runs again what a bundled run was given: its params, its approvals and, when it was bundled with its files, those files. `-p` overrides a param. |
+| `--bundle <file>` | runs again what a released run bundled `--with-data` was given: its params and files. Not its approvals: its side effects ask again, since this machine's secrets may reach real systems. `-p` overrides a param. |
 | `--json` | prints events and the result as JSON lines. |
 
 A side effect that isn't approved, or a decision, stops the run there. In a terminal it shows what the stage would write and asks; otherwise it exits saying what to approve. It prints each stage as it goes and the outputs at the end, and exits 0 when the run completed.
@@ -96,14 +96,14 @@ Serves one release over HTTP, one agent per process. A token (`--token` or `PROM
 Callers never send paths. Inputs arrive as uploaded files, and outputs stay in the run until they are downloaded. Each run lives in the release's folder (`PROMETHEUS_RELEASES`), so a restarted server still answers for earlier runs, and a call that repeats an earlier call's judgment on the same files reuses it. With `--keep`, outputs nobody downloaded before their run is pruned are gone, but the run's history stays. The server logs one JSON line per request and run to stdout.
 
 | Endpoint | Does |
-|---|---|
+| --- | --- |
 | `GET /` | describes the agent |
 | `POST /runs` | starts a run, from a form generated from the agent's interface: a file per path param (several for a folder), text fields, and `approve` once per side effect. With `?wait=true` it answers once the run stops. |
 | `GET /runs/<id>` | the run's state; one waiting for an answer is `input_required`, with what it needs |
 | `POST /runs/<id>/answer` | answers it: `{"approve": [...], "decisions": {...}}` |
 | `GET /runs/<id>/events` | the run's events, as server-sent events |
 | `GET /runs/<id>/outputs/<o>` | downloads an output |
-| `GET /runs/<id>/bundle` | downloads an ended run's bundle, as `prometheus bundle` makes it; `?with_files=true` adds the run's files |
+| `GET /runs/<id>/bundle` | downloads an ended run's bundle, as `prometheus bundle` makes it; `?with_data=true` adds the run's data |
 | `DELETE /runs/<id>` | cancels the run |
 | `GET /health`, `GET /docs` | a health check (no token needed), and the interactive API docs |
 
@@ -120,7 +120,7 @@ An agent built with prometheus calls another one with a stage of `pattern: a2a`.
 Set these in your shell, or in whatever starts prometheus or an agent, such as a scheduled job or a service's unit file. None of them is read from an agent's `.env`, which holds only the agent's params and is never loaded into Pi's environment.
 
 | Variable | Read by | Does | Default |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `PROMETHEUS_AGENTS` | `prometheus`, the planner | the agents folder; wins over `config.toml` | `~/agents` |
 | `PROMETHEUS_HOME` | `prometheus` | the planner's folder; wins over `config.toml` | `~/.prometheus` |
 | `PROMETHEUS_RELEASES` | `run`, `install`, `serve`, `load_agent` | where releases are unpacked and run. It holds their runs, so it's kept, not a cache | `$XDG_DATA_HOME/prometheus/releases` (`~/.local/share/…`) |
@@ -283,12 +283,12 @@ Keeps the newest `keep` finished runs whole (default 10). For older ones it dele
 Packs a run's evidence into one file, for whoever develops the agent.
 
 ```text
-/agent-bundle [run id] [--with-files]
+/agent-bundle [run id] [--with-data]
 ```
 
 **Runs in:** an agent · **States:** all · changes nothing but the file it writes
 
-For an agent that runs on a machine without prometheus, copied there with `/agent-export` or cloned. It needs only the agent's own skill copy. Without a run id it takes the active run, else the last one, and writes `runs/<slug>-r<revision>-<run>.tgz`. The bundle holds the run's `run.yaml` and compiled waves, pi-subagents' records of its launches with each child's session, input, output and transcript, and the agent's own sessions during the run. `--with-files` adds the rest of the run's `work/` folder. The values of the agent's secrets (from `.env` or the environment) are replaced by `${NAME}`, and anything else that looks like a key is listed for you to check before you send it. A wave that is still running is refused.
+For an agent that runs on a machine without prometheus, copied there with `/agent-export` or cloned. It needs only the agent's own skill copy. Without a run id it takes the active run, else the last one, and writes `runs/<slug>-r<revision>-<run>.tgz`. By default the bundle says what the run did, without what it read: how each stage ended, each child's error, and its tool calls with the results of those that failed. Param values in those texts are replaced by `<name>`, and the texts are listed for you to check. `--with-data` adds the run as it is: its `run.yaml` and compiled waves, pi-subagents' records of its launches with each child's session, input, output and transcript, the run's `work/` folder, and the agent's own sessions during the run. The values of the agent's secrets (from `.env` or the environment) are replaced by `${NAME}` either way, and anything else that looks like a key is listed for you to check before you send it. A wave that is still running is refused.
 
 Where the agent is developed, `/agent-improve <file>` reads it: [How to improve an agent from a run on another machine](how-to.md#how-to-improve-an-agent-from-a-run-on-another-machine). A release's run is bundled with [`prometheus bundle`](#releases) instead.
 
@@ -355,7 +355,7 @@ Nothing runs it automatically: only you type it.
 /agent-improve the approval question is hard to answer
 ```
 
-**Refusals:** [no run yet](troubleshooting.md#nothing-to-improve-from-yet) · [nothing new](troubleshooting.md#nothing-new-to-improve-from) · [a run is active](troubleshooting.md#a-run-is-already-active) · [a revise is open](troubleshooting.md#another-change-is-open) · [another branch is checked out](troubleshooting.md#another-branch-is-checked-out) · [a bundle it can't import](troubleshooting.md#a-bundle-isnt-imported)
+**Refusals:** [no run yet, or nothing new](troubleshooting.md#nothing-to-improve-from) · [a run is active](troubleshooting.md#a-run-is-already-active) · [a revise is open](troubleshooting.md#another-change-is-open) · [another branch is checked out](troubleshooting.md#another-branch-is-checked-out) · [a bundle it can't import](troubleshooting.md#a-bundle-isnt-imported)
 
 **See also:** [`/agent-revise`](#agent-revise) · [`agent_sessions`](#agent_sessions)
 
@@ -364,7 +364,7 @@ Nothing runs it automatically: only you type it.
 You don't call these. They are here so you can read a tool result or a refusal the agent shows you.
 
 | Tool | Runs in | Does |
-|---|---|---|
+| --- | --- | --- |
 | [`agent_scaffold`](#agent_scaffold) | prometheus | create the folder for the agent being planned |
 | [`agent_check (prometheus)`](#agent_check-prometheus) | prometheus | check an agent's plan from prometheus |
 | [`agent_record_critique (prometheus)`](#agent_record_critique-prometheus) | prometheus | record the plan critic's result for a new agent: what makes its plan ready |
@@ -467,7 +467,7 @@ When every stage of the wave is reused from an earlier run, there is nothing to 
 Otherwise returns `ok: false` and a `preflight` listing what is missing:
 
 | Field | Means | What happens next |
-|---|---|---|
+| --- | --- | --- |
 | `missing_params` | a param has no value on this machine | the model asks you, then `agent_set_params` |
 | `missing_secrets` | a secret's variable is unset | you add it to `.env` |
 | `decisions_needed` | a decision stage has no answer | the model asks you, then `agent_record_decision` |
@@ -478,7 +478,7 @@ Otherwise returns `ok: false` and a `preflight` listing what is missing:
 
 When it relaunches a wave whose last launch failed, children that completed and haven't changed are not run again, nor a map's completed batches; `notes` says which. A model stage an earlier run finished on the same inputs is not run again either: its outputs are copied from that run. A map stage on the same items, batch size and stage reuses its merged output whole, and nothing of it is launched. When only some items are new or changed, a `pattern: map` stage maps just those: the items an earlier run mapped with the same stage keep their results, merged back in their place.
 
-**Refusals:** [the wave was launched but not recorded](troubleshooting.md#launched-but-not-recorded) · [another branch is checked out, with changes](troubleshooting.md#the-runs-branch-isnt-checked-out) · [a wave is running](troubleshooting.md#a-wave-is-running) · [uv is missing](troubleshooting.md#uv-is-not-installed)
+**Refusals:** [the wave was launched but not recorded](troubleshooting.md#handled-by-the-agent) · [another branch is checked out, with changes](troubleshooting.md#the-runs-branch-isnt-checked-out) · [a wave is running](troubleshooting.md#a-wave-is-running) · [uv is missing](troubleshooting.md#a-tool-isnt-installed)
 
 ### agent_start_wave
 
@@ -510,7 +510,7 @@ Returns `wave_status`, a summary of the children (status and output path, not th
 
 `status` and `result` are for when pi-subagents has no record of the run; the refusal says so.
 
-**Refusals:** [pi-subagents is still running it](troubleshooting.md#still-running-in-pi-subagents) · [its process is gone](troubleshooting.md#the-waves-process-is-gone) · [no record](troubleshooting.md#no-pi-subagents-record)
+**Refusals:** [pi-subagents is still running it](troubleshooting.md#still-running-in-pi-subagents) · [its process is gone](troubleshooting.md#handled-by-the-agent) · [no record](troubleshooting.md#handled-by-the-agent)
 
 ### agent_record_decision
 
@@ -540,7 +540,7 @@ Used after a discovery stage, or when you ask the run for a change. Raises the r
 
 Locked: stages that ran, the request, goal, `done_when`, params, inputs, outputs and subagents. A side effect stays a side effect.
 
-**Refusals:** [locked fields](troubleshooting.md#locked-while-resolving) · [another branch is checked out, with changes](troubleshooting.md#the-runs-branch-isnt-checked-out) · [no run is active](troubleshooting.md#resolve-without-a-run) · [a wave is running](troubleshooting.md#a-wave-is-running)
+**Refusals:** [locked fields](troubleshooting.md#locked-while-resolving) · [another branch is checked out, with changes](troubleshooting.md#the-runs-branch-isnt-checked-out) · [no run is active](troubleshooting.md#handled-by-the-agent) · [a wave is running](troubleshooting.md#a-wave-is-running)
 
 ### agent_record_critique
 
@@ -556,7 +556,7 @@ agent_record_critique({ run_id, verdict, passes?, findings })
 
 At most two passes per revision, and each time a run resolves stages.
 
-**Refusals:** [unknown critic run](troubleshooting.md#unknown-critic-run) · [on `main` after a run](troubleshooting.md#critique-on-main) · [a wave is running](troubleshooting.md#a-wave-is-running)
+**Refusals:** [unknown critic run](troubleshooting.md#handled-by-the-agent) · [on `main` after a run](troubleshooting.md#main-changes-only-by-a-merge) · [a wave is running](troubleshooting.md#a-wave-is-running)
 
 ### agent_stop_run
 
@@ -583,7 +583,7 @@ agent_merge({ action: "merge" | "keep" | "discard", summary? })
 **States:** `run_review`, `change_ready` (all three actions); `change_draft` (keep, discard) → `main_ready`
 
 | Action | Result |
-|---|---|
+| --- | --- |
 | `merge` | The branch becomes one commit on `main`, tagged `r<revision>`. Its subject is `r<revision>: <branch>`; its body is the `summary` the agent gave you at review, the files changed (`git diff --stat`) and the branch's own commits. The branch is deleted. Only a ready, valid plan can merge. |
 | `keep` | Back to `main`; the branch stays for later. |
 | `discard` | Back to `main`; the branch is deleted. |
@@ -605,7 +605,7 @@ agent_add_package({ slug, packages: ["openpyxl", …], reason })      (in promet
 
 It shows you the packages and the reason, and runs `uv add` only on a yes; on a no it tells the agent to work without the package or ask you. `uv add`, `pip install` and the script behind the tool are blocked for the agent in bash. A stage's subagent can't ask, so it is told to report the package it needs and why, and the agent asks you afterwards. Requirements are checked first: a package from the index as PEP 508 writes it (a name, extras, version bounds, markers), not a URL, an option or a path.
 
-**Refusals:** [package not in pyproject.toml](troubleshooting.md#package-not-in-pyprojecttoml)
+**Refusals:** [package not in pyproject.toml](troubleshooting.md#handled-by-the-agent)
 
 ### agent_set_params
 

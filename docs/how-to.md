@@ -7,6 +7,7 @@ We've kept the guides to the point, so they say what to do rather than why. If y
 The examples use emails-to-excel, the agent from the tutorial. Put your own agent's name and values in their place.
 
 **Running**
+
 - [How to run an agent on new input](#how-to-run-an-agent-on-new-input)
 - [How to make a run cheaper](#how-to-make-a-run-cheaper)
 - [How to run an agent unattended](#how-to-run-an-agent-unattended)
@@ -18,6 +19,7 @@ The examples use emails-to-excel, the agent from the tutorial. Put your own agen
 - [How to read what happened in an earlier session](#how-to-read-what-happened-in-an-earlier-session)
 
 **Changing**
+
 - [How to change an agent's plan](#how-to-change-an-agents-plan)
 - [How to edit a plan by hand](#how-to-edit-a-plan-by-hand)
 - [How to drop a discovery stage once the input is stable](#how-to-drop-a-discovery-stage-once-the-input-is-stable)
@@ -27,6 +29,7 @@ The examples use emails-to-excel, the agent from the tutorial. Put your own agen
 - [How to make a stage use a connector](#how-to-make-a-stage-use-a-connector)
 
 **Running an agent from code**
+
 - [How to release an agent](#how-to-release-an-agent)
 - [How to run an agent from code](#how-to-run-an-agent-from-code)
 - [How to approve a side effect after a run has started](#how-to-approve-a-side-effect-after-a-run-has-started)
@@ -35,11 +38,13 @@ The examples use emails-to-excel, the agent from the tutorial. Put your own agen
 - [How to fix a released agent after a failed run](#how-to-fix-a-released-agent-after-a-failed-run)
 
 **Sharing agents**
+
 - [How to share an agent with your team](#how-to-share-an-agent-with-your-team)
 - [How to install someone else's agent](#how-to-install-someone-elses-agent)
 - [How to propose a change to an agent you installed](#how-to-propose-a-change-to-an-agent-you-installed)
 
 **Setting up**
+
 - [How to use prometheus from a browser](#how-to-use-prometheus-from-a-browser)
 - [How to run an agent on another machine](#how-to-run-an-agent-on-another-machine)
 - [How to keep agents in another folder](#how-to-keep-agents-in-another-folder)
@@ -191,8 +196,8 @@ If nothing has happened since the last improve and you gave no focus, the agent 
 
 Use this when a copy of the agent runs somewhere prometheus isn't installed, copied there with `/agent-export` or cloned, and you develop the agent here. Its runs and sessions never reach you through git, since `runs/` and `.pi/sessions` aren't in it.
 
-1. On the other machine, in the agent, type `/agent-bundle`. It packs the active run, or the last one, into `runs/<slug>-r<revision>-<run>.tgz`. To pack an earlier run, name it (`/agent-bundle 2026-10-16-2`). To include the run's `work/` folder, add `--with-files`.
-2. Check the warnings it lists, if any, then copy the file here.
+1. On the other machine, in the agent, type `/agent-bundle`. It packs the active run, or the last one, into `runs/<slug>-r<revision>-<run>.tgz`. To pack an earlier run, name it (`/agent-bundle 2026-10-16-2`). It says what the run did, not what it read. If whoever develops the agent may see the run's data, add `--with-data`: the children's sessions and output, and the run's `work/` folder.
+2. Check the warnings and the texts it lists, if any, then copy the file here.
 3. Here, type `/agent-improve <file>` and answer the proposals as usual: [How to improve an agent from its past runs](#how-to-improve-an-agent-from-its-past-runs).
 4. Merge the branch, then bring the change to the other machine: pull it there, or export the agent again.
 
@@ -334,16 +339,16 @@ Use this when a release ran somewhere else, from code, `prometheus run` or `serv
    prometheus bundle emails-to-excel 20261016-101010-abcd
    ```
 
-   Behind `serve`, download it instead, from `GET /runs/<id>/bundle` with the token. From Python, `run.bundle()` writes it. The values of the agent's secrets are replaced by `${NAME}`, and anything else that looks like a key is reported: check those warnings before you send it on.
-3. To rerun the same call later, the bundle needs the files the caller sent. Add `--with-files` (`?with_files=true` from `serve`) when you may hand the caller's data to whoever fixes the agent.
+   Behind `serve`, download it instead, from `GET /runs/<id>/bundle` with the token. From Python, `run.bundle()` writes it. The bundle says what the run did without what it read: how each stage ended, each child's error, and its tool calls with the results of those that failed. Those texts can still quote the run's data, so param values in them are replaced by `<name>`, and `prometheus bundle` lists them. The values of the agent's secrets are replaced by `${NAME}`, and anything else that looks like a key is reported. Check both before you send it on.
+3. Only when whoever fixes the agent may see the caller's data, add `--with-data` (`?with_data=true` from `serve`). It adds the children's sessions and output and the run's files, which a failure of judgment often needs, and lets the fix be checked on the same call (step 5).
 4. Copy the bundle to the machine where the agent is developed. In the agent, type `/agent-improve` with the bundle's path, and a focus if you want one: `/agent-improve emails-to-excel-v1.0-20261016-101010-abcd.tgz`. Answer the proposals as usual.
-5. Before you merge, check the fix on the bundled call. This runs the branch's committed state with the bundle's params, approvals and files:
+5. With a bundle made `--with-data`, you can check the fix on the bundled call before you merge. This runs the branch's committed state with the bundle's params and files:
 
    ```sh
    prometheus run emails-to-excel@improve/2026-10-16-1 --bundle emails-to-excel-v1.0-20261016-101010-abcd.tgz
    ```
 
-   If the bundle has no files, give the caller's files yourself, with `--param <name>=<path>`.
+   The bundled run's approvals aren't carried over. Each side effect asks again, because the secrets on this machine may reach real systems. A single run that passes shows that the failure is gone that time, not that it can't come back.
 6. Merge the branch ([How to review and merge a branch](#how-to-review-and-merge-a-branch)), then release it ([How to release an agent](#how-to-release-an-agent)), and update where it runs.
 
 If the import warns that the release's commit isn't on `main`, the agent here has moved on from what ran, or was never pulled. Pull it first if you can, so the fix starts from the code that failed.
