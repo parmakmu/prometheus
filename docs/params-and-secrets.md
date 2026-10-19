@@ -23,15 +23,15 @@ params:
     env: CRM_API_TOKEN        # default: the param's name in upper case
 ```
 
-The plan refers to a param as `${email_folder}` in input and output paths, in stage output paths and in gate commands. Planning never asks for param values: they belong to the machine, and `/agent-run` asks for them.
+The plan refers to a param as `${email_folder}` in input and output paths, in stage output paths, in a stage program's `args` and in gate commands. Planning never asks for param values: they belong to the machine, and `/agent-run` asks for them.
 
 ### Types
 
 | Type | Use it for | What `${name}` becomes |
 | --- | --- | --- |
-| `path` (default) | files and folders | the path, with `~` expanded; a relative value resolves inside the run's folder (`runs/<id>/`), so runs don't overwrite each other's outputs |
+| `path` (default) | files and folders | the path, with `~` expanded. A relative value, such as the default `outputs/emails.xlsx`, resolves inside the run's folder (`runs/<id>/`), so runs don't overwrite each other's outputs. An input's path must be absolute (see [Setting values](#setting-values)). |
 | `text` | a table name, URL, account id, anything that is not a path | the value, exactly as given |
-| `secret` | keys, tokens, passwords | `"${ENV_NAME}"`, which the shell of a stage program or its gate expands; the value itself is never written anywhere |
+| `secret` | keys, tokens, passwords | `"${ENV_NAME}"`, which the shell of a stage program or its gate expands. prometheus never writes the value anywhere: you put it in `.env` or the environment. |
 
 ### Values that change every run
 
@@ -45,13 +45,19 @@ params:
     per_run: true
 ```
 
-Its value belongs to one run. `/agent-run` asks for it, or takes it from what you typed after the command, and keeps it on that run instead of in `.env`, so the next run asks again rather than quietly answering the last question. An unattended run (`pi -p "/agent-auto"`) reads it from the environment it was started with. Callers of a released agent give it like any other value. A secret can't be `per_run`.
+Its value belongs to one run. `/agent-run` asks for it, or takes it from what you typed after the command, and keeps it on that run instead of in `.env`, so the next run asks again rather than quietly answering the last question. A run nobody is there to ask, such as `pi -p "/agent-auto"` from a script, reads it from the environment it was started with. Callers of a released agent give it like any other value. A secret can't be `per_run`.
 
 ### Where secrets reach
 
-A secret can be used only in a stage program's `args` and in that stage's gate. Those are the commands the batcher runs, which no model can steer, so no model child ever gets a secret.
+A secret can be used in three places only:
 
-That's deliberate. Every child of a run shares one sandbox and one environment, and a child reading an email can be told by that email to send what it finds somewhere. So a stage that needs a token to call a service does it with a program, or through a connector.
+- a stage program's `args`;
+- the gate of a stage whose program has `args`;
+- an `a2a` stage's `token`, when it calls another agent.
+
+All three are run by the batcher, the part of a wave that executes commands with no model, so no model child ever gets a secret. A program without `args` is run by a model child, so its stage can't use a secret.
+
+That's deliberate. Every child of a run shares one sandbox and one environment, and a child reading an email can be told by that email to send what it finds somewhere. So a stage that needs a token to call a service does it with a program, or through a connector (a tool, such as an MCP server, that holds its own credentials).
 
 A secret that only a connector reads, such as the connector's own token, goes in the environment you start Pi from, or in the connector's configuration, because `.env` isn't loaded into Pi's environment. Declaring it in the plan is still worth it: the run then checks that it's set before launching.
 
@@ -66,7 +72,7 @@ Each param reads one environment variable: the one its `env:` names, or else its
 Two kinds of run get their values from whoever started them instead:
 
 - **A call to the web app's run API** gives values for that run only, which win over the list above. It can't give a secret, and a relative path resolves inside the run, so `inputs/emails` names the files the call sent. See [ui/README.md](../ui/README.md), "The run API".
-- **A released agent run from code** (`prometheus run -p`, `load_agent`, `prometheus serve`) has no `.env` at all. Its values come from the caller, and a relative path is relative to the caller, not the run; a served agent gets its files as uploads. Its secrets come from the environment of the process that runs it, and anything left unset takes the plan's default. See [How to run an agent from code](how-to.md#how-to-run-an-agent-from-code).
+- **A released agent run from code** (`prometheus run -p`, `load_agent`, `prometheus serve`) has no `.env` at all. A value is looked up in the caller's values, then the environment of the process that runs it (the only place for secrets), then the plan's `default`. A relative path the caller gives is relative to the caller's own working folder; a default such as `outputs/emails.xlsx` still resolves inside the run. A served agent gets its files as uploads. A required param with none of these refuses the run before it starts ("can't run: missing params"). See [How to run an agent from code](how-to.md#how-to-run-an-agent-from-code).
 
 `.env` is an ordinary dotenv file:
 
@@ -76,7 +82,7 @@ EMAIL_FOLDER='/Users/me/Mail/export'
 CRM_API_TOKEN='…'
 ```
 
-It is in the agent's `.gitignore`, so it is never committed, and exports leave it out.
+It is in the agent's `.gitignore`, so it is never committed, and `/agent-export` leaves it out.
 
 ## Setting values
 
@@ -92,22 +98,24 @@ A secret's value stays in `.env` (or your environment), and reaches only the com
 - The agent can't read `.env`: the agent extension blocks the read, write and edit tools on it, and shell commands that mention it (best effort for shell commands).
 - `agent_set_params`, the model's tool for setting values, refuses secrets.
 - `.env` is not loaded into Pi's environment, so no child inherits a secret.
-- In compiled waves, a secret appears only as `"${ENV_NAME}"`, in a stage program's command or its gate. The batcher adds the secrets that command names, read from `.env` at that moment, to that command's environment and no other (`secrets` in its request).
+- In compiled waves, a secret appears only as `"${ENV_NAME}"`, in a stage program's command, its gate or an `a2a` token. Each command the batcher is asked to run lists the secret variables it names (`secrets`); the batcher reads just those, from the environment or else `.env`, at that moment, into that command's environment and no other.
 - A run's record (`runs/<id>/run.yaml`) lists the param values each launch ran with, but a secret only as `(secret, set)`.
 
 ## Exporting an agent
 
-Neither export mode copies `.env`: values are per machine and may hold secrets. The copy gets a `.env` listing each param's variable with no value, ready to fill in on the new machine.
+`/agent-export` never copies `.env`: values are per machine and may hold secrets. The copy gets a `.env` listing each param's variable with no value, ready to fill in on the new machine.
 
 ## Rules the validator enforces
 
 - Every `${name}` refers to a declared param.
 - A param's variable is a valid environment variable name, and not one the system or a tool already uses (`PATH`, `HOME`, `USER`, anything starting `PI_`, …). Otherwise a param called `user` would silently read `$USER`.
 - Two params can't read the same variable.
-- A secret has no `default`, and can't be part of a path (a stage's output path, or a file or folder input's path).
-- A secret appears only in a stage program's `args` or that stage's gate.
+- A secret has no `default`, can't be `per_run`, and can't be part of a path (a stage's output path, or a file or folder input's path).
+- A secret appears only in the three places under [Where secrets reach](#where-secrets-reach).
+- A path param starts the path it is in (`${folder}/x`, not `../${folder}`), since it compiles to an absolute path.
 - Every value in a gate command is shell-quoted, as in a program's `args`, so a value can't add a command.
 - A literal absolute path in a stage's output path is an error: use a param or a path relative to the run.
+- A param that nothing uses gets a warning (except a secret, which a tool may read from the environment).
 
 ## For contributors
 

@@ -76,26 +76,27 @@ The same as `agent.start(params, approve).wait(timeout)`. A run stops when it en
 
 ### Agent.start
 
-Starts a run and returns at once, while the run goes on in a thread of your process.
+Starts a run and returns at once, while the run goes on in a background (daemon) thread of your process. If your program exits before the run ends, the run dies with it and reads as `"error"` afterwards, so wait for it, or keep the process alive.
 
 ```python
-agent.start(params: dict | None = None, approve: list[str] = ()) -> Run
+agent.start(params: dict | None = None, approve: list[str] = (), in_run: tuple | set = ()) -> Run
 ```
 
 - `params` gives each param a value. What a value can be:
 
   | Value | Becomes |
   | --- | --- |
-  | a path (`str` or `Path`) | an absolute path; a relative one is relative to your program, not the run |
+  | a `str` or `Path`, for a `path` param | an absolute path, with `~` expanded; a relative one is relative to your program, not the run. A URL (`…://…`) stays as it is. |
   | `bytes`, or an open file | a file in the run's `inputs/<param>` |
   | `(file name, bytes)` | `inputs/<param>/<file name>`, for programs that care about the extension |
   | `{file name: bytes, …}` | the folder `inputs/<param>/`, for a param that names a folder |
-  | anything else | its text |
+  | anything else, or any value for a `text` param | its text |
 
-  A secret is never passed: a secret param reads its environment variable, under the name the plan gives it.
+  A secret is never passed (passing one is refused): a secret param reads its environment variable, the plan's `env:` or else the param's name in upper case.
 - `approve` lists the side-effect stages the run may perform. One left out stops the run before it, waiting for an answer.
+- `in_run` names path params whose value should be a place inside the run: each becomes `outputs/<name>` in the run's folder. `serve` uses it for outputs, so no path crosses the wire.
 
-**Raises** [`PrometheusError`](#prometheuserror) at once when the run can't start: a required param or a secret is missing, or Pi or pi-subagents isn't installed. Nothing is left behind then. `exc.details` holds the compile's result, with what is missing.
+**Raises** [`PrometheusError`](#prometheuserror) at once when the run can't start: a required param or a secret is missing, a param the plan doesn't declare or a secret's value is passed, the cost limit is reached, or Pi or pi-subagents isn't installed. Nothing is left behind then. `exc.details` holds the compile's result, with what is missing; it is empty when a tool is missing.
 
 ## Run
 
@@ -115,17 +116,19 @@ A run whose driving process died, in a restart say, reads as `"error"` from then
 Waits until the run stops, and says how.
 
 ```python
-run.wait(timeout: float | None = None) -> Result
+run.wait(timeout: float | None = None, poll_s: float = 0.5) -> Result
 ```
 
-**Raises** `TimeoutError` when the run takes longer than `timeout` seconds; the run is canceled first.
+It works the same on a run your process drives and on one from [`Run.reopen`](#runreopen) that another process drives; for the latter it reads the run's state every `poll_s` seconds (`run.wait(timeout, poll_s=0.5)`).
+
+**Raises** `TimeoutError` when the run takes longer than `timeout` seconds; the run is canceled first, which can take up to the cancel's grace period.
 
 ### Run.events
 
 Each event as the run writes it, until the run stops.
 
 ```python
-for event in run.events():
+for event in run.events():          # run.events(poll_s=0.2): how often the file is read
     print(event["event"], event)
 ```
 
@@ -135,11 +138,11 @@ Every event is a dict with `time` and `event`. The events:
 | --- | --- | --- |
 | `launched` | a wave was handed to pi-subagents | `wave`, `subagent_run_id`, `status_dir` |
 | `child` | a child changed state | `key`, `state`, `agent`, `child_run_id` |
-| `wave_end` | a wave ended | `wave`, `state`, `subagent_run_id`, `status_dir`, `cost` |
+| `wave_end` | a wave ended | `wave`, `state`, `subagent_run_id`, `status_dir`, `cost` (pi-subagents' cost record, a dict with `costUsd`; `None` and `reused: true` for a wave all of whose stages were reused) |
 | `input_required` | the run waits for an answer | `wave`, `needs` |
 | `resumed` | an answer let it go on | `approved`, `decided` |
 | `stopping` | a cancel reached the wave | |
-| `error` | something in the runner failed | `message` |
+| `error` | something in the runner failed | `message`, `wave` |
 | `end` | the run ended | `state`, `error`, `cost_usd` |
 
 A run that waits for an answer stops the iteration. After [`Run.answer`](#runanswer), call `events()` again to follow it from there. Everything is also in `run.dir / "events.jsonl"`, one event per line.
@@ -152,7 +155,7 @@ Gives a waiting run what it asked for, and lets it go on.
 run.answer(approve: list[str] = (), decisions: dict | None = None)
 ```
 
-A run waits (`state == "input_required"`) at a side effect that wasn't approved up front, or at a decision. `result.needs` says what it needs (see [`Result`](#result)). `approve` approves side effects, and `decisions` gives `{stage: answer}`, any value that can be written as JSON. To decline, cancel the run instead.
+A run waits (`state == "input_required"`) at a side effect that wasn't approved up front, or at a decision. `result.needs` says what it needs (see [`Result`](#result)). `approve` approves side effects, and `decisions` gives `{stage: answer}`, any value that can be written as JSON. It returns nothing: call [`run.wait()`](#runwait) for the outcome. A partial answer isn't refused; the run goes on and stops again at what is still unanswered. To decline, cancel the run instead: the unapproved side effect never runs.
 
 **Raises** [`PrometheusError`](#prometheuserror) when the run isn't waiting for an answer, or when a decision names a stage it didn't ask about. Two answers at once can't both win: a file lock lets one through and refuses the other.
 
@@ -164,7 +167,7 @@ Stops the run.
 run.cancel(grace_s: float = 30)
 ```
 
-A running wave is asked to stop, then killed after `grace_s` seconds. A run waiting for an answer just ends as `"stopped"`. Any process can cancel a run: the request is written to the run's folder, where its driver sees it.
+A running wave is asked to stop, then killed after `grace_s` seconds. A run waiting for an answer just ends as `"stopped"`. Any process can cancel a run: the request is written to the run's folder, where its driver sees it before and after each launch, and a running wave's pi-subagents process is sent SIGTERM, then killed if it is still there after `grace_s`, whichever process drives the run.
 
 ### Run.bundle
 
@@ -186,7 +189,7 @@ A run another process started, from its folder.
 Run.reopen(agent: Agent, run_id: str) -> Run | None
 ```
 
-Returns `None` when the release has no such run. Use it to answer, cancel, wait for or bundle a run from another process. Answering starts a new driver in your process, so the run goes on there.
+Returns `None` when the release has no such run. Use it to answer, cancel, wait for, follow (`events()`) or bundle a run from another process. Answering starts a new driver in your process, so the run goes on there.
 
 ## Result
 
@@ -196,8 +199,8 @@ How a run stopped: what [`Agent.run`](#agentrun) and [`Run.wait`](#runwait) retu
 | --- | --- |
 | `ok` | `True` when the run completed |
 | `state` | `"complete"`, `"failed"`, `"stopped"`, `"error"`, or `"input_required"` when it waits for an answer |
-| `outputs` | `{output id: Path or None}`: where each of the plan's outputs is |
-| `cost_usd` | what its children cost, summed over its launches; `None` before any launch |
+| `outputs` | `{output id: Path or None}`: where each of the plan's outputs goes, worked out when the run started (`None` when its path depends on a param with no value). After a failure a path may not exist yet. |
+| `cost_usd` | what its children cost, summed over its launches; `0.0` when every wave was reused, `None` before any launch |
 | `error` | why it failed or stopped, else `None` |
 | `needs` | when it waits: `{"approve": [...], "decide": [...]}` |
 | `run_dir` | the run's folder |

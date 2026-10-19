@@ -57,8 +57,7 @@ The examples use emails-to-excel, the agent from the tutorial. Put your own agen
 Use this when the same job has new input, such as next month's emails.
 
 1. In the agent's `.env`, change the value of the param that names the input, for example `EMAIL_FOLDER='/Users/me/Mail/april'`. Use an absolute path.
-2. Start the agent with `prometheus emails-to-excel` and type `/agent-run`.
-3. When the agent asks whether the input changed, answer yes.
+2. Start the agent with `prometheus emails-to-excel` and type `/agent-run`. It doesn't ask whether the input changed: it compares the files' contents and runs again only what reads changed ones.
 
 Any value you don't change is used again, since values persist across runs. The params themselves are described in [Params, `.env` and secrets](params-and-secrets.md).
 
@@ -66,7 +65,7 @@ Check: the new run's results are in its own folder, `runs/<id>/outputs/`, beside
 
 ### How to make a run cheaper
 
-Use this when an agent's runs cost more than you'd like. Most of a run's cost is the agent's own model and the children that make judgments, so the steps go after those, the biggest saving first. Apart from the first, each step is a change to the plan, which you ask for with `/agent-revise` ([How to change an agent's plan](#how-to-change-an-agents-plan)).
+Use this when an agent's runs cost more than you'd like. Most of a run's cost is the agent's own model and the children that make judgments, so the steps go after those, the biggest saving first. Most steps are a change to the plan, which you ask for with `/agent-revise` ([How to change an agent's plan](#how-to-change-an-agents-plan)).
 
 1. Run with `/agent-auto` instead of `/agent-run`. Code then launches and records the waves, and the model is woken only when something needs you.
 2. Make each deterministic stage run its program as a plain command, for example `/agent-revise run read-emails as a command`. From the next run on, that stage costs nothing.
@@ -102,7 +101,7 @@ Don't paste the value into the chat. The agent can't read `.env` and won't set a
 Use this when the agent asks to approve a side effect and you don't want it to run.
 
 1. Choose the option that says not to run it. Nothing is launched.
-2. When asked what to do next, choose **stop**. The run stays in `runs/`, marked stopped, and the stages that ran keep their results. If the run wrote anything, it's offered for review, as in [How to stop a run](#how-to-stop-a-run).
+2. The agent then asks whether to resolve the plan without that stage, or stop. To go on without it, choose to resolve: the run rewrites its pending stages so they don't need it, and the critic checks the change. To end the run, choose **stop**. The run stays in `runs/`, marked stopped, and the stages that ran keep their results. If the run wrote anything, it's offered for review, as in [How to stop a run](#how-to-stop-a-run).
 3. To take the side effect out of the plan for good, follow [How to change an agent's plan](#how-to-change-an-agents-plan) once the run has stopped.
 
 If the agent offers to drop the stage during the run, decline. A run can't remove a side effect from its own plan or weaken its approval, so only step 3 removes it.
@@ -120,7 +119,7 @@ Use this when the agent reports a failed wave.
 
 Use this when a run should go no further, for example because its input was wrong.
 
-1. Wait until no wave is running: a run can't be stopped in the middle of a wave. While one is, `/agent-status` shows the state `run_wave`, and the agent tells you when the wave ends.
+1. Wait until no wave is running: a run can't be stopped in the middle of a wave. The agent tells you when the wave ends; until then, the stop is refused with "a wave of run … is running".
 2. Tell the agent to stop the run. It describes what the run has done and asks you to confirm.
 3. If the run changed anything, the agent shows you its branch and asks you to merge, keep or discard it, as in [How to review and merge a branch](#how-to-review-and-merge-a-branch).
 
@@ -131,9 +130,9 @@ Check: `/agent-status` reports no active run. The stopped run stays in `runs/`, 
 Use this before you start something, or when you're not sure what the agent is waiting for.
 
 1. In the agent, type `/agent-status`. It changes nothing.
-2. Read the state line first. It names the state and the moves open from it. Below it are the plan's validity, the last and next wave, and anything outstanding.
+2. Read its three parts: **Next** (how far the active run is and its next wave, or the waves a new run would do), **Waiting for you** (questions, decisions, approvals, a review, the budget, branches to review, missing values and secrets), and any **Problem** (an invalid plan, a wave that won't compile, a branch switched by hand).
 
-From prometheus, `/agent-list emails-to-excel` shows the same for one agent, and `/agent-list` summarises all of them. The states are listed in [Commands and tools](commands.md), under each command.
+From prometheus, `/agent-list emails-to-excel` shows one agent's plan status, active run, waves left, provisional stages, missing values and whether it validates and compiles; `/agent-list` summarises all of them. The states are listed in [Commands and tools](commands.md), under each command.
 
 ### How to read what happened in an earlier session
 
@@ -213,7 +212,7 @@ Use this when a run or a change ends and the agent shows you a branch.
    - **keep**: the agent goes back to `main`, and the branch stays for later.
    - **discard**: the agent goes back to `main`, and the branch is deleted.
 
-New runs and changes wait until you have chosen. To review a kept branch later, type `/agent-run`: it notices the branch and offers the choice again.
+New runs and changes wait until you have chosen. A kept branch shows in `/agent-status` under **Waiting for you** ("review branch …"). To review it later, check it out (`git switch <branch>`) and type `/agent-run`: it sees the branch and offers the choice again.
 
 ### How to make a stage use a connector
 
@@ -234,7 +233,7 @@ Use this when the agent's plan has settled and you want code, a script or a serv
 
 1. Make sure the plan needs no one at run time: no discovery stage still waiting to fill in later ones, and every stage program written and merged. Run the agent until that's so.
 2. Make sure `main` is checked out, with nothing uncommitted and no run active.
-3. Run `prometheus release emails-to-excel`. It shows whether the agent can be released, the interface callers will depend on (its params, outputs, side effects and decisions) and what changed since the last release. Then it asks before it tags.
+3. Run `prometheus release emails-to-excel`. It shows whether the agent can be released, the interface callers will depend on (its params, outputs and the side effects callers approve), the stages that use a model, and what changed since the last release. Then it asks before it tags.
 4. If it says the release can break callers, check that you mean it, then run `prometheus release emails-to-excel --breaking`. That raises the major version, so callers pinned to the old one aren't affected.
 
 Check: `git tag` in the agent's folder lists the new version, such as `v1.0`.
@@ -322,7 +321,7 @@ Use this when other programs or agents should call the agent over the network.
 
    The answer has a `url` for each output, to download it from.
 4. To keep the server's disk from filling up, add `--keep 100` (say): old runs' files are then deleted as new runs end, but their history stays.
-5. To serve several agents, run one `prometheus serve` for each, on its own port and with only its own secrets, behind a proxy. Behind a proxy, also pass `--public-url https://…`, so the links the server gives out name the address callers use.
+5. To serve several agents, run one `prometheus serve` for each, on its own port and with only its own secrets, behind a proxy. Behind a proxy, also pass `--public-url https://…`, so the A2A Agent Card and its artifact links name the address callers use (the HTTP API's links are relative, so they need nothing).
 
 Check: `GET /health` answers without a token, and `GET /docs` shows the run form generated from the agent's interface.
 
@@ -333,16 +332,18 @@ Other agents can call it over A2A, and an agent built with prometheus does so wi
 Use this when a release ran somewhere else, from code, `prometheus run` or `serve`, and a run failed. You bundle the run where it failed and bring the bundle to where the agent is developed. There you fix the agent, check the fix on the same call, and release it.
 
 1. Where it failed, find the run with `prometheus runs emails-to-excel`, and see how it went with `prometheus runs emails-to-excel <run>`. If the machine itself is the problem, such as a secret not set or packages that don't install, `prometheus doctor emails-to-excel@v1` says so, and there's nothing to fix in the agent.
-2. Bundle the run:
+2. Decide whether whoever fixes the agent may see the caller's data. By default the bundle says what the run did without what it read: how each stage ended, each child's error, and its tool calls with the results of those that failed. `--with-data` adds the children's sessions and output and the run's files, which a failure of judgment often needs, and lets the fix be checked on the same call (step 5). Add it only if the data's owner agrees.
+3. Bundle the run:
 
    ```sh
-   prometheus bundle emails-to-excel 20261016-101010-abcd
+   prometheus bundle emails-to-excel 20261016-101010-abcd            # or add --with-data
    ```
 
-   Behind `serve`, download it instead, from `GET /runs/<id>/bundle` with the token. From Python, `run.bundle()` writes it. The bundle says what the run did without what it read: how each stage ended, each child's error, and its tool calls with the results of those that failed. Those texts can still quote the run's data, so param values in them are replaced by `<name>`, and `prometheus bundle` lists them. The values of the agent's secrets are replaced by `${NAME}`, and anything else that looks like a key is reported. Check both before you send it on.
-3. Only when whoever fixes the agent may see the caller's data, add `--with-data` (`?with_data=true` from `serve`). It adds the children's sessions and output and the run's files, which a failure of judgment often needs, and lets the fix be checked on the same call (step 5).
-4. Copy the bundle to the machine where the agent is developed. In the agent, type `/agent-improve` with the bundle's path, and a focus if you want one: `/agent-improve emails-to-excel-v1.0-20261016-101010-abcd.tgz`. Answer the proposals as usual.
-5. With a bundle made `--with-data`, you can check the fix on the bundled call before you merge. This runs the branch's committed state with the bundle's params and files:
+   It writes `emails-to-excel-v1.0-20261016-101010-abcd.tgz` in the current folder (`--out` for another). Behind `serve`, download it instead, from `GET /runs/<id>/bundle` (`?with_data=true`) with the token. From Python, `run.bundle()` writes it.
+
+   Before you send it, check what it lists: errors and failed results can still quote the run's data, so param values in them are replaced by `<name>` and the texts are listed for you to read; secret values are replaced by `${NAME}`, and anything else that looks like a key is reported.
+4. Copy the bundle to the machine where the agent is developed. In the agent, type `/agent-improve` with the bundle's path, and a focus if you want one: `/agent-improve emails-to-excel-v1.0-20261016-101010-abcd.tgz`. Answer the proposals as usual. The fixes wait on an `improve/…` branch, whose name the agent shows.
+5. With a bundle made `--with-data`, you can check the fix on the bundled call before you merge. This runs that branch's committed state with the bundle's params and files:
 
    ```sh
    prometheus run emails-to-excel@improve/2026-10-16-1 --bundle emails-to-excel-v1.0-20261016-101010-abcd.tgz
@@ -378,8 +379,8 @@ Use this to work with an agent someone else built: run it, change it, and take t
 Use this when you've improved an agent someone else owns and want the change in their copy.
 
 1. In the agent, make the change on a branch with `/agent-revise <change>` (or `/agent-improve`), and finish it until it's ready to merge.
-2. Instead of merging it, run `prometheus propose <slug>`. It pushes the branch to the upstream, and on GitLab it opens a merge request.
-3. Once the owner has merged it, discard your branch and run `prometheus pull <slug>`.
+2. When the agent asks you to merge, keep or discard the branch, don't answer yet: leave the branch checked out and, in a terminal, run `prometheus propose <slug>`. It pushes the branch to the upstream, and on GitLab it opens a merge request. Then answer **keep** in the agent.
+3. Once the owner has merged it, delete your branch (`git branch -D <branch>`) and run `prometheus pull <slug>`.
 
 ## Setting up
 
@@ -399,8 +400,9 @@ Use this to hand someone a copy of an agent to run, when they won't be developin
 
 1. In prometheus, type `/agent-export <slug> <destination>`. Add `--keep-state` to copy the runs and the git history as well.
 2. On the other machine, install what the tutorial's [Before you begin](tutorial.md#before-you-begin) lists.
-3. Start Pi in the copied folder and accept the trust prompt.
-4. Fill in the copy's `.env`, which lists each variable unset, or let `/agent-run` ask you for the values.
+3. In the copied folder, run `uv sync`: the export leaves out `.venv`, which holds the agent's Python packages.
+4. Start Pi in the copied folder and accept the trust prompt.
+5. Fill in the copy's `.env`, which lists each variable unset, or let `/agent-run` ask you for the values.
 
 To share an agent with people who keep it up to date with you, use git instead: [How to share an agent with your team](#how-to-share-an-agent-with-your-team).
 
@@ -421,7 +423,7 @@ Check: `prometheus list` shows the agents you moved.
 Use this after you've upgraded prometheus, so your agents get its fixes.
 
 1. Update prometheus itself with `uv tool upgrade prometheus` (or `prometheus upgrade`).
-2. In prometheus, type `/agent-list` (or run `prometheus list`). An agent marked *update: /agent-refresh* was created or last refreshed by an older version.
+2. In prometheus, type `/agent-list` (or run `prometheus list`). An agent marked *update: /agent-refresh* (in `prometheus list`, *update: prometheus refresh*) was created or last refreshed by an older version.
 3. Type `/agent-refresh <slug>` for one agent, or `/agent-refresh --all` for every agent that needs it.
 4. If the refresh refuses because of an active run or a checked-out branch, finish the run or review the branch, then refresh again.
 

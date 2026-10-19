@@ -5,14 +5,16 @@
     result = agent.run(params={"email_folder": "mail/"}, approve=["build-workbook"])
     result.outputs["email_workbook"]                    # a Path
 
-A release (agent_release.py) is unpacked once into the releases folder, releases/<slug>/<version>/ (`git archive` of its tag,
-plus an empty git repo, which pi-subagents' writer checks need), with RELEASE.json: its record (agent, version, commit,
-interface); the agent's name comes from there, not from the folder's. Each run is a folder runs/<id>/ inside it, as in the agent itself, so the batcher, `uv run` and gates find
-what they expect. Releases are kept, not cached: on a machine that only runs them (`prometheus install <source>@v1`)
-there is no repository to unpack them from again, and their runs are inside. With the agent's repository at hand its
-tags decide which release a name means; without it, the installed releases' records do. A Run is driven in code, wave by wave (run_compile.py --frozen, then
-`pi -p "/prometheus-run <run> <wave>"`, release_runner.ts, with pi-subagents: no model turn); a plan in which nothing
-asks the caller anything is one wave, one launch. At a decision or a side effect not approved up front it stops
+A release (agent_release.py) is unpacked once into the releases folder, releases/<slug>/<version>/ (`git archive` of
+its tag, plus an empty git repo, which pi-subagents' writer checks need), with RELEASE.json: its record (agent,
+version, commit, interface); the agent's name comes from there, not from the folder's. Each run is a folder runs/<id>/
+inside it, as in the agent itself, so the batcher, `uv run` and gates find what they expect. Releases are kept, not
+cached: on a machine that only runs them (`prometheus install <source>@v1`) there is no repository to unpack them from
+again, and their runs are inside. With the agent's repository at hand its tags decide which release a name means;
+without it, the installed releases' records do.
+
+A Run is driven in code, wave by wave (run_compile.py --frozen, then launcher.py: pi with pi-subagents, no model
+turn); a plan in which nothing asks the caller anything is one wave, one launch. At a decision or a side effect not approved up front it stops
 (`input_required`, what it needs in Result.needs) until Run.answer() gives it.
 
 A branch, tag or commit that isn't a release runs the same way as a build (load_agent("mailer@improve/2026-10-16-1")):
@@ -42,34 +44,24 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from prometheus import cli
+from prometheus import cli, launcher
 from prometheus.cli import PrometheusError, run_script
+from prometheus.settings import settings
 
 RELEASE_FILE = "RELEASE.json"  # in an unpacked release: its record (version, commit, interface); run_bundle.py reads it
 VERSION_RE = re.compile(r"^v\d+(\.\d+)?$")  # a release (v1: the newest 1.x); anything else names a commit to build
 
 
-def get_cache() -> Path:
-    """What can be made again: bundles' files unpacked to rerun them."""
-    return Path(os.environ.get("PROMETHEUS_CACHE") or Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "prometheus")
-
-
-def get_releases() -> Path:
-    """Where releases are unpacked and run: kept, not a cache (installed ones have no repository to come back from)."""
-    return Path(os.environ.get("PROMETHEUS_RELEASES")
-                or Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "prometheus" / "releases")
-
-
 def release_folder(slug: str, release: dict) -> Path:
     """releases/<slug>/<version>/ (a build: build-<commit12>): the agent's folder; its RELEASE.json names the agent."""
     name = f"build-{release['commit'][:12]}" if release["version"] == "build" else release["version"]
-    return get_releases() / slug / name
+    return settings().releases / slug / name
 
 
 def list_installed(slug: str) -> list[dict]:
     """The release records (RELEASE.json) of a slug's unpacked releases, newest first; builds left out."""
     records = []
-    for path in (get_releases() / slug).glob(f"v*/{RELEASE_FILE}"):
+    for path in (settings().releases / slug).glob(f"v*/{RELEASE_FILE}"):
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -77,18 +69,6 @@ def list_installed(slug: str) -> list[dict]:
         if (m := re.match(r"^v(\d+)\.(\d+)$", str(record.get("version")))) and record.get("commit"):
             records.append(((int(m.group(1)), int(m.group(2))), record))
     return [r for _, r in sorted(records, key=lambda x: x[0], reverse=True)]
-
-
-def find_tools() -> tuple[str, Path]:
-    """pi, and pi-subagents' entry point (loaded with -e: the runner disables pi's other extensions)."""
-    pi = shutil.which("pi")
-    agent_dir = Path(os.environ.get("PI_CODING_AGENT_DIR") or Path.home() / ".pi" / "agent")
-    subagents = agent_dir / "npm" / "node_modules" / "pi-subagents" / "index.js"
-    if pi is None:
-        raise PrometheusError("pi is not installed: npm install -g @earendil-works/pi-coding-agent (see `prometheus doctor`)")
-    if not subagents.is_file():
-        raise PrometheusError(f"pi-subagents is not installed ({subagents} is missing): pi install npm:pi-subagents")
-    return pi, subagents
 
 
 def pick_release(releases: list[dict], wanted: str | None) -> dict:
@@ -150,7 +130,7 @@ class Result:
     cost_usd: float | None = None
     error: str | None = None
     needs: dict | None = None
-    record: dict = field(default_factory=dict)  # the run's run.yaml: its stages and waves, each with pi-subagents' record folder
+    record: dict = field(default_factory=dict)  # the run's run.yaml: its stages and waves (run_folders.end_launch)
 
 
 ENDED = {"complete", "failed", "stopped", "error"}  # a run's own states besides running and input_required
@@ -173,17 +153,6 @@ def safe_name(name: str, fallback: str) -> str:
     """A file name a caller gave, as one plain name inside a folder ("..", "" and paths become the fallback)."""
     name = Path(name or "").name
     return fallback if name in ("", ".", "..") else name
-
-
-def launch_wave(agent: Agent, run_dir: Path, wave: str) -> subprocess.Popen:
-    """pi running one compiled wave (release_runner.ts), with pi-subagents and nothing else loaded."""
-    pi, subagents = find_tools()
-    with (run_dir / "pi.log").open("ab") as log:
-        return subprocess.Popen(
-            [pi, "-p", "--no-session", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-context-files",
-             "--approve", "-e", str(subagents), "-e", str(Path(__file__).with_name("release_runner.ts")),
-             f"/prometheus-run {run_dir} {wave}"],
-            cwd=agent.folder, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
 
 
 def what_it_needs(preflight: dict) -> dict:
@@ -320,31 +289,28 @@ class Run:
                     continue
                 if self.cancel_requested():  # canceled while it compiled: launch nothing
                     break
-                self.process = launch_wave(self.agent, self.dir, wave)
+                self.process = launcher.launch(self.agent.folder, self.dir, wave)
                 if self.cancel_requested():  # canceled as it launched: cancel() saw no process to stop
                     self.process.send_signal(signal.SIGTERM)
                 self.process.wait()
-                end = next((e for e in reversed(self.read_events()) if e.get("event") == "wave_end" and e.get("wave") == wave), {})
-                launched = next((e for e in reversed(self.read_events()) if e.get("event") == "launched" and e.get("wave") == wave), {})
-                record = read_record(end.get("status_dir") or launched.get("status_dir"))
-                value = (record.get("workflow") or {}).get("value") or {}
+                ended = launcher.outcome(self.dir, wave)
+                value = ended["value"]
+                run_folders = cli.import_script("run_folders")
                 # what later runs reuse by (run_compile.reuse_earlier: the record's `result` beside its `inputs`)
-                cli.import_script("run_folders").record_wave_result(self.dir, wave, value)
-                cost = ((end.get("cost") or record.get("totalCost") or {}).get("costUsd"))
+                run_folders.record_wave_result(self.dir, wave, value)
                 state = self.read_state()
-                self.write_state(launches=[*(state.get("launches") or []), {
-                    "wave": wave, "stages": compiled.get("stages"), "subagent_run_id": end.get("subagent_run_id") or launched.get("subagent_run_id"),
-                    "status_dir": end.get("status_dir") or launched.get("status_dir"), "status": value.get("status") or end.get("state"),
-                    "cost_usd": cost}])
-                if self.cancel_requested() or record.get("state") == "stopped":
-                    return self.finish("stopped", record.get("error") or "canceled")
-                if end.get("state") in ("complete", "completed") and value.get("status") == "done":
+                launch = run_folders.end_launch({"wave": wave, "stages": compiled.get("stages"), **ended["launch"]},
+                                                value.get("status") or ended["state"], value, ended)
+                self.write_state(launches=[*(state.get("launches") or []), launch])
+                if self.cancel_requested() or ended["state"] == "stopped":
+                    return self.finish("stopped", ended.get("error") or "canceled")
+                if ended["state"] == "complete" and value.get("status") == "done":
                     self.write_state(stages=mark_done(state, compiled.get("stages")))
                     compiled = None
                     continue
                 failed = value.get("at") or [k for k, c in (value.get("children") or {}).items() if c.get("status") == "failed"]
-                why = (f"stage {', '.join(failed)} failed" if failed else record.get("error") or f"wave {wave} ended {end.get('state') or 'without an end'}")
-                return self.finish("failed", f"{why}: see {self.dir} and pi-subagents' record {end.get('status_dir') or launched.get('status_dir')}")
+                why = (f"stage {', '.join(failed)} failed" if failed else ended.get("error") or f"wave {wave} ended {ended['state'] or 'without an end'}")
+                return self.finish("failed", f"{why}: see {self.dir} and {ended['where']}")
             self.finish("stopped", "canceled")
         except Exception as exc:  # noqa: BLE001 (the run must end with a state, whatever broke)
             self.finish("error", f"{type(exc).__name__}: {exc}")
@@ -356,13 +322,19 @@ class Run:
         self.thread.start()
 
     # --- the caller's side ----------------------------------------------------------
-    def wait(self, timeout: float | None = None) -> Result:
-        """The run once it stopped: ended, or waiting for an answer (`state == "input_required"`, see `needs`)."""
+    def wait(self, timeout: float | None = None, poll_s: float = 0.5) -> Result:
+        """The run once it stopped: ended, or waiting for an answer (`state == "input_required"`, see `needs`). A run
+        another process drives (Run.reopen) is followed by its state, read every `poll_s` seconds."""
         if self.thread:
             self.thread.join(timeout)
-            if self.thread.is_alive():
-                self.cancel()
-                raise TimeoutError(f"run {self.id} took longer than {timeout} s: canceled")
+            stopped = not self.thread.is_alive()
+        else:
+            deadline = None if timeout is None else time.monotonic() + timeout
+            while (stopped := self.state != "running") is False and (deadline is None or time.monotonic() < deadline):
+                time.sleep(poll_s)
+        if not stopped:
+            self.cancel()
+            raise TimeoutError(f"run {self.id} took longer than {timeout} s: canceled")
         name = self.state  # a dead driver's run ends here as an error
         state = self.read_state()
         launches = state.get("launches") or []
@@ -400,7 +372,7 @@ class Run:
         return Path(made["bundle"])
 
     def cancel(self, grace_s: float = 30):
-        """Stop the run: its wave's runner asks pi-subagents to stop it, then exits; a paused run just ends."""
+        """Stop the run: its wave is asked to stop (launcher.stop), then killed after `grace_s`; a paused run just ends."""
         self.cancelled.set()
         with self.exclusive():
             self.write_state(cancel=True)  # seen by its driver, in whichever process
@@ -412,15 +384,10 @@ class Run:
                 self.process.wait(grace_s)
             except subprocess.TimeoutExpired:
                 self.process.kill()
-        for launched in (e for e in self.read_events() if e.get("event") == "launched"):
-            pid = read_record(launched.get("status_dir")).get("pid")
-            if isinstance(pid, int):
-                try:
-                    os.kill(pid, signal.SIGTERM)
-                except OSError:
-                    pass
+        deadline = time.monotonic() + grace_s
+        launcher.stop(self.dir, grace_s)  # the wave, which another process's driver may have launched
         if self.thread:
-            self.thread.join(grace_s)
+            self.thread.join(max(0.0, deadline - time.monotonic()))
 
 
 def public_needs(run: Run, needs: dict | None) -> dict:
@@ -436,14 +403,6 @@ def public_needs(run: Run, needs: dict | None) -> dict:
             return {k: clean(v) for k, v in value.items() if k != "write_answer_to"}
         return value
     return clean(needs or {})
-
-
-def read_record(status_dir: str | None) -> dict:
-    """pi-subagents' status.json for a launch, or {}."""
-    try:
-        return json.loads((Path(status_dir) / "status.json").read_text(encoding="utf-8")) if status_dir else {}
-    except (OSError, ValueError):
-        return {}
 
 
 def describe_refusal(agent: Agent, compiled: dict) -> str:
@@ -565,7 +524,7 @@ class Agent:
     def start(self, params: dict | None = None, approve: list[str] | tuple = (), in_run: tuple | set = ()) -> Run:
         """Start a run: refused at once if it can't start (a missing param or secret); otherwise it runs on its own, and
         may stop at a decision or an unapproved side effect (see Run.answer)."""
-        find_tools()
+        launcher.check()
         run_id = f"{datetime.datetime.now(datetime.UTC):%Y%m%d-%H%M%S}-{secrets.token_hex(2)}"
         run_dir = self.folder / "runs" / run_id
         (run_dir / "work").mkdir(parents=True)  # the children's folder (run_steps.py start-run makes it in an agent)
@@ -609,7 +568,7 @@ def load_agent(name: str, version: str | None = None) -> Agent:
     installed = list_installed(name)
     if not installed:
         raise PrometheusError(f"no agent {name!r}: not in {cli.get_setting('agents')[0]}, and no release of it installed in "
-                              f"{get_releases()} (`prometheus install <source>@v1` installs one)")
+                              f"{settings().releases} (`prometheus install <source>@v1` installs one)")
     release = pick_release(installed, version)
     return Agent(release_folder(name, release), release)
 
@@ -642,7 +601,7 @@ def read_bundle_call(bundle: Path, agent: Agent) -> tuple[dict, set[str]]:
             if not info.get("with_data"):
                 raise PrometheusError(f"{bundle.name} was made without --with-data: it holds no params or files to run again")
             call = json.load(tar.extractfile("run/call.json"))
-            files = get_cache() / "bundles" / bundle.name.removesuffix(".tgz")
+            files = settings().cache / "bundles" / bundle.name.removesuffix(".tgz")
             if not files.is_dir():
                 staging = files.with_name(f".{files.name}.{secrets.token_hex(4)}")
                 tar.extractall(staging, members=[m for m in tar.getmembers() if m.name.startswith("run/inputs/")], filter="data")

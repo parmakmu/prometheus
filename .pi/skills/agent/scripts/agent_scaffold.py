@@ -2,20 +2,25 @@
 """Create or refresh an agent.
 
 Usage:
-  agent_scaffold.py SLUG [--root agents] [--request TEXT] [--refresh]
+  agent_scaffold.py SLUG [--root agents] [--request TEXT] [--from AGENT] [--no-lock]
+  agent_scaffold.py SLUG --refresh [--if-stale] [--root agents] [--no-lock]
 
-Creates <root>/<slug>/ from templates/agent/ (at the repo root, outside the skill and .pi) (everything in it, with
-{{slug}} and {{request}} filled in) plus:
-  runs/                          one folder per run: state, work files, outputs (see plan_validate.py)
-  gates/                         gate scripts, written while planning
-  scripts/                       stage programs (a stage's `script:`), written by its first run
-  .env                           per-machine param values (agent_params.py); not in git
-  .pi/skills/agent/           a copy of this skill (rules, validator, compiler, run protocol)
+Creates <root>/<slug>/ from templates/agent/ (at the repo root, outside the skill and .pi): everything in it, with
+{{slug}} and {{request}} filled in, plus:
+  runs/              one folder per run: state, work files, outputs (see plan_validate.py)
+  gates/             gate scripts, written while planning
+  scripts/           stage programs (a stage's `program:`), written by its first run
+  .env               per-machine param values (agent_params.py); not in git
+  .pi/skills/agent/  a copy of this skill (rules, validator, compiler, run protocol)
 
 The template holds README.md, pyproject.toml (Python deps for `uv sync`),
 .pi/APPEND_SYSTEM.md (the agent's role), .pi/settings.json,
 .pi/extensions/agent/index.ts (commands and tools), .pi/agents/ (plan-critic,
-batcher) and the plan skeleton.
+batcher, reader) and the plan skeleton.
+
+--from AGENT (a slug under --root, or a folder) starts from that agent: its plan as a draft, its gates,
+programs, subagents and packages. --no-lock leaves uv.lock unwritten (uv lock may build the agent's
+packages: for an agent not yet reviewed, as `prometheus install` does until you confirm).
 
 --refresh rewrites the template files and the skill copy in an existing
 agent. It never touches plan.yaml, .env, runs/, gates/, scripts/ or agents

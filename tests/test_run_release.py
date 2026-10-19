@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -68,7 +69,7 @@ def test_values_become_files_or_absolute_paths_and_outputs_resolve_in_the_run(re
     assert agent.resolve_outputs(run_dir, {"report": "/srv/c.txt"}) == {"count_file": run_release.Path("/srv/c.txt")}
 
 
-def fake_launch(agent, run_dir, wave):
+def fake_launch(folder, run_dir, wave):
     """pi running a compiled wave, without pi: each program stage's command runs as the batcher would (`uv run` as this
     Python), and the runner's events and pi-subagents' record are written as they would be. A stage fails when its
     program does; the wave stops there."""
@@ -118,8 +119,8 @@ class Ended:
 
 @pytest.fixture
 def fake_pi(monkeypatch):
-    monkeypatch.setattr(run_release, "find_tools", lambda: ("pi", run_release.Path("pi-subagents.js")))
-    monkeypatch.setattr(run_release, "launch_wave", fake_launch)
+    monkeypatch.setattr(run_release.launcher, "check", lambda: ("pi", run_release.Path("pi-subagents.js")))
+    monkeypatch.setattr(run_release.launcher, "launch", fake_launch)
 
 
 def test_a_run_approved_up_front_is_one_wave(released, fake_pi, tmp_path):
@@ -299,6 +300,35 @@ def test_a_driver_pid_another_process_reused_counts_as_dead(released, fake_pi, t
     assert run_release.Run.reopen(agent, run.id).wait().error == run_release.INTERRUPTED
     run.write_state(status="running", error=None, driver=run_release.cli.import_script("utils").this_process())
     assert run_release.Run.reopen(agent, run.id).state == "running"  # the driver itself: alive
+
+
+def test_a_run_another_process_drives_is_waited_for_by_its_state(released, fake_pi, tmp_path):
+    agent, run = paused_run(released, tmp_path)
+    run.write_state(status="running", needs=None, driver=run_release.cli.import_script("utils").this_process())
+    reopened = run_release.Run.reopen(agent, run.id)  # no thread here: the run goes on elsewhere
+    threading.Timer(1, run.finish, args=("complete",)).start()
+    assert reopened.wait(30, poll_s=0.1).state == "complete"
+    run.write_state(status="running", error=None)
+    with pytest.raises(TimeoutError):
+        run_release.Run.reopen(agent, run.id).wait(0.3, poll_s=0.1)
+    assert run.read_state().get("cancel")  # a timeout cancels it, as for a run of one's own
+
+
+def test_a_cancel_from_another_process_kills_a_wave_that_ignores_it_after_the_grace(released, fake_pi, tmp_path):
+    agent, run = paused_run(released, tmp_path)
+    ignores_term = "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); print(flush=True); time.sleep(60)"
+    stubborn = subprocess.Popen([sys.executable, "-c", ignores_term], stdout=subprocess.PIPE)
+    stubborn.stdout.readline()  # its handler is set
+    status = tmp_path / "wave-status"
+    status.mkdir()
+    (status / "status.json").write_text(json.dumps({"state": "running", "pid": stubborn.pid}))
+    run.log(event="launched", wave="w2", status_dir=str(status))
+    run.write_state(status="running", needs=None, driver=run_release.cli.import_script("utils").this_process())
+    started = time.monotonic()
+    run_release.Run.reopen(agent, run.id).cancel(grace_s=1)
+    assert stubborn.wait(5) == -9 and 0.9 < time.monotonic() - started < 5  # asked, waited for, then killed
+    (status / "status.json").write_text(json.dumps({"state": "complete", "pid": os.getpid()}))
+    run_release.Run.reopen(agent, run.id).cancel(grace_s=1)  # an ended launch's pid is never signalled: here, ours
 
 
 def test_a_second_answer_is_refused_and_a_cancel_during_the_compile_launches_nothing(released, fake_pi, tmp_path, monkeypatch):

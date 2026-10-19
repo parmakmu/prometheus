@@ -1,7 +1,7 @@
 """`prometheus serve`: one released agent as an HTTP service (FastAPI), for whoever deploys it; it also speaks A2A
-(a2a.py: the Agent Card at /.well-known/agent-card.json, /message:send, /tasks/…), on the same runs. One agent per process:
-its environment holds that agent's secrets only, and each agent is deployed, pinned and scaled on its own (several on
-one host: one process each, behind a proxy).
+(a2a.py: the Agent Card at /.well-known/agent-card.json, /message:send, /tasks/…), on the same runs. One agent per
+process: its environment holds that agent's secrets only, and each agent is deployed, pinned and scaled on its own
+(several on one host: one process each, behind a proxy).
 
     GET    /health                     {"ok": true}
     GET    /                           the agent: version, params, outputs, side effects
@@ -16,8 +16,8 @@ one host: one process each, behind a proxy).
 
 A run's form has a field per param: a file for a path param (several files for a folder), text for a text param, and
 `approve` once per side effect the run may perform up front; one it reaches unapproved, or a decision, stops the run
-(state input_required, with what it needs) until it is answered. Callers never name a path on the server: every output param is
-placed in the run (outputs/<name>), and secrets come from the server's environment. With a token, every request but
+(state input_required, with what it needs) until it is answered. Callers never name a path on the server: every
+output param is placed in the run (outputs/<name>), and secrets come from the server's environment. With a token, every request but
 /health needs `Authorization: Bearer <token>`; without one, the server listens on loopback only. One JSON line per
 request and per run end goes to stdout.
 """

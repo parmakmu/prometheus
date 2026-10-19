@@ -11,7 +11,8 @@ Pi command or tool → extension (TypeScript) → Python script → one JSON obj
                                             ↘ pi-subagents call (only after a compile)
 ```
 
-- **Scripts** ([`.pi/skills/agent/scripts/`](../.pi/skills/agent/scripts/)) validate, compile, record and commit. Each prints one JSON object; a refusal is `{"ok": false, "error": …}`. Every agent tool's result also carries `next`: the agent's state and the moves open from it. Scripts run and test without Pi.
+- **Scripts** ([`.pi/skills/agent/scripts/`](../.pi/skills/agent/scripts/)) validate, compile, record and commit. Each prints one JSON object; a refusal is `{"ok": false, "error": …}`. The result of every tool that makes a move (and every refusal) also carries `next`: the agent's state and the moves open from it. Scripts run and test without Pi.
+- **`agent_dir`**, the first parameter of most script functions, is the agent's folder (`agents/<slug>/`). An agent is that folder: its plan, runs, gates, programs, `.env` and git repository are all in it, and no object or stored state stands for it, so a function is told which agent by its folder. Each script works it out once, in `main`: `--agent`, default the working directory (where the extension runs them), made absolute. Below `main` it is only ever passed on (typer commands get it from `ctx.obj`): no script `chdir`s or reads `Path.cwd()`, so the same functions work when prometheus imports them in a process that serves many agents. It is never a setting, since one process (`agent_list`, `prometheus refresh --all`, the tests) goes through many agents. Pi's own "agent dir", `~/.pi/agent` (`PI_CODING_AGENT_DIR`), is another thing: the skill calls it `pi_agent_dir()`, prometheus `settings().pi_agent`.
 - **Extensions** register the commands and tools, run a script with `pi.exec`, and format its JSON. One self-contained `index.ts` per agent: [prometheus's](../.pi/extensions/prometheus/index.ts) and [the agent template's](../templates/agent/.pi/extensions/agent/index.ts).
 - **`wave_runner.js`** is the only JavaScript the compiler emits: a compiled wave is the wave as JSON data, followed by this runner unchanged.
 
@@ -19,12 +20,12 @@ The extensions run scripts with `$PI_AGENT_PYTHON`, else the nearest `.venv/bin/
 
 Two more pieces sit around that core:
 
-- **The `prometheus` package** ([`prometheus/`](../prometheus/)) is the shell command (`cli.py`), and everything that runs an agent without a chat: releases run from code (`run_release.py`, with `release_runner.ts` inside Pi), the HTTP and A2A server (`serve.py`, `a2a.py`), and sharing through git (`share.py`). It reuses the skill's scripts rather than duplicating them, through `cli.import_script` and `cli.run_script`.
+- **The `prometheus` package** ([`prometheus/`](../prometheus/)) is the shell command (`cli.py`), and everything that runs an agent without a chat: releases run from code (`run_release.py`; its waves through `launcher.py`, with `release_runner.ts` inside Pi), the HTTP and A2A server (`serve.py`, `a2a.py`), and sharing through git (`share.py`). It reuses the skill's scripts rather than duplicating them, through `cli.import_script` and `cli.run_script`.
 - **The web app** ([`ui/`](../ui/)) runs one sandboxed Pi worker per user, agent and conversation behind a router. It is frozen: it gets fixes, not features. Its own [README](../ui/README.md) describes it.
 
 ### What a launch looks like
 
-The agent orchestrates a wave but never writes its code. `agent_compile_wave` saves the wave as data plus the shared runner in one file, `runs/<id>/.compiled/<wave>.js`, and the agent hands pi-subagents only that file's path (*from a real run*):
+The agent orchestrates a wave but never writes its code. `agent_compile_wave` saves the wave as data plus the shared runner in one file, `runs/<id>/.compiled/<wave>.js` (beside it, `<wave>.json` records the call, the fingerprints and later the result), and the agent hands pi-subagents only the script's path (*from a real run*):
 
 ```json
 {
@@ -46,7 +47,7 @@ When the wave ends, `agent_finish_wave` gets the wave's id and returns a summary
 }
 ```
 
-Every result also carries `next`, the agent's state and its legal moves (*from emails-to-excel*, between runs, 2026-10-17):
+The result of every tool that makes a move also carries `next`, the agent's state and its legal moves (*from emails-to-excel*, between runs, 2026-10-17):
 
 ```json
 {
@@ -68,8 +69,10 @@ Every result also carries `next`, the agent's state and its legal moves (*from e
 | [`.pi/skills/agent/scripts/`](../.pi/skills/agent/scripts/) | the Python scripts |
 | [`templates/agent/`](../templates/agent/) | what a new agent gets: its extension, agents, settings, role. Outside the skill, so agents don't carry a copy |
 | [`.pi/agents/plan-critic.md`](../.pi/agents/plan-critic.md) | the critic; must stay identical to the template's copy (a test checks) |
-| [`prometheus/cli.py`](../prometheus/cli.py) | the `prometheus` command: `init`, `doctor`, starting the planner (`pi -e … --skill …` in `~/.prometheus`) or an agent. The package (`pyproject.toml`) carries the repo's `.pi/` parts, `templates/` and `pyproject.toml` under `prometheus/`, in the same layout |
-| [`prometheus/run_release.py`](../prometheus/run_release.py) | `load_agent` and `Run`. A release is unpacked (`git archive` into a fresh repository, without `.pi/extensions/`) into `releases/<slug>/<version>/`, with a `RELEASE.json` that names the agent (`utils.agent_name`). It is picked by the repository's tags, else by the installed `RELEASE.json` records. Each run lives in its `runs/<id>/`, compiled with `run_compile.py --frozen` and run by `pi -p "/prometheus-run <run>"`. `load_build` runs any other commit the same way (version `build`); `read_bundle_call` turns a bundled run's call into a new run's values |
+| [`prometheus/cli.py`](../prometheus/cli.py) | the `prometheus` command: `init`, `doctor`, starting the planner (`pi -e … --skill …` in `~/.prometheus`) or an agent. The wheel (`pyproject.toml`, `force-include`) carries the repo's `.pi/` parts, `templates/` and `catalog.yaml` under `prometheus/`, in the same layout |
+| [`prometheus/settings.py`](../prometheus/settings.py) | prometheus's settings, one pydantic-settings class read fresh on every call: the agents', planner's, releases' and cache folders, the catalog and Pi's folder, each from a flag, the environment, `config.toml` or its default. An agent's folder is not one: it is passed to each call |
+| [`prometheus/run_release.py`](../prometheus/run_release.py) | `load_agent` and `Run`. A release is unpacked (`git archive` into a fresh repository, without `.pi/extensions/`) into `releases/<slug>/<version>/`, with a `RELEASE.json` that names the agent (`utils.agent_name`). It is picked by the repository's tags, else by the installed `RELEASE.json` records. Each run lives in its `runs/<id>/` and is driven one wave at a time in code: each wave is compiled with `run_compile.py --frozen` and run by `launcher.py` (the whole plan as one launch, `all`, when nothing asks); `Run` reads only what that returns, and each launch is recorded as an agent's are (`run_folders.end_launch`). `load_build` runs any other commit the same way (version `build`); `read_bundle_call` turns a bundled run's call into a new run's values |
+| [`prometheus/launcher.py`](../prometheus/launcher.py) | how a released run's waves run, the only part of it that knows Pi or pi-subagents: `check`, `launch` (`pi -p --no-session --no-extensions … -e <pi-subagents> -e release_runner.ts "/prometheus-run <run dir> <wave>"`), `outcome` (how the wave ended: state, value, cost, error, where its records are) and `stop`. Another way to run a compiled wave would replace these four functions |
 | [`prometheus/release_runner.ts`](../prometheus/release_runner.ts) | that command: launches the compiled plan through pi-subagents' RPC, writes `events.jsonl`, stops the run on SIGTERM, aborts any model turn and exits at the end (pi-subagents' completion message would start one) |
 | [`prometheus/share.py`](../prometheus/share.py) | sharing through plain git, so any remote works. `install` clones, refreshes from this prometheus and shows the agent's own code for review; with `@v1`, `install_release` fetches one tag shallowly and unpacks it with `run_release.unpack`, keeping no repository. `pull`; `share` (secret scan, then push `main` and releases); `propose` (push a change branch; GitLab push options open a merge request); the catalog |
 | [`prometheus/serve.py`](../prometheus/serve.py) | `prometheus serve`: one release as a FastAPI app; the run form is generated from the agent's interface (a function signature built per agent), runs are kept in memory and reopened from their folders (`call.json`) |
@@ -85,16 +88,19 @@ The skill's `SKILL.md` and `references/` are instructions for the model, not doc
 ```sh
 uv sync                      # .venv with the scripts' packages, pytest, and prometheus itself (editable)
 uv tool install -e .         # `prometheus` on your PATH, running this checkout
-uv run pytest                # everything; extension tests skip without the Node deps
+uv run pytest                # the fast tests; extension tests skip without the Node deps
+uv run pytest --all          # adds the end-to-end files (before a commit)
 npm install && uv run pytest # adds type-checking and loading both extensions (Node >= 22, Pi installed globally with npm)
 uv run ruff check
 ```
+
+Without `--all`, the end-to-end files (`conftest.SLOW`: `test_agent.py`, `test_run_finish.py`, `test_run_release.py`, `test_share.py`, `test_router.py`, `test_serve.py`, `test_a2a.py`, `test_a2a_stage.py`) are left out; one named on the command line still runs. Skill scripts run in-process; `--subprocess` runs them as real processes. The state-machine walk is cached by a hash of what it depends on; `--cache-clear` redoes it.
 
 The suite covers plan validation and derived waves, params, map batching, scaffolding and export, compiled waves run against a mock of pi-subagents (real batch tool and gates, fake children), run state, git review paths, the state machine, and both extensions driven with Pi's real types.
 
 [`tests/test_agent.py`](../tests/test_agent.py) is one continuous scenario (scaffold, compile, run, resolve, merge, export): later tests use what earlier ones left on disk, so its tests run in file order. Don't add a test-randomizing plugin, put a new check where the state it needs exists, and rerun the whole file rather than one test from it.
 
-The suite runs on all cores (pytest-xdist, `-n auto --dist loadgroup` in `pyproject.toml`; about 28 s instead of 71 s). Tests that share state are kept on one worker by an `xdist_group` mark: the whole of `test_agent.py`, the state-machine walk, the tests reading `test_run_finish.py`'s `finished` run, and `test_agent_params.py`. A new test that uses a module-scoped fixture or state another test left belongs in its file's group. To debug one test serially: `uv run pytest -n 0 -k <name>`.
+The suite runs on all cores (pytest-xdist, `-n auto --dist loadgroup` in `pyproject.toml`). Tests that share state are kept on one worker by an `xdist_group` mark: the whole of `test_agent.py`, the state-machine walk, the tests in `test_run_finish.py` that read its `finished` run (`FINISHED`), `test_agent_params.py` and `test_worker.py`. A new test that uses a module-scoped fixture or state another test left belongs in its file's group. To debug one test serially: `uv run pytest -n 0 -k <name>`.
 
 ## Rules for a change
 
@@ -134,7 +140,7 @@ What the code assumes about Pi and pi-subagents, with the versions it was checke
 - `pi -p "/<command>"` waits for an async command handler, starts no model turn of its own, and the RPC `spawn` works there (verified); pi-subagents' completion message would still start one, so `release_runner.ts` aborts any turn and exits at the end.
 - Async run record: `<tmp root>/async-subagent-runs/<runId>/status.json` (tmp root: `$PI_SUBAGENTS_TEMP_ROOT`, else `os.tmpdir()/pi-subagents-uid-<uid>`). `state`, `workflow.value` (the script's return value), `totalCost {costUsd, inputTokens, outputTokens}`; a workflow that fails before returning has `error` and `workflow.failureKind`; `pid` is the runner's process. `workflow.scriptDigest` is the sha256 of the script text (`run_compile.unrecorded_launch` matches it against `.compiled/<wave>.js` and fails open). A workflow run's children are in `workflowChildren.children` `[{childId, state, runId, agent}]`; the critic's child run id (what the model records, and what a second pass resumes) is there. `mission.close` takes missionStatus completed | failed | cancelled.
 - In-process RPC for other extensions (`docs/extension-api.md`): emit `subagents:rpc:v1:request` `{version: 1, requestId, method, params}`, the reply on `subagents:rpc:v1:reply:<requestId>`. `spawn` takes the `subagent` tool's params (async only, `workflow` a path); its data's `details` has `runId` and `asyncDir`. Each child and the run's end post a completion notice that wakes the parent model; `quiet: true` silences success only for schedules. Live-verified (runs 2026-10-05-1 and -2).
-- Missions: `<agent dir>/missions/projects/<sha256 of the project root's real path>/<mission id>.json` (`utils.mission_of` searches every project's), each with `runs [{runId, …}]` (agent dir: `$PI_CODING_AGENT_DIR`, else `~/.pi/agent`; Pi's `getAgentDir`). A run's status.json does not name its mission.
+- Missions: `<Pi's agent dir, ~/.pi/agent>/missions/projects/<sha256 of the project root's real path>/<mission id>.json` (the skill's `pi_records.mission_of` searches every project's), each with `runs [{runId, …}]` (agent dir: `$PI_CODING_AGENT_DIR`, else `~/.pi/agent`; Pi's `getAgentDir`). A run's status.json does not name its mission.
 - `mcp:` selections in an agent's `tools` (`mcp:server`, `mcp:server/tool`): with pi-mcp-adapter installed they resolve against its config; without it (the owner's setup) they resolve against Pi's built-in MCP and its `mcp.json` (a project's `.pi/mcp.json` only once trusted), whatever exposure the server has (default `codemode`, hidden from the model); the child gets only the selected tools, as direct ones. Waves are async, so servers an extension adds with `pi.registerMcpServer()` work too; a selected tool that doesn't register within 10 s fails the launch. (From pi-subagents' docs; not live-verified. Matters once a stage agent gets connector tools.)
 
 ## Writing these docs

@@ -5,7 +5,7 @@
  * a start. See ui/README.md, "How a sandbox is built". */
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { SANDBOX, SOCKETS, ownOf, works } from "./common.ts";
 import type { Spec } from "./sandbox.ts";
@@ -36,8 +36,29 @@ const LIMITS = (() => {
   }
 })();
 
+// A mount point inside another bind mount (the sandbox's home holds .pi/agent, .local/…, projects/…) is made here, on
+// your side, as you: left to podman, rootless, it makes a missing one as its root (uid 100000 outside), in your
+// folder, where you can't remove it. One inside a tmpfs never reaches your disk; one that can't be made is podman's.
+function makeMountPoints(mounts: Spec["mounts"]) {
+  const inside = (p: string, folder: string) => p.startsWith(folder.endsWith("/") ? folder : `${folder}/`);
+  for (const m of mounts) {
+    const outer = mounts.filter((o) => o !== m && inside(m.dst, o.dst)).sort((a, b) => b.dst.length - a.dst.length)[0];
+    if (!outer || outer.kind === "tmpfs") continue;
+    const there = path.join(outer.src, path.relative(outer.dst, m.dst));
+    if (existsSync(there)) continue;
+    try {
+      if (m.kind === "tmpfs" || statSync(m.src).isDirectory()) mkdirSync(there, { recursive: true });
+      else {
+        mkdirSync(path.dirname(there), { recursive: true });
+        writeFileSync(there, "", { flag: "a" });
+      }
+    } catch {}
+  }
+}
+
 /** `podman` and its arguments for `spec`. `network`: the one it joins; `name`: run detached under that name. */
 function podmanArgs(spec: Spec, command: string[], network = "", name = ""): string[] {
+  makeMountPoints(spec.mounts);
   const out = [
     ...GLOBAL, "run", "--rm", "--init", ...(name ? ["-d", "--name", name] : ["-i"]), ...(spec.tty ? ["-t"] : []),
     ...(network ? ["--network", network] : []),

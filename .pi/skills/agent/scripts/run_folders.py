@@ -9,6 +9,9 @@
               agent's run also has revision, note, max_cost_usd, critiques [{run_id, after_waves}] (critic
               results recorded while the run resolved stages; plan_edit.py caps them each time); a release's
               driver, cancel, needs and error. Written by run_steps.py and plan_edit.py, or run_release.Run.
+              A launch, whatever ran it: wave, stages, status, cost_usd, tokens, children {key: child run id},
+              stopped_at, error (end_launch), and where pi-subagents' own records of it are (subagent_run_id, mission_id,
+              status_dir: pi_records.py, prometheus/launcher.py).
   work/       the children's cwd: stage outputs, decisions, batches, scripts
   .compiled/  per wave launched: <wave>.js, the script pi-subagents runs (the wave as data, `const W`,
               then wave_runner.js), and <wave>.json: the compile's result (the call), `inputs` (each
@@ -92,6 +95,22 @@ def read_wave_spec(run_dir, wave):
     except (OSError, ValueError):
         return None
     return spec if isinstance(spec, dict) else None
+
+
+def end_launch(entry, status, returned, ended):
+    """Record on a launch's run.yaml `entry` how it ended, the same whatever ran it: `status` (done, failed, blocked,
+    stopped), `returned` (what the wave returned: {status, children: {key: {runId, ...}}, at?, error?}, or None) and
+    `ended` (its subagents's account: cost_usd and tokens, or {})."""
+    if ended.get("cost_usd") is not None:
+        entry["cost_usd"], entry["tokens"] = ended["cost_usd"], ended.get("tokens")
+    entry["status"] = status
+    if isinstance(returned, dict):
+        entry["children"] = {k: (v or {}).get("runId") for k, v in (returned.get("children") or {}).items()}
+        if returned.get("at"):
+            entry["stopped_at"] = returned["at"]
+        if returned.get("error"):
+            entry["error"] = returned["error"]
+    return entry
 
 
 def read_run(run_dir):

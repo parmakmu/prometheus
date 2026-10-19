@@ -1,4 +1,3 @@
 {
-  "git.scanRepositories": ["agents/emails-to-excel"],
   "python.terminal.activateEnvironment": false
 }

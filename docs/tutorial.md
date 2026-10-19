@@ -1,6 +1,6 @@
 # Tutorial: your first agent
 
-In this tutorial we'll build an agent together that copies a folder of emails into an Excel file. You'll plan it, run it, approve the one step that writes a file, look over what the run taught the agent, and then run it a second time. That second run is the real payoff: on the same emails, it does the same job with no model work at all. Finally, you'll change the agent twice: once by asking for a change yourself, and once by letting it suggest improvements from how its runs went.
+In this tutorial we'll build an agent together that copies a folder of emails into an Excel file. You'll plan it, run it, look over what the run taught the agent, and then run it a second time. That second run is the real payoff: on the same emails, it does the same job with no model work at all. Finally, you'll change the agent twice: once by asking for a change yourself, and once by letting it suggest improvements from how its runs went.
 
 It takes about fifteen minutes, and you don't need any emails of your own. We'll make three small samples in step 2.
 
@@ -84,7 +84,7 @@ EOF
 ls
 ```
 
-You should see the three files. Note the folder's full path, which `echo ~/tutorial-emails` prints, because the run will ask for it in step 5.
+You should see the three files. Note the folder's full path, which `pwd` prints, because the run will ask for it in step 5.
 
 ## 3. Plan the agent
 
@@ -104,7 +104,7 @@ When prometheus says the agent is ready, look at what it made:
 ls -a ~/agents/emails-to-excel
 ```
 
-You should see at least `plan.yaml`, `gates` and `scripts`, plus the agent's own `.pi` and `.git`. (If you chose another agents folder in step 1, look there instead.)
+You should see at least `plan.yaml`, `gates` and `scripts`, plus the agent's own `.pi` and `.git`. (If you chose another agents folder in step 1, look there instead.) `gates` holds the checks each stage's output must pass, written while planning; `scripts` will hold the programs that do the mechanical work, which the first run writes.
 
 The plan is the part to look at now. Open `~/agents/emails-to-excel/plan.yaml`: near the top are the goal and what counts as done (*from a real run*):
 
@@ -127,7 +127,7 @@ build-workbook   write the .xlsx
 
 Yours may name them differently or add a stage, but the shape is the same: look at the input, extract, write.
 
-To see what the agent still needs before it can run, type `/agent-list emails-to-excel` in the prometheus terminal. Among other things, it lists `email_folder` as a missing value. That's expected: it's the folder the run will ask you for.
+To see what the agent still needs before it can run, type `/agent-list emails-to-excel` in the prometheus terminal. Among other things, it lists a missing value such as `email_folder` (the planner picks the name). That's expected: it's the folder the run will ask you for.
 
 ## 4. Start the agent
 
@@ -139,7 +139,12 @@ prometheus emails-to-excel
 
 That starts `pi` in the agent's folder (`cd ~/agents/emails-to-excel && pi` does the same). Accept the trust prompt: Pi asks once per folder, and this is a new one.
 
-Check: `/agent-status` reports that the plan is ready and that no run has started.
+Check: `/agent-status` shows what comes next and what it is waiting for:
+
+```text
+- Next: /agent-run starts a run: w1 (…)
+- Waiting for you: set email_folder
+```
 
 ## 5. Run it
 
@@ -149,7 +154,7 @@ Start the run:
 /agent-run
 ```
 
-The agent asks you to confirm the new run, then asks for the one value it doesn't have: the folder of emails. Give it the absolute path from step 2, such as `/Users/you/tutorial-emails`.
+The agent starts the run and asks for the one value it doesn't have: the folder of emails. Give it the absolute path from step 2, such as `/home/you/tutorial-emails` (`~/tutorial-emails` works too). It saves it in the agent's `.env`, so later runs don't ask again.
 
 It then launches the first **wave**: a group of stages handed off together, each done by a **child** agent working in the background. *From a real run:*
 
@@ -157,13 +162,13 @@ It then launches the first **wave**: a group of stages handed off together, each
 
 You don't need to do anything while it works. After about a minute the wave ends and the agent picks up by itself.
 
-On a brand-new plan, the agent may also stop after `discover` to fill in the stages that depend on it. This is a **resolve**: it writes the details of `read-emails` from what `discover` found in your emails, has the critic check them, and carries on. You may be asked to confirm.
+On a brand-new plan, the agent may also stop after `discover` to fill in the stages that depend on it. This is a **resolve**: it writes the details of `read-emails` from what `discover` found in your emails, has the critic check them, and carries on. Nothing is needed from you unless it asks a question.
 
-### Approve the side effect
+### Approve a side effect, if there is one
 
-Writing the workbook is a **side effect**: it creates something outside the run's working folder. The agent never takes such a step without your yes. It stops, says what will be created, where, and from which input, and asks you to approve `build-workbook`.
+A stage that changes something outside the run (writes to a file you chose, sends, posts, overwrites) is a **side effect**, and the agent never takes such a step without your yes. It stops, says what will be created, where, and from which input, and asks you to approve that stage. Choose **Approve**.
 
-Choose **Approve**. The workbook is written in a couple of seconds.
+Whether this plan has one depends on where the workbook goes. With the default, the run's own `outputs` folder, writing it changes nothing outside the run, so there is nothing to approve and the run simply continues. If you told the planner to save it somewhere of your own (`~/Documents/emails.xlsx`, say), `build-workbook` is a side effect and you approve it here.
 
 The agent then checks each `done_when` line from the plan, and tells you whether it was met, with file paths as evidence.
 
@@ -238,7 +243,7 @@ Now see what the merge bought you. Start a second run:
 /agent-run
 ```
 
-The agent asks whether to start a new run (yes) and whether the input changed (no).
+It starts at once, without asking anything: the folder is still in `.env`, and it doesn't need to ask whether the emails changed, because it compares their contents itself.
 
 Watch how it differs. `read-emails` and `build-workbook` now run the programs you merged, as plain commands, in about a tenth of a second each, with no model involved.
 
@@ -275,7 +280,7 @@ When it's done, it shows you the change and asks you to **merge**, **keep** or *
 git log --oneline main
 ```
 
-The newest commit is your change, and `git tag` shows it has a new revision number. From the next run on, the agent follows the new plan, and new emails cost no model at all as long as the programs pass their gates. If one needs adjusting, a model is shown the error and fixes the program once, and you review that fix like any other.
+The newest commit is your change, and `git tag` shows it has a new revision number: each reviewed change to `main` is tagged `r1`, `r2`, and so on. From the next run on, the agent follows the new plan, and new emails cost no model at all as long as the programs pass their gates. If one needs adjusting, a model is shown the error and fixes the program once, and you review that fix like any other.
 
 > If your emails *do* change format one day, the gate on `read-emails` will catch it, and the run will stop and tell you. You can fix the program then with another `/agent-revise`.
 
@@ -293,11 +298,11 @@ If it finds nothing new, it says so. You can also point it at something you've n
 
 For each proposal, the agent explains in plain words what it noticed, what it would change, and what would stay as it is if you skip it. If you want the details, the evidence and the exact edit are in the chat just above the question. Answer **apply** or **skip** for each one. It may well have only one or two suggestions, or none, after runs this short, and that's fine.
 
-If you applied anything, the changes wait on an `improve/…` branch, and you review it like any other: read the summary, then **merge** or **discard**. Every proposal, applied or skipped, is remembered in `improvements.yaml`, so the next `/agent-improve` won't suggest a fix you've already turned down.
+If you applied anything, the changes wait on an `improve/…` branch, and you review it like any other: read the summary, then **merge**, **keep** or **discard**. Every proposal, applied or skipped, is remembered in `improvements.yaml`, so the next `/agent-improve` won't suggest a fix you've already turned down.
 
 ## What you have done
 
-Well done: that's the whole life of an agent. You planned it with `/agent-new`, ran it with `/agent-run`, approved a side effect, reviewed and merged what the first run wrote, and watched the second run reuse it all at no model cost. Then you changed it twice: once with `/agent-revise`, for a change you had in mind, and once with `/agent-improve`, for the ones the agent found itself. Every change went through a branch you reviewed.
+Well done: that's the whole life of an agent. You planned it with `/agent-new`, ran it with `/agent-run`, reviewed and merged what the first run wrote, and watched the second run reuse it all at no model cost. Then you changed it twice: once with `/agent-revise`, for a change you had in mind, and once with `/agent-improve`, for the ones the agent found itself. Every change went through a branch you reviewed.
 
 Every agent you build from here works the same way, however different the job.
 
@@ -305,4 +310,5 @@ Every agent you build from here works the same way, however different the job.
 
 - To see why the second run was cheaper, and how the pieces fit together: [How prometheus works](how-it-works.md).
 - To do something specific, such as running on a new folder of emails or connecting a stage to an app: [How-to guides](how-to.md).
+- To run the agent from a script or another program, without the chat: [How to run an agent from code](how-to.md#how-to-run-an-agent-from-code).
 - If a command refuses: [Troubleshooting](troubleshooting.md).

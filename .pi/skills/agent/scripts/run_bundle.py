@@ -18,7 +18,7 @@ make   writes <slug>-<version>-<run>.tgz from a run folder: a release's (prometh
        `to_check`. --with-data adds the run as it is: bundle.json with each child's output and where its session is,
        `paths` (each file pi-subagents named, to where it is in the bundle), run/ (run.yaml, .compiled/, its data
        folders: a release's call.json, events.jsonl, pi.log, inputs/, outputs/, work/; an agent's work/), subagents/
-       (pi-subagents' records of the run's launches, utils.launch_records), sessions/ (the children's session files)
+       (pi-subagents' records of the run's launches, pi_records.launch_records), sessions/ (the children's session files)
        and, for an agent's run, agent-sessions/ (its own Pi sessions that overlap the run: `sessions`). Either way the
        value of every secret param set (the environment, an agent's .env) is replaced by ${NAME} wherever it appears,
        and text that looks like a key is reported (`warnings`). A running run (a release's) or a running wave (an
@@ -38,12 +38,12 @@ import shutil
 import subprocess
 import sys
 import tarfile
-import tempfile
 from pathlib import Path
 from typing import Annotated
 
 import agent_params
 import agent_repo
+import pi_records
 import typer
 from run_folders import Run, active_run, is_release_run, list_runs, read_run
 from session_digest import (
@@ -58,12 +58,9 @@ from utils import (
     SECRET_PATTERNS,
     agent_name,
     emit,
-    launch_records,
     read_json,
     read_plan,
     refuse,
-    subagents_package,
-    subagents_runs_root,
 )
 
 app = typer.Typer(add_completion=False)
@@ -91,10 +88,10 @@ def read_versions(agent_dir):
         pi = subprocess.run(["pi", "--version"], capture_output=True, text=True, timeout=20, check=False).stdout.strip() or None
     except (OSError, subprocess.SubprocessError):
         pi = None
-    package = subagents_package(agent_dir)
+    package = pi_records.package(agent_dir)
     version_file = agent_dir / ".pi" / "skills" / "agent" / "VERSION"
     return {"prometheus": version_file.read_text(encoding="utf-8").strip() if version_file.is_file() else None,
-            "pi": pi, "pi_subagents": (read_json(package[0]) or {}).get("version") if package else None}
+            "pi": pi, "subagents": (read_json(package[0]) or {}).get("version") if package else None}
 
 
 def find_secrets(agent_dir):
@@ -108,12 +105,6 @@ def find_secrets(agent_dir):
         if agent_params.kind(spec) == "secret" and value is not None and len(text := value.get_secret_value()) >= 4:
             found[text] = agent_params.env_name(name, spec)
     return found
-
-
-def name_in_bundle(path: Path) -> str:
-    """Where a file pi-subagents named goes in the bundle: under subagents/ (its own folder) or sessions/."""
-    root, tmp = subagents_runs_root().parent, Path(tempfile.gettempdir()).resolve()
-    return f"subagents/{path.relative_to(root)}" if path.is_relative_to(root) else f"sessions/{path.relative_to(tmp)}"
 
 
 def find_in_bundle(path, paths: dict, run_dir: Path):
@@ -301,18 +292,18 @@ def collect(run_dir: Path | None, agent_dir: Path | None, ended: bool = True):
         entries[f"agent-sessions/{f.name}"] = f
     paths, described = {}, []
     for launch in launches:
-        records = launch_records(str(launch.get("subagent_run_id") or ""))
+        records = pi_records.launch_records(str(launch.get("subagent_run_id") or ""))
         for folder in records["folders"]:
             for f in sorted(folder.rglob("*")):
                 if f.is_file() and not f.is_symlink():
-                    entries[name_in_bundle(f)] = f
+                    entries[pi_records.bundle_name(f)] = f
         for f in records["files"]:
-            paths[str(f)] = name_in_bundle(f)
+            paths[str(f)] = pi_records.bundle_name(f)
             entries[paths[str(f)]] = f
     for launch in launches:  # once every file has its place: the children name theirs
-        folder = subagents_runs_root() / str(launch.get("subagent_run_id") or "")
+        folder = pi_records.runs_root() / str(launch.get("subagent_run_id") or "")
         described.append({**{k: launch.get(k) for k in ("wave", "stages", "status", "cost_usd", "subagent_run_id")},
-                          "record": f"subagents/{folder.relative_to(subagents_runs_root().parent)}" if folder.is_dir() else None,
+                          "record": pi_records.bundle_name(folder) if folder.is_dir() else None,
                           "children": describe_children(folder, paths, run_dir) if folder.is_dir() else []})
 
     info = {"format": FORMAT, **facts, "run": run_dir.name, "stages": read_run(run_dir).get("stages"),

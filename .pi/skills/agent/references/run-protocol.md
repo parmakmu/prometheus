@@ -29,8 +29,8 @@ through the agent tools.
 ## Every start
 
 1. `agent_check`. Read `state` first: where the agent stands, its `hint` and
-   the `moves` the scripts accept. Every agent tool's result carries the same
-   as `next`: when unsure what comes next, pick from `next.moves`; anything
+   the `moves` the scripts accept. Every tool that makes a move returns the
+   same as `next`: when unsure what comes next, pick from `next.moves`; anything
    else is refused. Then its `summary`.
 2. With an active run, `state.last_launch` says how its latest wave went
    (no need to read `run.yaml`). `run_wave`: check that launch with

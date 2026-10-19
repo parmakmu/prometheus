@@ -4,7 +4,8 @@ Prometheus is a standalone Pi agent that builds agents: `cd` here, run `pi`, and
 `agents/<slug>/`, itself a full Pi agent (own chat, git repo, plan, programs, gates) that runs its work with
 pi-subagents one wave at a time. This file is the settled decisions, one line each; the stories behind them are in
 [`docs/design.md`](../docs/design.md), the architecture and the Pi facts relied on in
-[`docs/contributing.md`](../docs/contributing.md). Don't re-litigate them; keep the docs true when behaviour changes.
+[`docs/contributing.md`](../docs/contributing.md). Don't re-litigate them; keep the docs true when behaviour changes, and a file's opening docstring true
+whenever you change the file (its usage, options, subcommands, fields and the names it cites).
 
 Docs: `tutorial`, `how-to`, `troubleshooting` (every refusal a user meets), `commands`, `python-api` (the package's
 exports: `load_agent`, `Agent`, `Run`, `Result`, `PrometheusError`), `params-and-secrets`,
@@ -53,7 +54,7 @@ exports: `load_agent`, `Agent`, `Run`, `Result`, `PrometheusError`), `params-and
   `serve --keep` delete old runs' files (and orphaned pi-subagents mission files), keeping their history; a release's
   newest failed runs stay whole (`--keep-failed`). A failed released run is fixed from a bundle (2026-10-16; not an
   `/agent-doctor`): `prometheus bundle` / `GET /runs/<id>/bundle` (`run_bundle.py make`: the run, pi-subagents' records via
-  `utils.launch_records`, children's sessions; secrets → `${NAME}`; 2026-10-18: by default only `bundle.json`, what the
+  `pi_records.launch_records`, children's sessions; secrets → `${NAME}`; 2026-10-18: by default only `bundle.json`, what the
   run did without what it read (statuses, errors, children's tool calls and failed results, param values → `<name>`,
   `to_check`), the run as it is only with `--with-data`; a rerun from it doesn't carry approvals) →
   `/agent-improve <bundle.tgz>` (`run_bundle.py add` → `runs/imported/`, never reused from; `session_digest` `imported`) →
@@ -94,14 +95,18 @@ The skill is `.pi/skills/agent/`; the planner is Prometheus where it must be tol
 ## Architecture
 
 Python scripts in `.pi/skills/agent/scripts/` hold all logic and print one JSON object (`utils.emit`; refusals
-`utils.refuse`); runs via `run_folders.py`, YAML via `utils.read_yaml`/`write_yaml`, commits name their branch. The two
+`utils.refuse`); runs via `run_folders.py`, YAML via `utils.read_yaml`/`write_yaml`, commits name their branch. A script works on the agent it is given: `--agent` (default `.`), made absolute once in
+`main` and passed on as `agent_dir` (commands: `ctx.obj`); no script `chdir`s or reads `Path.cwd()` below `main`. The two
 extensions are thin: run a script (`$PI_AGENT_PYTHON`, else the nearest `.venv`, else `python3`), format its JSON.
 `templates/agent/` plus a copy of the skill make each agent (`agent_scaffold.py`), so it runs without Prometheus.
-`wave_runner.js` is the only JS a wave carries; `run_batcher.py` is stdlib-only. Libraries: typer, pydantic
+`wave_runner.js` is the only JS a wave carries; `run_batcher.py` is stdlib-only. Only the skill's `pi_records.py` reads
+pi-subagents' files, and only `prometheus/launcher.py` (`check`, `launch`, `outcome`, `stop`) runs a released wave;
+the rest read a launch as `run.yaml` keeps it (`run_folders.end_launch`), so another executor replaces those two. Libraries: typer, pydantic
 (`plan_validate.py`: shape, then one `Checker` method per rule group), pydantic-settings + python-dotenv, ruamel.yaml,
 packaging (requirements, versions), psutil (`process_alive`: a reused pid is not the process recorded), graphlib. Web app: `ui/router.ts` (routes; split into `common`, `sandbox` + `bwrap`/`podman`, `workers`, `files`,
 `subagents`) + one `ui/worker.ts`
-(Pi SDK) per user and agent, page in `ui/web`. `prometheus/cli.py` is the `prometheus` command (typer + rich): `init`,
+(Pi SDK) per user and agent, page in `ui/web`. `prometheus/settings.py` holds prometheus's settings (one `BaseSettings`, read fresh each call; an agent's folder is a
+parameter, never a setting). `prometheus/cli.py` is the `prometheus` command (typer + rich): `init`,
 `doctor`, the planner (`pi -e <ext> --skill <skill> --append-system-prompt <role>` in `~/.prometheus`, whose `.pi/` has
 only settings.json and a link to `plan-critic.md`) and `prometheus <slug>`; the planner extension finds its root from
 its own file and the agents from `PROMETHEUS_AGENTS` (else `<root>/agents`). The wheel keeps the repo layout under

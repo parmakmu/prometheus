@@ -12,8 +12,9 @@ case (email_folder -> EMAIL_FOLDER). Values come from the process environment
 first, then `.env` in the agent root (pydantic-settings), then the plan's
 default; values a run was started with (`run_steps.py start-run --params`, an API call) win
 over all of them for that run. A `per_run: true` param (a query) never reads or writes `.env`: its
-value is the run's own (given at start, or set once the run asks), else the environment, else the default. `.env` is per machine and not in git, and never loaded
-into pi's environment: the batcher adds the secrets a command names (run_compile.py).
+value is the run's own (given at start, or set once the run asks), else the environment, else the
+default. `.env` is per machine and not in git, and never loaded into pi's environment: the batcher
+adds the secrets a command names (run_compile.py).
 """
 import os
 import re

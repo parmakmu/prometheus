@@ -1,11 +1,10 @@
-"""Small helpers shared by the other scripts: JSON results, YAML files, and where Pi and
-pi-subagents keep their records."""
+"""Small helpers shared by the other scripts: JSON results, YAML files, and where Pi keeps its files (pi-subagents'
+records: pi_records.py)."""
 import io
 import itertools
 import json
 import os
 import re
-import tempfile
 from pathlib import Path
 
 import psutil
@@ -32,10 +31,10 @@ def report_state(agent_dir):
 def emit(obj, code=0):
     if _agent_dir is not None and isinstance(obj, dict) and "next" not in obj and (_agent_dir / "plan.yaml").is_file():
         from agent_state import (
-            state,  # here, not at the top: agent_state imports the validator, which imports this
+            read_next,  # here, not at the top: agent_state imports the validator, which imports this
         )
         try:
-            obj["next"] = state(_agent_dir)
+            obj["next"] = read_next(_agent_dir)
         except (OSError, ValueError, RuntimeError) as exc:  # a result must still be printed
             obj["next"] = {"error": str(exc)}
     print(json.dumps(obj, indent=2, default=str))
@@ -245,120 +244,12 @@ def agent_name(agent_dir):
     return release.get("agent") if isinstance(release, dict) and release.get("agent") else Path(agent_dir).resolve().name
 
 
-# --- Pi and pi-subagents' records ---------------------------------------------------
+# --- Pi ---------------------------------------------------
 
 def pi_agent_dir():
     """Pi's agent folder: $PI_CODING_AGENT_DIR, else ~/.pi/agent (Pi's config.js, getAgentDir)."""
     configured = os.environ.get("PI_CODING_AGENT_DIR", "").strip()
     return Path(configured).expanduser() if configured else Path.home() / ".pi" / "agent"
-
-
-def mission_of(run_id):
-    """The id of the pi-subagents mission that lists async run `run_id`, or None. Missions are
-    kept per project under <agent dir>/missions/projects/<hash>/<mission id>.json, each listing
-    its runs (pi-subagents' missions/store.js)."""
-    for path in (pi_agent_dir() / "missions" / "projects").glob("*/*.json"):
-        mission = read_json(path) or {}
-        if any(isinstance(r, dict) and r.get("runId") == run_id for r in mission.get("runs") or []):
-            return mission.get("id") or path.stem
-    return None
-
-
-def subagents_runs_root():
-    """Where pi-subagents keeps its async runs, one folder per run id (its src/shared/types.js, ASYNC_DIR)."""
-    root = os.environ.get("PI_SUBAGENTS_TEMP_ROOT", "").strip()
-    if not root:
-        scope = f"uid-{os.getuid()}" if hasattr(os, "getuid") else f"user-{os.environ.get('USERNAME', 'shared')}"
-        root = Path(tempfile.gettempdir()) / f"pi-subagents-{scope}"
-    return Path(root).resolve() / "async-subagent-runs"
-
-
-def subagent_records(newer_than=None):
-    """(run id, status.json) of each async run pi-subagents keeps; with `newer_than` (a timestamp),
-    only records written since, skipped by their file time without being read."""
-    root = subagents_runs_root()
-    for path in root.glob("*/status.json") if root.is_dir() else []:
-        try:
-            if newer_than is not None and path.stat().st_mtime < newer_than:
-                continue
-        except OSError:
-            continue
-        if isinstance(status := read_json(path), dict):
-            yield path.parent.name, status
-
-
-SUBAGENT_RUN_ID_RE = re.compile(r"^[\w-]+$")  # pi-subagents' run ids; read from files, so nothing like ../..
-
-
-def launch_records(run_id):
-    """What pi-subagents keeps of one launch (`run_id`, a wave's async run), as {"folders", "files"}: its record folder
-    and its children's (named by `runId` or as folders), and the files they name (sessions, transcripts, outputs).
-    Only paths inside pi-subagents' own temporary folders: they are read from its records, and get deleted (prune)."""
-    root, tmp = subagents_runs_root(), Path(tempfile.gettempdir()).resolve()
-
-    def ours(text):
-        try:
-            path = Path(text).resolve()
-        except (OSError, ValueError, RuntimeError):
-            return None
-        inside_tmp = path.is_relative_to(tmp) and len(path.relative_to(tmp).parts) > 1
-        if path.is_relative_to(root.parent) or inside_tmp and path.relative_to(tmp).parts[0].startswith("pi-subagent-session-"):
-            return path
-        return None
-
-    folders, files, todo = [], [], [run_id]
-
-    def visit(value, key=None):
-        if isinstance(value, dict):
-            for k, v in value.items():
-                visit(v, k)
-        elif isinstance(value, list):
-            for v in value:
-                visit(v)
-        elif isinstance(value, str):
-            if key == "runId":
-                todo.append(value)
-            elif value.startswith("/") and (path := ours(value)):
-                if path.parent == root and path.is_dir():
-                    todo.append(path.name)
-                elif path.is_file() and not path.is_relative_to(root) and path not in files:
-                    files.append(path)
-
-    while todo:
-        rid = todo.pop()
-        folder = root / rid
-        if not SUBAGENT_RUN_ID_RE.match(rid) or folder in folders or not folder.is_dir():
-            continue
-        folders.append(folder)
-        visit(read_json(folder / "status.json"))
-        try:
-            lines = (folder / "workflow-children.jsonl").read_text(encoding="utf-8").splitlines()
-        except OSError:
-            lines = []
-        for line in lines:
-            try:
-                visit(json.loads(line))
-            except ValueError:
-                continue
-    return {"folders": folders, "files": files}
-
-
-def subagents_package(agent_dir):
-    """pi-subagents' package.json (its version), project install first, else Pi's; [] when not found."""
-    for root in (Path(agent_dir) / ".pi" / "npm", pi_agent_dir() / "npm"):
-        if (f := root / "node_modules" / "pi-subagents" / "package.json").is_file():
-            return [f]
-    return []
-
-
-def subagent_child(run_id):
-    """The child entry ({childId, state, runId, agent}) of a pi-subagents child run, from its
-    workflow run's status.json `workflowChildren.children`, or None."""
-    for _rid, status in subagent_records():
-        for c in (status.get("workflowChildren") or {}).get("children") or []:
-            if isinstance(c, dict) and c.get("runId") == run_id:
-                return c
-    return None
 
 
 # a process created this long after the one recorded started is another that reused its pid

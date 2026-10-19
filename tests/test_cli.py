@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from prometheus import cli
+from prometheus import cli, settings
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / ".pi" / "skills" / "agent" / "scripts"
@@ -31,10 +31,25 @@ def test_settings_come_from_flag_then_environment_then_config_then_default(home,
     assert cli.get_setting("agents", str(home / "from-flag")) == (home / "from-flag", "flag")
 
 
+def test_every_folder_setting_reads_the_environment_then_the_config_file(home, monkeypatch):
+    for name in ("PROMETHEUS_RELEASES", "PROMETHEUS_CACHE", "PROMETHEUS_CATALOG", "PI_CODING_AGENT_DIR",
+                 "XDG_DATA_HOME", "XDG_CACHE_HOME"):
+        monkeypatch.delenv(name, raising=False)
+    s = settings.settings()
+    assert (s.releases, s.cache, s.catalog, s.pi_agent) == (
+        home / ".local/share/prometheus/releases", home / ".cache/prometheus", None, home / ".pi/agent")
+    cli.write_config({"releases": str(home / "from-config"), "catalog": "~/catalog.yaml"})
+    monkeypatch.setenv("PROMETHEUS_CACHE", "")  # empty is unset, not the current folder
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(home / "pi"))
+    s = settings.settings()
+    assert (s.releases, s.cache, s.catalog, s.pi_agent) == (
+        home / "from-config", home / ".cache/prometheus", home / "catalog.yaml", home / "pi")
+
+
 def test_init_without_a_terminal_writes_the_config_and_the_planner_folder(home, monkeypatch):
     monkeypatch.setattr(cli, "show_checks", lambda: True)
     cli.init(agents_flag=str(home / "work" / "agents"), home_flag=None, yes=True)
-    config = tomllib.loads(cli.get_config_file().read_text())
+    config = tomllib.loads(settings.config_file().read_text())
     assert config == {"agents": str(home / "work" / "agents"), "home": str(home / ".prometheus")}
     assert (home / "work" / "agents").is_dir()
     pi_dir = home / ".prometheus" / ".pi"
@@ -42,7 +57,7 @@ def test_init_without_a_terminal_writes_the_config_and_the_planner_folder(home, 
     critic = pi_dir / "agents" / "plan-critic.md"
     assert critic.is_symlink() and critic.read_text() == (ROOT / ".pi" / "agents" / "plan-critic.md").read_text()
     cli.init(agents_flag=None, home_flag=None, yes=True)  # again: the config file's folders, nothing broken
-    assert tomllib.loads(cli.get_config_file().read_text()) == config
+    assert tomllib.loads(settings.config_file().read_text()) == config
 
 
 def test_the_planner_starts_pi_in_its_folder_with_prometheus_files(home, monkeypatch):

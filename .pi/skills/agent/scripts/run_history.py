@@ -10,7 +10,7 @@ show   per run (newest first): id, status, revision, started_at, cost_usd, and p
        launch's cost. A `stages` summary counts, per stage, how often it completed, failed
        or was reused, so a stage that keeps failing (or keeps costing) stands out.
 prune  deletes the work/ folders of finished runs beyond the newest N (default 10), and
-       pi-subagents' records of their launches (utils.launch_records: each wave's folder, its
+       pi-subagents' records of their launches (pi_records.launch_records: each wave's folder, its
        children's, their sessions and outputs), and its mission files once none of their
        launches is kept. run.yaml and .compiled/ stay, so the history stays; an earlier run
        whose work/ is gone is no longer reused from (compile_wave, reuse_earlier). The active
@@ -26,16 +26,10 @@ import shutil
 from pathlib import Path
 from typing import Annotated
 
+import pi_records
 import typer
 from run_folders import active_run, is_release_run, list_runs, read_run, read_wave
-from utils import (
-    SUBAGENT_RUN_ID_RE,
-    emit,
-    launch_records,
-    pi_agent_dir,
-    read_json,
-    refuse,
-)
+from utils import emit, refuse
 
 app = typer.Typer(add_completion=False)
 AGENT = Annotated[str, typer.Option("--agent", help="agent root")]
@@ -93,8 +87,8 @@ def prune(agent_dir: AGENT = ".", keep: Annotated[int, typer.Option(help="finish
     kept = [r for r in finished + failed if r not in old]
     pruned, freed, gone_launches = [], 0, set()
     for rid, d, launches, folders in old:
-        ids = [i for r in launches if SUBAGENT_RUN_ID_RE.match(i := str(r.get("subagent_run_id") or ""))]
-        records = [launch_records(i) for i in ids]
+        ids = [i for r in launches if pi_records.RUN_ID_RE.match(i := str(r.get("subagent_run_id") or ""))]
+        records = [pi_records.launch_records(i) for i in ids]
         folders = [d / f for f in folders if (d / f).is_dir()] + [f for r in records for f in r["folders"]]
         files = [f for r in records for f in r["files"]]
         gone_launches.update(ids)
@@ -107,7 +101,7 @@ def prune(agent_dir: AGENT = ".", keep: Annotated[int, typer.Option(help="finish
             for f in files:
                 f.unlink(missing_ok=True)
         pruned.append(rid)
-    missions = prune_missions(gone_launches, {i for _, _, launches, _ in kept for r in launches
+    missions = pi_records.prune_missions(gone_launches, {i for _, _, launches, _ in kept for r in launches
                                               if (i := str(r.get("subagent_run_id") or ""))}, dry_run)
     emit({"ok": True, "pruned": pruned, "freed_mb": round(freed / 1e6, 2), "dry_run": dry_run, "missions_removed": missions,
           "empty_session_folders": prune_launch_folders(root, dry_run), "kept": [rid for rid, *_ in kept]})
@@ -125,18 +119,6 @@ def prune_launch_folders(root, dry_run):
         for d in empty:
             shutil.rmtree(d, ignore_errors=True)
     return len(empty)
-
-
-def prune_missions(gone, kept, dry_run):
-    """pi-subagents' mission files (one per launch that started a mission) all of whose launches were pruned."""
-    removed = 0
-    for path in (pi_agent_dir() / "missions" / "projects").glob("*/*.json"):
-        runs = {str(r.get("runId")) for r in (read_json(path) or {}).get("runs") or [] if isinstance(r, dict)}
-        if runs and runs <= gone and not runs & kept:
-            removed += 1
-            if not dry_run:
-                path.unlink(missing_ok=True)
-    return removed
 
 
 if __name__ == "__main__":

@@ -18,32 +18,33 @@ critique  records a plan-critic result {run_id, verdict, passes?, findings} with
 params    sets {name: value} in .env for params the plan declares, except secrets.
 card      what a caller of the agent's API needs (the web app's run API): what it does, the params it
           takes, its outputs, and where a run may stop to ask (approvals, reviews).
+network-show  the hosts the plan asks to reach (`network:`), for the web app to offer you to allow.
+params-show   the plan's params and their values for a form (the web app): a secret only as set or not.
 
 Prints one JSON object with the validation result.
 """
 import json
-import os
 from pathlib import Path
 from typing import Annotated
 
 import agent_params
 import agent_repo
 import agent_state
+import pi_records
 import typer
 from plan_validate import plan_digest, validate
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from run_folders import active_run
 from utils import (
+    PLAN_FILE,
     emit,
     read_plan,
     refuse,
     report_state,
     stage_kind,
-    subagent_child,
     write_plan,
 )
 
-PLAN = Path("plan.yaml")
 CRITIC_PASSES = 2  # each time a run resolves stages: a plan fixed after a finding gets a new revision, not a new budget
 LOCKED = ("request", "goal", "done_when", "params", "inputs", "outputs", "agents")
 RESOLVE_KEYS = {"stages", "remove", "findings", "questions", "answers", "note"}
@@ -75,28 +76,28 @@ def styled(value, key=None):
     return value
 
 
-def back_to_run_branch(run):
+def back_to_run_branch(agent_dir, run):
     """Make sure an active run's own branch is checked out before its plan is read: someone may have switched
     branches. Not while a wave runs (the call is refused then anyway)."""
     if run is None or run.wave_running:
         return
     try:
-        agent_repo.back_to_run_branch(Path.cwd(), run.branch)
+        agent_repo.back_to_run_branch(agent_dir, run.branch)
     except RuntimeError as exc:
         refuse(f"run {run.id}: {exc}. Tell the user; do not change branches or files yourself")
 
 
-def commit(message, run):
+def commit(agent_dir, message, run):
     """Commit the agent (on the run's branch during a run); (commit, note). A git failure is
     reported, not fatal."""
     try:
-        return agent_repo.commit(Path.cwd(), message, to=run.branch if run else None)
+        return agent_repo.commit(agent_dir, message, to=run.branch if run else None)
     except RuntimeError as exc:
         return None, str(exc)
 
 
-def report(plan):
-    errors, warnings, summary = validate(plan, None, None, Path.cwd())
+def report(agent_dir, plan):
+    errors, warnings, summary = validate(plan, None, None, agent_dir)
     return {
         "valid": not errors, "status": plan.get("status"), "revision": plan.get("revision", 1),
         "errors": errors, "warnings": warnings, "run": summary.get("run"), "next_wave": summary.get("next_wave"),
@@ -108,19 +109,20 @@ def report(plan):
 
 
 @app.callback()
-def main(agent_dir: Annotated[str, typer.Option("--agent", help="agent root")] = "."):
-    os.chdir(agent_dir)
-    if not PLAN.is_file():
-        refuse(f"{Path(agent_dir).resolve()} is not an agent (no plan.yaml)")
-    report_state(Path.cwd())
+def main(ctx: typer.Context, agent_dir: Annotated[str, typer.Option("--agent", help="agent root")] = "."):
+    ctx.obj = agent_dir = Path(agent_dir).resolve()  # the agent every command works on: passed on, never the current folder
+    if not (agent_dir / PLAN_FILE).is_file():
+        refuse(f"{agent_dir} is not an agent (no plan.yaml)")
+    report_state(agent_dir)
 
 
 @app.command()
-def resolve(change: Annotated[str, typer.Option(help="the change as a JSON object, or a file holding it")]):
+def resolve(ctx: typer.Context, change: Annotated[str, typer.Option(help="the change as a JSON object, or a file holding it")]):
     """Resolve provisional stages after their discovery, or change pending ones the user asked about."""
-    agent_state.require(Path.cwd(), agent_state.resolve)
-    back_to_run_branch(active_run(Path.cwd()))  # before the plan is read
-    plan, c = read_plan(Path.cwd(), {}), json_arg(change)
+    agent_dir = ctx.obj
+    agent_state.require(agent_dir, agent_state.resolve)
+    back_to_run_branch(agent_dir, active_run(agent_dir))  # before the plan is read
+    plan, c = read_plan(agent_dir, {}), json_arg(change)
     if not isinstance(c, dict):
         refuse("the change must be a JSON object")
     extra = sorted(set(c) - RESOLVE_KEYS)
@@ -131,7 +133,7 @@ def resolve(change: Annotated[str, typer.Option(help="the change as a JSON objec
                f"{', '.join(LOCKED)} are locked: change them with /agent-revise once no run is active")
 
     stages = plan.get("stages") or []
-    run = active_run(Path.cwd())
+    run = active_run(agent_dir)
     frozen = set(run.state.get("stages") or {})
     by_key = {s.get("id"): s for s in stages}
     unknowns = {u.get("id"): u for u in plan.get("unknowns") or []}
@@ -163,7 +165,7 @@ def resolve(change: Annotated[str, typer.Option(help="the change as a JSON objec
         refuse("; ".join(problems))
 
     rev = plan.get("revision", 1)
-    previous = agent_repo.head(Path.cwd())
+    previous = agent_repo.head(agent_dir)
 
     for key in c.get("remove") or []:
         stages.remove(by_key.pop(key))
@@ -181,24 +183,25 @@ def resolve(change: Annotated[str, typer.Option(help="the change as a JSON objec
     plan["revision"] = rev + 1
     plan["status"] = "draft"
     plan.pop("critique", None)
-    write_plan(Path.cwd(), plan)
-    new, git_note = commit(f"r{rev + 1} draft: resolve" + (f": {c['note']}" if c.get("note") else ""), run)
-    emit({"ok": True, "previous_commit": previous, "commit": new, "git_note": git_note, "note": c.get("note"), **report(plan)})
+    write_plan(agent_dir, plan)
+    new, git_note = commit(agent_dir, f"r{rev + 1} draft: resolve" + (f": {c['note']}" if c.get("note") else ""), run)
+    emit({"ok": True, "previous_commit": previous, "commit": new, "git_note": git_note, "note": c.get("note"), **report(agent_dir, plan)})
 
 
 @app.command()
-def critique(result: Annotated[str, typer.Option(help="the critic's result as JSON {run_id, verdict, passes?, findings}, or a file")]):
+def critique(ctx: typer.Context, result: Annotated[str, typer.Option(help="the critic's result as JSON {run_id, verdict, passes?, findings}, or a file")]):
     """Record a plan-critic result and mark the plan ready if it validates."""
-    agent_state.require(Path.cwd(), agent_state.record_critique)
-    back_to_run_branch(active_run(Path.cwd()))  # before the plan is read
-    plan, c = read_plan(Path.cwd(), {}), json_arg(result)
+    agent_dir = ctx.obj
+    agent_state.require(agent_dir, agent_state.record_critique)
+    back_to_run_branch(agent_dir, active_run(agent_dir))  # before the plan is read
+    plan, c = read_plan(agent_dir, {}), json_arg(result)
     if not isinstance(c, dict) or not c.get("run_id") or not c.get("verdict"):
         refuse("the result needs run_id and verdict")
     if not isinstance(c.get("passes", 1), int) or not 1 <= c.get("passes", 1) <= CRITIC_PASSES:
         refuse(f"passes is 1 or 2: at most {CRITIC_PASSES} critic passes per revision, and each time a run resolves stages. "
                "Do not launch another; record the last pass with each remaining finding rejected and a note why")
-    run = active_run(Path.cwd())
-    child = subagent_child(c["run_id"])
+    run = active_run(agent_dir)
+    child = pi_records.child(c["run_id"])
     if child is None:
         refuse(f"pi-subagents has no record of a critic run {c['run_id']}: record the run id of the plan-critic child "
                "that reviewed this plan (critic-contract.md), after it completed")
@@ -215,9 +218,9 @@ def critique(result: Annotated[str, typer.Option(help="the critic's result as JS
         if c["run_id"] not in seen:
             run.state.setdefault("critiques", []).append({"run_id": c["run_id"], "after_waves": waves})
             run.save()
-    if run is None and agent_repo.is_change_branch(agent_repo.branch(Path.cwd()) or ""):
+    if run is None and agent_repo.is_change_branch(agent_repo.branch(agent_dir) or ""):
         # a change's first critique of an edited plan makes it a new revision (begin-change leaves the plan as is)
-        base = agent_repo.main_plan(Path.cwd()) or {}
+        base = agent_repo.main_plan(agent_dir) or {}
         if plan.get("revision", 1) == base.get("revision", 1) and plan_digest(plan) != plan_digest(base):
             plan["revision"] = plan.get("revision", 1) + 1
     plan["critique"] = {
@@ -232,40 +235,43 @@ def critique(result: Annotated[str, typer.Option(help="the critic's result as JS
         "plan_digest": plan_digest(plan),
     }
     plan["status"] = "ready"
-    r = report(plan)
+    r = report(agent_dir, plan)
     if not r["valid"]:
         plan["status"] = "needs_answers" if r["open_questions"] else "draft"
-        r = report(plan)
-    write_plan(Path.cwd(), plan)
-    new, git_note = commit(f"r{plan.get('revision', 1)} {plan['status']}: critic {c['verdict']}", run)
+        r = report(agent_dir, plan)
+    write_plan(agent_dir, plan)
+    new, git_note = commit(agent_dir, f"r{plan.get('revision', 1)} {plan['status']}: critic {c['verdict']}", run)
     emit({"ok": True, "ready": plan["status"] == "ready", "commit": new, "git_note": git_note, **r})
 
 
 @app.command()
-def params(values: Annotated[str, typer.Option(help="{name: value} as JSON, or a file")]):
+def params(ctx: typer.Context, values: Annotated[str, typer.Option(help="{name: value} as JSON, or a file")]):
     """Set values for params that are not secrets in .env (agent_params.py)."""
-    plan, v = read_plan(Path.cwd(), {}), json_arg(values)
+    agent_dir = ctx.obj
+    plan, v = read_plan(agent_dir, {}), json_arg(values)
     if not isinstance(v, dict):
         refuse("values must be a JSON object {name: value}")
-    problems = agent_params.set_values(Path.cwd(), plan.get("params") or {}, v)
+    problems = agent_params.set_values(agent_dir, plan.get("params") or {}, v)
     if problems:
         refuse("; ".join(problems))
-    emit({"ok": True, **report(plan)})
+    emit({"ok": True, **report(agent_dir, plan)})
 
 
 
 @app.command("network-show")
-def network_show():
+def network_show(ctx: typer.Context):
     """The hosts the plan asks to reach (`network:`), for the web app to offer you to allow."""
-    hosts = read_plan(Path.cwd(), {}).get("network") or []
+    agent_dir = ctx.obj
+    hosts = read_plan(agent_dir, {}).get("network") or []
     emit({"ok": True, "requested": [str(h) for h in hosts if isinstance(h, str)]})
 
 
 @app.command("params-show")
-def params_show():
+def params_show(ctx: typer.Context):
     """The plan's params and their values for a form (the web app): a secret only as set or not."""
-    specs = read_plan(Path.cwd(), {}).get("params") or {}
-    values = agent_params.load(Path.cwd(), specs)
+    agent_dir = ctx.obj
+    specs = read_plan(agent_dir, {}).get("params") or {}
+    values = agent_params.load(agent_dir, specs)
     emit({"ok": True, "params": [{
         "name": n, "description": agent_params.spec_of(s).get("description"), "type": agent_params.kind(s),
         "required": agent_params.spec_of(s).get("required", True), "env": agent_params.env_name(n, s),
@@ -275,11 +281,12 @@ def params_show():
 
 
 @app.command()
-def card():
+def card(ctx: typer.Context):
     """The agent as a caller sees it: no values (a secret, or a path on this machine, stays here)."""
-    plan = read_plan(Path.cwd(), {})
+    agent_dir = ctx.obj
+    plan = read_plan(agent_dir, {})
     specs = plan.get("params") or {}
-    values = agent_params.load(Path.cwd(), specs)
+    values = agent_params.load(agent_dir, specs)
     stages = [s for s in plan.get("stages") or [] if isinstance(s, dict)]
     emit({"ok": True, "ready": plan.get("status") == "ready", "request": plan.get("request"), "goal": plan.get("goal"),
           "done_when": plan.get("done_when") or [],

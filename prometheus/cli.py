@@ -3,10 +3,13 @@
     prometheus                  the planner: pi in ~/.prometheus, with prometheus's extension, skill and role
     prometheus <slug> [args]    that agent: pi in its folder (args go to pi)
     prometheus init             where the agents and the planner's folder are (asks in a terminal)
-    prometheus doctor           what prometheus needs, and what is missing
+    prometheus doctor [<slug>[@v]]     what prometheus needs, and what is missing; with a release, whether it can run here
+    prometheus check <slug>     validate the agent's plan.yaml: errors, warnings, the waves it would run
     prometheus release <slug>   tag a version of the agent that code can run (see agent_release.py)
     prometheus run <slug>[@v]   run a release with no one to ask: --param name=value, --approve stage
-    prometheus list             the agents and where each stands
+    prometheus runs <slug> [run]       a release's runs here, or how one went
+    prometheus bundle <slug> <run>     pack a released run for /agent-improve where the agent is developed
+    prometheus list             the agents and where each stands, and the releases installed here
     prometheus install <url>    an agent from git (or the catalog's name for it), reviewed before it stays
     prometheus pull <slug>      the agent's upstream changes, reviewed before main takes them
     prometheus share <slug> <remote>   push it (main and releases) for others to install
@@ -18,7 +21,8 @@
     prometheus prune <slug>     delete old runs' files (the agent's and its releases'), keeping the newest
 
 Each setting comes from, in order: a flag, an environment variable (PROMETHEUS_AGENTS, PROMETHEUS_HOME), the config
-file (~/.config/prometheus/config.toml, written by init), a prompt (init, in a terminal only), the default.
+file (~/.config/prometheus/config.toml, written by init), a prompt (init, in a terminal only), the default: see
+settings.py, which lists them all.
 """
 import json
 import os
@@ -35,7 +39,8 @@ from rich.console import Console
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
-DEFAULTS = {"agents": "~/agents", "home": "~/.prometheus"}
+from prometheus.settings import config_file, settings
+
 COMMANDS = {"init", "doctor", "help", "release", "run", "list", "install", "pull", "share", "propose", "catalog",
             "refresh", "upgrade", "serve", "prune", "check", "bundle", "runs"}  # agent_scaffold.RESERVED holds these (a test checks)
 console = Console()
@@ -88,30 +93,25 @@ def import_script(name: str):
         sys.path.remove(folder)
 
 
-def get_config_file() -> Path:
-    return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "prometheus" / "config.toml"
-
-
 def read_config() -> dict:
     try:
-        return tomllib.loads(get_config_file().read_text(encoding="utf-8"))
+        return tomllib.loads(config_file().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
 
 
 def write_config(values: dict):
-    path = get_config_file()
+    path = config_file()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(f"{key} = {json.dumps(value)}\n" for key, value in values.items()), encoding="utf-8")
 
 
 def get_setting(name: str, flag: str | None = None) -> tuple[Path, str]:
-    """A setting's folder and where it came from: flag, environment, config file or default."""
-    for value, source in ((flag, "flag"), (os.environ.get(f"PROMETHEUS_{name.upper()}"), "environment"),
-                          (read_config().get(name), "config"), (DEFAULTS[name], "default")):
-        if value:
-            return Path(value).expanduser().resolve(), source
-    raise AssertionError(name)
+    """A setting's folder (settings.py) and where it came from, for init and doctor: flag, environment, config file
+    or default."""
+    source = ("flag" if flag else "environment" if os.environ.get(f"PROMETHEUS_{name.upper()}")
+              else "config" if read_config().get(name) else "default")
+    return getattr(settings(**{name: flag}), name), source
 
 
 def prepare_home(home: Path, files: Path):
@@ -140,7 +140,7 @@ def start_planner(args: list[str]):
     agents, _ = get_setting("agents")
     home, _ = get_setting("home")
     files = find_files()
-    if not get_config_file().exists() and "PROMETHEUS_AGENTS" not in os.environ:
+    if not config_file().exists() and "PROMETHEUS_AGENTS" not in os.environ:
         if not sys.stdin.isatty():
             raise SystemExit("prometheus is not set up: run `prometheus init` (or set PROMETHEUS_AGENTS)")
         init(agents_flag=None, home_flag=None, yes=False)
@@ -193,7 +193,7 @@ def init(
     found = sorted(p.parent.name for p in chosen["agents"].glob("*/plan.yaml"))
     console.print(f"Agents: {chosen['agents']}" + (f" ({len(found)} found: {', '.join(found)})" if found else ""))
     console.print(f"Planner: {chosen['home']}")
-    console.print(f"Saved to {get_config_file()}")
+    console.print(f"Saved to {config_file()}")
     if not show_checks():
         console.print("Fix what is missing above, then run `prometheus`.")
 
@@ -208,9 +208,8 @@ def run_quiet(*cmd: str) -> str | None:
 
 def find_pi_subagents() -> str | None:
     """pi-subagents' version, from the global Pi install."""
-    agent_dir = Path(os.environ.get("PI_CODING_AGENT_DIR") or Path.home() / ".pi" / "agent")
     try:
-        return json.loads((agent_dir / "npm" / "node_modules" / "pi-subagents" / "package.json").read_text())["version"]
+        return json.loads((settings().pi_agent / "npm" / "node_modules" / "pi-subagents" / "package.json").read_text())["version"]
     except (OSError, ValueError, KeyError):
         return None
 
@@ -464,9 +463,9 @@ def agent_list():
                       str(a.get("runs", 0)), f"{last['id']} {last['status']}" if last else "-",
                       "update: prometheus refresh" if a.get("stale") else "current")
     console.print(table if table.rows else f"No agents in {agents}.")
-    from prometheus.run_release import get_releases, list_installed
+    from prometheus.run_release import list_installed
     releases = Table("Release", "Versions here", "Runs")
-    for slug in sorted(p.name for p in get_releases().glob("*") if p.is_dir()):
+    for slug in sorted(p.name for p in settings().releases.glob("*") if p.is_dir()):
         if installed := list_installed(slug):
             releases.add_row(slug, ", ".join(r["version"] for r in installed), str(len(list_released_runs(slug))))
     if releases.rows:
@@ -584,11 +583,10 @@ def prune(
     dry_run: Annotated[bool, typer.Option("--dry-run", help="say what would go; delete nothing")] = False,
 ):
     """Delete the files of old finished runs (work, inputs, outputs, pi-subagents' records); their history stays."""
-    from prometheus.run_release import get_releases
     agents, _ = get_setting("agents")
-    folders = [f for f in [agents / slug, *sorted((get_releases() / slug).glob("*"))] if (f / "plan.yaml").is_file()]
+    folders = [f for f in [agents / slug, *sorted((settings().releases / slug).glob("*"))] if (f / "plan.yaml").is_file()]
     if not folders:
-        raise SystemExit(f"no agent {slug!r} in {agents}, and no release of it in {get_releases()}")
+        raise SystemExit(f"no agent {slug!r} in {agents}, and no release of it in {settings().releases}")
     for folder in folders:
         out = run_script("run_history.py", "prune", "--agent", str(folder), "--keep", str(keep), "--keep-failed", str(keep_failed),
                          *(["--dry-run"] if dry_run else []))
@@ -600,20 +598,19 @@ def prune(
 
 def find_released_run(slug: str, run_id: str) -> Path:
     """A release's run folder, whichever release it ran."""
-    from prometheus.run_release import get_releases
-    found = [d for d in (get_releases() / slug).glob(f"*/runs/{run_id}") if (d / "run.yaml").is_file()]
+    found = [d for d in (settings().releases / slug).glob(f"*/runs/{run_id}") if (d / "run.yaml").is_file()]
     if not found:
-        raise PrometheusError(f"no run {run_id!r} of a release of {slug} in {get_releases() / slug}")
+        raise PrometheusError(f"no run {run_id!r} of a release of {slug} in {settings().releases / slug}")
     return found[0]
 
 
 def list_released_runs(slug: str) -> list[dict]:
     """Every run of every release of `slug` here, oldest first: id, version (the one it was called as), state, start,
     cost, error."""
-    from prometheus.run_release import get_releases, state_of
+    from prometheus.run_release import state_of
     run_folders, read_json = import_script("run_folders"), import_script("utils").read_json
     found = []
-    for folder in (get_releases() / slug).glob("*"):
+    for folder in (settings().releases / slug).glob("*"):
         for run_id, run_dir in run_folders.list_runs(folder):
             state, call = run_folders.read_run(run_dir), read_json(run_dir / "call.json") or {}
             found.append({"run": run_id, "version": call.get("version"), "state": state_of(state), "started": state.get("started_at"),

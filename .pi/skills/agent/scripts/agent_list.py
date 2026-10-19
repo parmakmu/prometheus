@@ -3,21 +3,28 @@
 
 Usage: agent_list.py [--root agents] [--agent DIR]
 
-Prints a JSON list, one object per agent: slug, status, revision, goal,
-state (agent_state's name for where it stands), runs (count),
-last_run {id, status, started_at, finished_at, last_wave}, recent_runs (the last 5, newest
-first: id, status, started_at, finished_at, note, cost_usd: its subagents' cost summed over its launches,
-agent_cost_usd: the agent's own model's, from its sessions, session_digest.agent_costs),
-active_run, next_wave (its id) and next_stages (its stage ids), waiting (what the active run is paused on after its last
-wave: approval | review | resolve, else null), stages_done/stages_total (of the active run) and stages
-(every plan stage: key, title, status: done | running | null, null when no run is active; children {done, failed, total, items: each child's key, agent, state, run_id}
-while its wave runs, from pi-subagents' record of the launch),
-provisional, open_questions, custom_subagents, agent_version (the skill copy's; stale when
-Prometheus here would copy something else, agent_version.up_to_date), branch (checked out), unmerged
-(run/, revise/ and improve/ branches not merged into main) and off_branch (the active run's branch isn't checked
-out: what is, and what to do; else null). Waves and stage status come from
-plan_validate (waves are derived; status lives in runs/<id>/run.yaml).
-Nothing is changed.
+Prints a JSON list, one object per agent:
+  slug, status, revision, goal
+  state             agent_state's name for where it stands
+  runs              how many
+  last_run          {id, status, started_at, finished_at, last_wave}
+  recent_runs       the last 5, newest first: id, status, started_at, finished_at, note, cost_usd (its
+                    subagents' cost summed over its launches), agent_cost_usd (the agent's own model's,
+                    from its sessions: session_digest.agent_costs)
+  active_run, next_wave (its id), next_stages (its stage ids)
+  waiting           what the active run is paused on after its last wave: approval | review | resolve, else null
+  stages_done, stages_total   of the active run
+  stages            every plan stage: key, title, status (done | running | null; null when no run is
+                    active), and while its wave runs children {done, failed, total, items: each child's key,
+                    agent, state, run_id}, from pi-subagents' record of the launch
+  provisional, open_questions, custom_subagents
+  agent_version     the skill copy's; stale when Prometheus here would copy something else
+                    (agent_version.up_to_date)
+  branch            checked out
+  unmerged          run/, revise/ and improve/ branches not merged into main
+  off_branch        the active run's branch isn't checked out: what is, and what to do; else null
+Waves and stage status come from plan_validate (waves are derived; status lives in
+runs/<id>/run.yaml). Nothing is changed.
 """
 import json
 from pathlib import Path
@@ -26,11 +33,12 @@ from typing import Annotated
 import agent_repo
 import agent_state
 import agent_version
+import pi_records
 import typer
 from plan_validate import validate
 from run_folders import last_run, list_runs, read_run
 from session_digest import agent_costs, default_sessions_dir
-from utils import read_json, read_plan, refuse, subagents_runs_root
+from utils import read_plan, refuse
 
 
 def recent_runs(agent_dir, runs, n=5):
@@ -57,17 +65,15 @@ def child_progress(run_state, stage_keys):
     launch = next(iter(reversed([x for x in run_state.get("launches") or [] if isinstance(x, dict)])), None)
     if not launch or launch.get("status") != "running" or not launch.get("subagent_run_id"):
         return {}
-    status = read_json(subagents_runs_root() / str(launch["subagent_run_id"]) / "status.json")
-    children = ((status or {}).get("workflowChildren") or {}).get("children") if isinstance(status, dict) else None
     out = {}
-    for c in children or []:
-        key = str(c.get("childId") or "") if isinstance(c, dict) else ""
+    for c in pi_records.launch_children(launch["subagent_run_id"]):
+        key = c["key"]
         owner = max((k for k in stage_keys if key == k or key.startswith(f"{k}-")), key=len, default=None)
         if owner is None:
             continue
         p = out.setdefault(owner, {"done": 0, "failed": 0, "total": 0, "items": []})
         p["total"] += 1
-        p["items"].append({"key": key, "agent": c.get("agent"), "state": c.get("state"), "run_id": c.get("runId")})
+        p["items"].append(c)
         p["done"] += c.get("state") in DONE_STATES
         p["failed"] += c.get("state") in FAILED_STATES
     return out
@@ -103,7 +109,7 @@ def summarise(root, slug, current):
     custom = sorted(p.stem for p in subagents_dir.iterdir() if p.suffix == ".md") if subagents_dir.is_dir() else []
     goal = plan.get("goal") or ""
     installed = agent_version.installed(Path(root) / slug)
-    where = agent_state.state(Path(root) / slug)
+    where = agent_state.read_next(Path(root) / slug)
     return {
         "slug": slug,
         "status": plan.get("status"),

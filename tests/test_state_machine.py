@@ -249,7 +249,7 @@ def do_walk(tmp):
             jobs = []
             for src in level:
                 a = agent_state.read_state(src)
-                before, where, was = key(a), agent_state.describe(a), census(src)
+                before, where, was = key(a), agent_state.next_of(a), census(src)
                 for move in MOVES + BY_HAND:
                     wf = tmp / f"c{next(copies)}"
                     jobs.append((before, where, was, a, move, wf, pool.submit(try_in_copy, src, wf, move)))
@@ -308,7 +308,7 @@ def test_a_clone_keeps_main_closed(tmp_path, run_py):
     assert run_py([scripts / "run_steps.py", "start-run"], cwd=src).data["ok"]  # commits the plan on main
     assert run_py([scripts / "run_steps.py", "stop"], cwd=src).data["ok"]
     subprocess.run(["git", "clone", "-q", str(src), str(tmp_path / "clone")], check=True)
-    where = agent_state.state(tmp_path / "clone")
+    where = agent_state.read_next(tmp_path / "clone")
     assert where["state"] == "main_ready" and "edit plan.yaml" not in where["moves"], where
 
 
@@ -352,5 +352,5 @@ def test_the_invariants_hold_in_every_reachable_state(reachable):
 def test_the_spec_reaches_every_state_and_has_no_dead_end(reachable):
     """On a branch the agent didn't make, the way out is a person's: its hint says so."""
     assert {agent_state.name_state(a) for a in reachable.values()} == set(agent_state.STATES)
-    stuck = [shape(a) for a in reachable.values() if not agent_state.describe(a)["moves"] and agent_state.name_state(a) != "other_branch"]
+    stuck = [shape(a) for a in reachable.values() if not agent_state.next_of(a)["moves"] and agent_state.name_state(a) != "other_branch"]
     assert not stuck, stuck

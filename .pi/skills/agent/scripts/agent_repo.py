@@ -32,7 +32,6 @@ Usage (from the agent root, or --agent DIR):
   agent_repo.py merge --action merge|keep|discard
 """
 import datetime
-import os
 import re
 import shutil
 import subprocess
@@ -233,21 +232,21 @@ def unmerged_branches(agent_dir):
 # --- commands -----------------------------------------------------------------
 
 @app.callback()
-def main(agent_dir: Annotated[str, typer.Option("--agent", help="agent root")] = "."):
-    os.chdir(agent_dir)
-    if not Path("plan.yaml").is_file():
-        refuse(f"{Path(agent_dir).resolve()} is not an agent (no plan.yaml)", 2)
+def main(ctx: typer.Context, agent_dir: Annotated[str, typer.Option("--agent", help="agent root")] = "."):
+    ctx.obj = agent_dir = Path(agent_dir).resolve()  # the agent every command works on: passed on, never the current folder
+    if not (agent_dir / "plan.yaml").is_file():
+        refuse(f"{agent_dir} is not an agent (no plan.yaml)", 2)
     if not available():
         refuse("git is required; ask the user to install it", 2)
-    report_state(Path.cwd())
+    report_state(agent_dir)
 
 
 @app.command("begin-change")
-def begin_change(kind: Annotated[str, typer.Option(help="revise (/agent-revise) | improve (/agent-improve)")] = "revise"):
+def begin_change(ctx: typer.Context, kind: Annotated[str, typer.Option(help="revise (/agent-revise) | improve (/agent-improve)")] = "revise"):
     """Start (or continue) a branch for changing the plan: revise/<date>-<n> or improve/<date>-<n>."""
     if kind not in CHANGE_KINDS:
         refuse(f"kind must be one of {', '.join(CHANGE_KINDS)}")
-    agent_dir = Path.cwd()
+    agent_dir = ctx.obj
     import agent_state  # here, not at the top: agent_state imports this module
     agent_state.require(agent_dir, agent_state.revise if kind == "revise" else agent_state.improve)
     if not has_run(agent_dir):
@@ -289,10 +288,9 @@ def why_not_ready(agent_dir, plan):
 
 
 @app.command()
-def review():
+def review(ctx: typer.Context):
     """Show the checked-out branch against main."""
-    info = review_info(Path.cwd())
-    emit({"ok": True, "review": info, "unmerged": unmerged_branches(Path.cwd())})
+    emit({"ok": True, "review": review_info(ctx.obj), "unmerged": unmerged_branches(ctx.obj)})
 
 
 AT_REVIEW = "Uncommitted changes at review"
@@ -312,10 +310,10 @@ def merge_message(agent_dir, b, summary, steps):
 
 
 @app.command()
-def merge(action: Annotated[str, typer.Option(help="merge | keep | discard")],
+def merge(ctx: typer.Context, action: Annotated[str, typer.Option(help="merge | keep | discard")],
           summary: Annotated[str, typer.Option(help="merge: what the branch changes, in words, for the commit message")] = ""):
     """Finish the review of the checked-out branch and switch back to main."""
-    agent_dir = Path.cwd()
+    agent_dir = ctx.obj
     if action not in ("merge", "keep", "discard"):
         refuse("action must be merge, keep or discard")
     b = branch(agent_dir)

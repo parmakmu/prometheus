@@ -67,7 +67,7 @@ $ prometheus                                $ prometheus emails-to-excel
 
 **The agent**, on the right, is the one that gets the work done. It hands the actual tasks to subagents through [pi-subagents](https://github.com/nicobailon/pi-subagents) and keeps you informed as they finish. It doesn't have to remember the rules about what's allowed when, either: a set of Python scripts keeps track of that, and the agent simply follows their lead.
 
-Once an agent exists, it no longer needs prometheus at all. The folder carries everything it needs, so you can copy it to another machine with `/agent-export` and run it there.
+Once an agent exists, it no longer needs prometheus to run. The folder carries everything it needs, so you can copy it to another machine (with `/agent-export <slug> <destination>` in the planner) and run it there with just Pi.
 
 ## Planning
 
@@ -103,7 +103,7 @@ The middle column is the stage's **kind**, and it's the most important thing abo
 
 | Kind | What it means | Who does it |
 | --- | --- | --- |
-| `side_effect` | it changes something outside the run | an agent, but only after you approve it, every single time |
+| `side_effect` | it changes something outside the run | a child (a model, or a program), but only after you approve it, every single time |
 | `decision` | it's a choice that belongs to you | you, before that part of the run starts |
 | `deterministic` | a program can get it right | a stage program, checked by a gate |
 | `judgment` | it needs someone to read and think | a model, often checked by a second model |
@@ -144,14 +144,14 @@ The first time the agent runs, a model writes `read_emails.py`. You review it al
 
 Of course, a program that runs without anyone watching needs checking, and that's the job of a **gate**. For `read-emails`, the gate makes sure every `.eml` file in the folder ended up either as a row like the one above or in `unparsed-emails.json` with a reason. Nothing slips through silently.
 
-Gates are written while the plan is being made, before the stage has ever run, and never by the stage they check. It's the same reason you wouldn't let someone mark their own exam.
+Gates are written while the plan is being made (or when a run resolves a stage, which is planning that stage), before the stage has ever run, and never by the stage they check. It's the same reason you wouldn't let someone mark their own exam.
 
 > [!NOTE]
 > If a program does fail one day, perhaps because an email arrives in a format it has never seen, the agent doesn't just retry. It calls a model, shows it the exact error, and asks it to fix the program, so the fix is there for every run after.
 
 ### Params: values that belong to your machine
 
-An agent should run anywhere, so the plan never contains anything specific to one computer. The input folder, an output path, a database table, an API token: each of these is a **param**. The plan says the param exists and what it's for, and its actual value lives in a file called `.env` next to the plan:
+An agent should run anywhere, so the plan never contains anything specific to one computer. The input folder, an output path, a database table, an API token: each of these is a **param**. The plan says the param exists and what it's for (and its `type`: a `path`, the default, `text` or `secret`). Its actual value usually lives in a file called `.env` next to the plan; a value that changes every run (`per_run: true`), or one a caller gives, is kept on the run instead. The details are in [Params, `.env` and secrets](params-and-secrets.md).
 
 ```yaml
 params:
@@ -189,7 +189,7 @@ The run then paused to **resolve**: it wrote the details of `read-emails`, and i
 
 ### A second pair of eyes
 
-Before any plan can run, a second agent, the **plan critic**, reads it through. We do this because a model checking its own work tends to miss exactly the things it missed while writing it. The critic starts fresh, sees only the plan file and none of the planner's reasoning, and asks the awkward questions: does the goal really match what you asked for? Is each stage the right kind? Is anything with a side effect hiding where it shouldn't be?
+Before any plan can run, a second agent, the **plan critic**, reads it through. We do this because a model checking its own work tends to miss exactly the things it missed while writing it. The critic starts fresh: it reads the plan file and the planning record beside it (`.plan/`: the unknowns, the questions and answers, the subagents the planner saw), takes a quick read-only look at the inputs if it needs to, and sees none of the planner's conversation. Then it asks the awkward questions: does the goal really match what you asked for? Is each stage the right kind? Is anything with a side effect hiding where it shouldn't be?
 
 It earns its keep. When emails-to-excel's stages were given their programs, the critic noticed that `build-workbook` named a program but was still set up for a model to do the work by hand. The planner fixed it, and the critic's second pass approved the change.
 
@@ -214,7 +214,7 @@ The agent doesn't launch the stages one at a time. It groups them into **waves**
 ]
 ```
 
-Each wave also records what the agent has to do once it's over (`ends_with`): nothing, resolving provisional stages, a review with you, or an approval.
+Each wave also records what the agent has to do once it's over, before the next wave (`ends_with`): nothing, resolving provisional stages, a review with you, or asking you to approve the side effect the next wave holds.
 
 When the first wave starts, the agent lets you know. From a real run:
 
@@ -308,20 +308,20 @@ This is the moment the whole design is built around. Here are emails-to-excel's 
 
 The model cost is the subagents'. The agent's own model, which asks the questions, compiles and records each wave and reports, adds about $0.02 a run on top; the web app shows both.
 
-You'll notice run 3 actually cost more than run 2. That's the investment. Writing a program that can be reused (214 and 129 lines here, taking arguments rather than fixed paths) is more work than doing the job once. But you only pay for it once. After that, each program takes a tenth of a second where a model used to take fifteen or twenty, and the only stage still using a model is `discover`.
+You'll notice run 3 actually cost more than run 2. That's the investment. Writing a program that can be reused (214 and 129 lines here, taking arguments rather than fixed paths) is more work than doing the job once. But you only pay for it once. After that, each program takes a tenth of a second where a model used to take fifteen or twenty, and the only stage still using a model is `discover` (with the reviewer that checks its report).
 
-Even `discover` runs only when the emails change. Its output depends only on its instructions and on what it reads, so when both match a run that already finished it, the agent copies that run's outputs instead of launching it again. The same goes for any model stage without a side effect, and the compiler's notes tell you which stages were reused.
+Even `discover` runs only when the emails change. A child may read only what its stage lists, so its output depends only on what it is told and what it reads. When those match a run that already finished the stage, the agent copies that run's outputs instead of launching it again. "Match" covers more than the instructions and the inputs' contents: the stage's subagent, program and gates, the agent's settings and pi-subagents' version count too. Reuse applies to judgment and deterministic stages whose outputs stay inside the run, unless the plan says `reuse: false`. It never applies to side effects, decisions, or a stage whose subagent has connector tools, since what those read isn't in any file. The compile's result tells you which stages were reused.
 
 > [!TIP]
 > Once your emails always arrive in the same format, new emails needn't run `discover` either: see [How to drop a discovery stage](how-to.md#how-to-drop-a-discovery-stage-once-the-input-is-stable).
 
-Two other things affect what a run costs, if you're designing your own plans. The agent does its bookkeeping once per wave, so a plan with fewer waves is cheaper than one with fewer stages. And a `map` stage, which splits a large input into batches, launches one child per batch, so its cost grows with the size of the input.
+Two other things affect what a run costs, if you're designing your own plans. The agent does its bookkeeping once per wave, so its cost grows with the number of waves, not the number of stages. And a `map` stage, which splits a large input into batches, launches one child per batch, so its cost grows with the size of the input.
 
 ## When the plan has settled: releases
 
 So far you've run the agent by talking to it. Once its plan has settled, with no stage left to discover and every program written and reviewed, the agent can also run with nobody at the keyboard. You make a **release** of it with `prometheus release emails-to-excel`, which tags the current `main` as `v1.0`.
 
-A release can then be run from the shell (`prometheus run emails-to-excel@v1`), from a Python program (`load_agent("emails-to-excel@v1")`), or as a small web service other programs and agents can call (`prometheus serve`). No model decides anything in such a run. Where the plan would ask a person, for an approval or a decision, the caller answers instead, either up front or when the run stops to ask.
+A release can then be run from the shell (`prometheus run emails-to-excel@v1`), from a Python program (`load_agent("emails-to-excel@v1")`), or as a small web service other programs and agents can call (`prometheus serve emails-to-excel@v1`). No model orchestrates such a run: code launches the waves, and models do only the judgment stages' work. Where the plan would ask a person, for an approval or a decision, the caller answers instead, either up front or when the run stops to ask.
 
 The steps are in [How to run an agent from code](how-to.md#how-to-run-an-agent-from-code) and [How to serve an agent over HTTP](how-to.md#how-to-serve-an-agent-over-http). Why releases work the way they do is in [Design decisions](design.md#running-agents-from-code).
 
@@ -329,7 +329,7 @@ The steps are in [How to run an agent from code](how-to.md#how-to-run-an-agent-f
 
 | Word | Means |
 | --- | --- |
-| **agent** | what prometheus builds: a folder `<slug>/` in the agents folder (`~/agents`, or `PROMETHEUS_AGENTS`) that is a Pi agent of its own, with a plan, its programs and gates |
+| **agent** | what prometheus builds: a folder `<slug>/` in the agents folder (the one `prometheus init` saved, `~/agents` by default; `PROMETHEUS_AGENTS` overrides it) that is a Pi agent of its own, with a plan, its programs and gates |
 | **plan** | `plan.yaml`: the job, what counts as done, and the stages |
 | **stage** | one step of the work, such as "extract the fields from every email" |
 | **kind** | whether a stage is a side effect, a decision, deterministic or judgment |
@@ -338,7 +338,7 @@ The steps are in [How to run an agent from code](how-to.md#how-to-run-an-agent-f
 | **param** | a value that depends on the machine; it lives in `.env` |
 | **run** | one execution of the plan, in its own folder `runs/<id>/` |
 | **wave** | the stages launched together before the agent next needs you |
-| **subagent** | a profile a stage runs as (`scout`, `reviewer`, `batcher`, or one the agent defines in `.pi/agents/`) |
+| **subagent** | a profile a stage runs as: one of pi-subagents' builtins (`scout`, `worker`, `reviewer`, …), or one in the agent's `.pi/agents/` (every agent has `batcher`, `reader` and `plan-critic` there) |
 | **child** | one subagent doing a stage, or part of one |
 | **side effect** | a stage that changes something outside the run |
 | **resolve** | filling in later stages during a run, from what discovery found |

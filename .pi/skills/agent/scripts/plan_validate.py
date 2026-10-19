@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate an agent YAML file against the plan schema, the
+"""Validate an agent's plan.yaml against the plan schema, the
 pi-subagents constraints it will be compiled into, and (when the plan lives in
 an agent) the agent's portability.
 
@@ -12,8 +12,8 @@ run_folders.py): the plan is reusable, each run is one execution of it.
 --agents    agent names from subagent({ action: "list" }); overrides the
             plan's `agents.available` list
 --external  names among them whose profile uses an external runner
---agent  agent root; defaults to the folder above `.pi/` when
-            the plan is at <agent>/plan.yaml
+--agent     agent root; defaults to the plan's folder when it holds a `.pi/`
+            (the plan is at <agent>/plan.yaml)
 
 Two passes: the pydantic models below check the plan's shape (types, required
 fields, allowed values); the rules in validate() check how the parts fit
@@ -700,7 +700,7 @@ class Checker:
             if o.path:
                 self.check_refs(f"{where} writes '{o.id}'", o.path, is_path=True)
                 if literal_absolute(o.path):
-                    self.err(f"{where}: writes '{o.id}' to an absolute path; use a ${{param}} or a path relative to the agent")
+                    self.err(f"{where}: writes '{o.id}' to an absolute path; use a ${{param}} or a relative path (it resolves in the run: runs/<id>/work/)")
         program, kind = st.program, st.kind.value
         if program is not None:
             if not SCRIPT_NAME_RE.match(program.file):
@@ -1234,8 +1234,8 @@ def main(
                    for part in parts_in_plan_file(plan_path.resolve().parent)]
     where = None
     if agent_root is not None:
-        from agent_state import state  # imported late: it imports this module
-        where = state(agent_root)
+        from agent_state import read_next  # imported late: it imports this module
+        where = read_next(agent_root)
     print(json.dumps({
         "valid": not errors,
         "status": plan.get("status") if isinstance(plan, dict) else None,

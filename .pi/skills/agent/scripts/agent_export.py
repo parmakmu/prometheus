@@ -5,11 +5,11 @@ Usage: agent_export.py AGENT DEST_FOLDER [--keep-state] [--name SLUG]
 
 Creates DEST_FOLDER/<slug>/ (or DEST_FOLDER/<SLUG>).
 
-Fresh export (default): a clean start. Copies the plan (as
-refined by any merged resolve), agents, gates, prompts, settings and skill; leaves
+Fresh export (default): a clean start. Copies the agent (its plan as refined by any
+merged resolve, gates, programs, subagents, settings, packages and skill copy); leaves
 out the runs (runs/), the git history (.git; the copy starts its own repo
-with one commit), pi-subagents runtime state (.pi/subagents/) and the conversations
-(.pi/sessions/).
+with one commit), pi-subagents runtime state (.pi/subagents/), Pi's .pi/history and
+the conversations (.pi/sessions/).
 
 Both modes leave out .venv (run `uv sync` there), .pi/npm (a project package
 install, if any; pi-subagents is expected to be installed globally) and .env:

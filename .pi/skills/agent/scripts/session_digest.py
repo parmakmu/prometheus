@@ -19,8 +19,8 @@ bundles (run_bundle.py add, runs/imported/), unreviewed by when they were import
 release's run or the agent's own on another machine (`kind`), its state and error, each
 child that didn't complete with its error and what it did (`activity`: turns, tool calls,
 failed calls' results), and, when it came --with-data, its output and session file and the
-agent's own sessions during it (`agent_sessions`; all read with agent_sessions). Only signals: the model opens the
-files they point at. Nothing is changed.
+agent's own sessions during it (`agent_sessions`). All of them are read with the agent_sessions
+tool (session_read.py). Only signals: the model opens the files they point at. Nothing is changed.
 """
 import json
 from collections import Counter

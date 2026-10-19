@@ -33,12 +33,13 @@ Inside an agent, each entry names the [states](state-machine.md) it is accepted 
 | --- | --- |
 | `prometheus [pi options]` | Starts the planner: `pi` in the planner's folder, with prometheus's extension, skill and role. Options such as `--resume` go to `pi`. |
 | `prometheus <slug> [pi options]` | Starts that agent: `pi` in `<slug>/` in the agents folder. |
+| `prometheus help` | The same as `prometheus --help`: the commands. For one command's arguments, `prometheus <command> --help`. |
 | `prometheus init [--agents <folder>] [--home <folder>] [--yes]` | Chooses the agents folder and the planner's folder, and saves them. It asks only in a terminal, and never with `--yes`. Then it runs the checks `doctor` runs. |
-| `prometheus doctor [<slug>[@v]]` | Checks that Pi (1.3.0 or later), pi-subagents (0.79.0 or later), Node, uv, a git identity and the agents folder are there, with the fix for each one that isn't. Given an agent, it also checks that its release can run on this machine: each secret is set in the environment, its packages install from its `uv.lock` (a dry run), and which stages need a model, and which model. A machine that only runs releases needs no git identity, so that check is left out then. Exits 1 if something is missing. |
+| `prometheus doctor [<slug>[@v]]` | Checks that Pi (1.3.0 or later), pi-subagents (0.79.0 or later), Node, uv, a git identity and the agents folder are there, with the fix for each one that isn't. Given an agent, it also checks that its release can run on this machine: each secret is set in the environment, its packages install from its `uv.lock` (a dry run), and which stages need a model, and which model. A machine that only runs releases needs no git identity, so the git check is left out whenever an agent is given. Exits 1 if something is missing. |
 | `prometheus list` | Lists the agents and where each one stands, and the releases installed here, with their versions and runs. |
 | `prometheus check <slug>` | Checks the agent's `plan.yaml`, for example after you edited it by hand: its errors and warnings, and the waves it would run. Exits 1 if it isn't valid. |
 | `prometheus refresh <slug \| --all>` | Does what `/agent-refresh` does, without starting Pi. |
-| `prometheus prune <slug> [--keep N] [--keep-failed N] [--dry-run]` | Deletes the files of old finished runs (work, inputs, outputs, and pi-subagents' records, the children's sessions and outputs, and missions), in the agent and in each of its releases, keeping the newest N (default 10). A release's failed runs are counted apart: the newest `--keep-failed` (default 10) stay whole too, so they can still be bundled. Their history stays. |
+| `prometheus prune <slug> [--keep N] [--keep-failed N] [--dry-run]` | Deletes the files of old finished runs (an agent's runs lose `work/`; a release's runs also their `inputs/` and `outputs/`; and pi-subagents' records, the children's sessions and outputs, and mission files none of whose launches is kept), in the agent and in each of its releases, keeping the newest N (default 10). A release's failed runs are counted apart: the newest `--keep-failed` (default 10) stay whole too, so they can still be bundled. Their history stays. |
 | `prometheus upgrade` | Updates prometheus itself (`uv tool upgrade prometheus`). |
 
 Each folder comes from the first of these that is set: the flag, the environment (`PROMETHEUS_AGENTS`, `PROMETHEUS_HOME`), `~/.config/prometheus/config.toml`, and finally the defaults `~/agents` and `~/.prometheus`. No agent can be named like one of the command's own words (`init`, `doctor`, `list`, `install`, `run` and a few more kept for later), since `prometheus <slug>` would then be ambiguous.
@@ -119,6 +120,8 @@ An agent built with prometheus calls another one with a stage of `pattern: a2a`.
 
 Set these in your shell, or in whatever starts prometheus or an agent, such as a scheduled job or a service's unit file. None of them is read from an agent's `.env`, which holds only the agent's params and is never loaded into Pi's environment.
 
+The folders can also be set in `~/.config/prometheus/config.toml` (which `prometheus init` writes), by their name without the prefix, in lower case: `agents`, `home`, `releases`, `cache`, `catalog`, and `pi_agent` for `PI_CODING_AGENT_DIR`. A flag wins over the environment, and the environment over `config.toml`.
+
 | Variable | Read by | Does | Default |
 | --- | --- | --- | --- |
 | `PROMETHEUS_AGENTS` | `prometheus`, the planner | the agents folder; wins over `config.toml` | `~/agents` |
@@ -129,6 +132,7 @@ Set these in your shell, or in whatever starts prometheus or an agent, such as a
 | `PROMETHEUS_SERVE_TOKEN` | `serve` | the token callers send (`--token`) | none: required unless it listens on loopback only |
 | `PROMETHEUS_PUBLIC_URL` | `serve` | the address callers use behind a proxy (`--public-url`), named in the Agent Card and output links | `http://<host>:<port>` |
 | `AGENT_NOTIFY_COMMAND` | an agent | a command run with a message as its last argument whenever a run stops for you (see [/agent-auto](#agent-auto)) | none: nobody is told |
+| `PI_CODING_AGENT_DIR` | `doctor`, `run`, `serve`, `load_agent` | Pi's global folder, where pi-subagents is installed (Pi's own variable) | `~/.pi/agent` |
 | `PI_AGENT_PYTHON` | the extensions | the Python that runs the skill's scripts; `prometheus` sets it for the planner | the nearest `.venv`, else `python3` |
 | `XDG_CONFIG_HOME` | `prometheus` | where `prometheus/config.toml` is | `~/.config` |
 
@@ -191,10 +195,12 @@ To run the copy, the destination machine needs Pi, pi-subagents and uv, and you 
 #### Example
 
 ```text
-/agent-export emails-to-excel ~/agents
+/agent-export emails-to-excel ~/handover
 ```
 
-**Refusals:** [destination exists](troubleshooting.md#export-destination-exists)
+This writes the copy to `~/handover/emails-to-excel/`: the destination is a folder the copy goes into, named after the agent.
+
+**Refusals:** [destination exists, or is inside the agent](troubleshooting.md#export-destination-exists)
 
 ### /agent-refresh
 
@@ -304,7 +310,7 @@ Shows where the agent stands.
 
 **Runs in:** an agent · **States:** all · changes nothing
 
-Shows the state and the moves open from it, the plan's status and validity, the active run, the last and next wave, open questions, missing params and secrets, pending approvals and reviews, and branches waiting for review. If someone has checked out another branch during a run, it says so as a problem, with what to do ([The run's branch isn't checked out](troubleshooting.md#the-runs-branch-isnt-checked-out)); it doesn't switch back itself. A running wave's live status is checked by the next `/agent-run`.
+Shows three things. **Next**: how far the active run is and its next wave, or the waves a new run would do. **Waiting for you**: open questions, decisions, approvals, a review, the budget, branches waiting for review, missing params and secrets. **Problem**: plan errors, waves that don't compile, and a branch checked out by hand during a run, with what to do ([The run's branch isn't checked out](troubleshooting.md#the-runs-branch-isnt-checked-out)); it doesn't switch back itself. A running wave's live status is checked by the next `/agent-run`.
 
 ### /agent-revise
 
@@ -355,7 +361,7 @@ Nothing runs it automatically: only you type it.
 /agent-improve the approval question is hard to answer
 ```
 
-**Refusals:** [no run yet, or nothing new](troubleshooting.md#nothing-to-improve-from) · [a run is active](troubleshooting.md#a-run-is-already-active) · [a revise is open](troubleshooting.md#another-change-is-open) · [another branch is checked out](troubleshooting.md#another-branch-is-checked-out) · [a bundle it can't import](troubleshooting.md#a-bundle-isnt-imported)
+**Refusals:** [no run yet](troubleshooting.md#nothing-to-improve-from-yet) · [nothing new](troubleshooting.md#nothing-new-to-improve-from) · [a run is active](troubleshooting.md#a-run-is-already-active) · [a revise is open](troubleshooting.md#another-change-is-open) · [another branch is checked out](troubleshooting.md#another-branch-is-checked-out) · [a bundle it can't import](troubleshooting.md#a-bundle-isnt-imported)
 
 **See also:** [`/agent-revise`](#agent-revise) · [`agent_sessions`](#agent_sessions)
 
@@ -422,7 +428,7 @@ The only way a plan that needs the critic (more than three stages, a judgment st
 
 ## Agent tools
 
-The model calls these while it follows the run protocol ([`run-protocol.md`](../.pi/skills/agent/references/run-protocol.md)). Every result carries `next`: the state the agent is in now, the moves open from it and a one-line hint, so the model never has to work out where it stands.
+The model calls these while it follows the run protocol ([`run-protocol.md`](../.pi/skills/agent/references/run-protocol.md)). Every result except `agent_sessions`' carries `next` (`agent_check` names it `state`): the state the agent is in now, the moves open from it and a one-line hint, so the model never has to work out where it stands.
 
 ### agent_check
 
@@ -458,7 +464,7 @@ Turns the next wave into the exact pi-subagents call, or says what must happen f
 agent_compile_wave({ approve?: [stage, …], reviewed?: true, budget?: usd })
 ```
 
-**States:** `run_ready`
+**States:** `run_ready`, `run_draft` (a plan that can't run comes back in the preflight's `plan_errors`, not as a refusal)
 
 When the wave can launch, returns `call`, which the model passes to pi-subagents unchanged. The call names the compiled script, saved at `runs/<id>/.compiled/<wave>.js`. Only then is the plan committed.
 
@@ -478,7 +484,7 @@ Otherwise returns `ok: false` and a `preflight` listing what is missing:
 
 When it relaunches a wave whose last launch failed, children that completed and haven't changed are not run again, nor a map's completed batches; `notes` says which. A model stage an earlier run finished on the same inputs is not run again either: its outputs are copied from that run. A map stage on the same items, batch size and stage reuses its merged output whole, and nothing of it is launched. When only some items are new or changed, a `pattern: map` stage maps just those: the items an earlier run mapped with the same stage keep their results, merged back in their place.
 
-**Refusals:** [the wave was launched but not recorded](troubleshooting.md#handled-by-the-agent) · [another branch is checked out, with changes](troubleshooting.md#the-runs-branch-isnt-checked-out) · [a wave is running](troubleshooting.md#a-wave-is-running) · [uv is missing](troubleshooting.md#a-tool-isnt-installed)
+**Refusals:** [the wave was launched but not recorded](troubleshooting.md#launched-but-not-recorded) · [another branch is checked out, with changes](troubleshooting.md#the-runs-branch-isnt-checked-out) · [a wave is running](troubleshooting.md#a-wave-is-running) · [uv is missing](troubleshooting.md#uv-is-not-installed)
 
 ### agent_start_wave
 
@@ -510,7 +516,7 @@ Returns `wave_status`, a summary of the children (status and output path, not th
 
 `status` and `result` are for when pi-subagents has no record of the run; the refusal says so.
 
-**Refusals:** [pi-subagents is still running it](troubleshooting.md#still-running-in-pi-subagents) · [its process is gone](troubleshooting.md#handled-by-the-agent) · [no record](troubleshooting.md#handled-by-the-agent)
+**Refusals:** [pi-subagents is still running it](troubleshooting.md#still-running-in-pi-subagents) · [its process is gone](troubleshooting.md#the-waves-process-is-gone) · [no record](troubleshooting.md#no-pi-subagents-record)
 
 ### agent_record_decision
 
@@ -540,7 +546,7 @@ Used after a discovery stage, or when you ask the run for a change. Raises the r
 
 Locked: stages that ran, the request, goal, `done_when`, params, inputs, outputs and subagents. A side effect stays a side effect.
 
-**Refusals:** [locked fields](troubleshooting.md#locked-while-resolving) · [another branch is checked out, with changes](troubleshooting.md#the-runs-branch-isnt-checked-out) · [no run is active](troubleshooting.md#handled-by-the-agent) · [a wave is running](troubleshooting.md#a-wave-is-running)
+**Refusals:** [locked fields](troubleshooting.md#locked-while-resolving) · [another branch is checked out, with changes](troubleshooting.md#the-runs-branch-isnt-checked-out) · [no run is active](troubleshooting.md#resolve-without-a-run) · [a wave is running](troubleshooting.md#a-wave-is-running)
 
 ### agent_record_critique
 
@@ -556,7 +562,7 @@ agent_record_critique({ run_id, verdict, passes?, findings })
 
 At most two passes per revision, and each time a run resolves stages.
 
-**Refusals:** [unknown critic run](troubleshooting.md#handled-by-the-agent) · [on `main` after a run](troubleshooting.md#main-changes-only-by-a-merge) · [a wave is running](troubleshooting.md#a-wave-is-running)
+**Refusals:** [unknown critic run](troubleshooting.md#unknown-critic-run) · [on `main` after a run](troubleshooting.md#critique-on-main) · [a wave is running](troubleshooting.md#a-wave-is-running)
 
 ### agent_stop_run
 
@@ -605,19 +611,19 @@ agent_add_package({ slug, packages: ["openpyxl", …], reason })      (in promet
 
 It shows you the packages and the reason, and runs `uv add` only on a yes; on a no it tells the agent to work without the package or ask you. `uv add`, `pip install` and the script behind the tool are blocked for the agent in bash. A stage's subagent can't ask, so it is told to report the package it needs and why, and the agent asks you afterwards. Requirements are checked first: a package from the index as PEP 508 writes it (a name, extras, version bounds, markers), not a URL, an option or a path.
 
-**Refusals:** [package not in pyproject.toml](troubleshooting.md#handled-by-the-agent)
+**Refusals:** [package not in pyproject.toml](troubleshooting.md#package-not-in-pyprojecttoml)
 
 ### agent_set_params
 
-Sets param values in `.env`.
+Sets param values: in `.env`, or on the active run for a `per_run` param.
 
 ```text
 agent_set_params({ values: { name: value, … } })
 ```
 
-**States:** all
+**States:** all (a `per_run` param only during a run)
 
-For paths and text. Files and folders take absolute paths; a relative or missing input path is refused. Refuses secrets: you add those yourself.
+For paths and text. Refuses a param the plan doesn't declare, a secret (you add those yourself), and a `per_run` param while no run is active. It doesn't check paths: a relative input path, or one that doesn't exist, is reported by the plan check and the next compile ([Input path is relative or missing](troubleshooting.md#input-path-is-relative-or-missing)).
 
 **See also:** [Params, `.env` and secrets](params-and-secrets.md)
 

@@ -13,7 +13,6 @@
 The catalog is `catalog.yaml` beside prometheus's files (PROMETHEUS_CATALOG names another): agents others can install
 by name. Adding one is a change to prometheus's repo, reviewed like any other.
 """
-import os
 import re
 import shutil
 import subprocess
@@ -24,6 +23,7 @@ from ruamel.yaml import YAML
 
 from prometheus import cli
 from prometheus.cli import PrometheusError
+from prometheus.settings import settings
 
 REFRESH_COMMIT = "Refresh from prometheus"  # agent_scaffold.py's message: install and pull make these locally
 
@@ -36,7 +36,7 @@ def git(folder: Path, *args: str, check: bool = True) -> subprocess.CompletedPro
 
 
 def read_catalog() -> list[dict]:
-    path = Path(os.environ.get("PROMETHEUS_CATALOG") or cli.find_files() / "catalog.yaml")
+    path = settings().catalog or cli.find_files() / "catalog.yaml"
     try:
         data = YAML(typ="safe").load(path.read_text(encoding="utf-8")) or {}
     except OSError:

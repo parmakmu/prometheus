@@ -3,7 +3,8 @@
 pi-subagents call that runs it.
 
 Usage:
-  run_compile.py [--agent DIR] [--approve key,key] [--out FILE] [--check]
+  run_compile.py [--agent DIR] [--approve key,key] [--budget USD] [--reviewed] [--out FILE] [--no-commit] [--check]
+  run_compile.py --frozen RUN_DIR [--params JSON] [--approve key,key]
 
 The wave runs in the active run's folder (runs/<id>/, see plan_validate.py):
 children work in runs/<id>/work/, and relative param values resolve against
@@ -25,15 +26,19 @@ that are not done, each as early as its `after` allows, and starts a new wave
 wherever the parent must act (a decision or approval, a side effect's report,
 a user review, resolving provisional stages).
 
---agent  agent root (default: current directory)
---approve   side-effect stage ids the user approved for this launch
---out       also write the result JSON to FILE
---check     planning check: compile every concrete pending wave (no run needed)
---frozen    a released agent's run (agent_release.py), in this folder, with --params and --approve from
-            the caller and no active run, commit or .env: the next wave after the stages its
-            run.yaml records as done, or the whole plan as one (`all`) when nothing in it asks
-            anyone; a decision or an unapproved side effect is in "preflight", for the caller
-            to answer; {"ok": true, "done": true} when no stage is left
+--agent      agent root (default: current directory)
+--approve    side-effect stage ids the user approved for this launch
+--budget     raise the run's cost ceiling (USD) to this, after the user said to go on
+--reviewed   the user has seen the last wave's outputs and said to go on (it ended with review)
+--out        also write the result JSON to FILE
+--no-commit  report only (e.g. for a status view): switch, commit and save nothing
+--check      planning check: compile every concrete pending wave (no run needed)
+--frozen     a released agent's run folder (agent_release.py), with --params and --approve from
+             the caller and no active run, commit or .env: the next wave after the stages its
+             run.yaml records as done, or the whole plan as one (`all`) when nothing in it asks
+             anyone; a decision or an unapproved side effect is in "preflight", for the caller
+             to answer; {"ok": true, "done": true} when no stage is left
+--params     with --frozen: the caller's param values, a JSON object (no secrets)
 
 Prints one JSON object. When the wave can launch:
 
@@ -55,7 +60,6 @@ The compiler never launches anything.
 """
 import hashlib
 import json
-import os
 import re
 import shlex
 import shutil
@@ -66,6 +70,7 @@ from typing import Annotated
 import agent_params
 import agent_repo
 import agent_state
+import pi_records
 import typer
 from plan_validate import agent_tools, check_ready, project_subagents, validate
 from ruamel.yaml.error import YAMLError
@@ -87,8 +92,6 @@ from utils import (
     refuse,
     report_state,
     stage_kind,
-    subagent_records,
-    subagents_package,
 )
 
 HERE = Path(__file__).resolve().parent
@@ -109,13 +112,7 @@ def unrecorded_launch(run_dir, state, wave_id):
     script = Path(run_dir) / ".compiled" / f"{wave_id}.js"
     if not script.is_file():
         return None
-    digest = hashlib.sha256(script.read_bytes()).hexdigest()
-    recorded = {r.get("subagent_run_id") for r in state.get("launches") or []}
-    # a launch of the script is newer than it: older records are skipped unread
-    for rid, st in subagent_records(newer_than=script.stat().st_mtime):
-        if rid not in recorded and (st.get("workflow") or {}).get("scriptDigest") == digest:
-            return st.get("runId") or rid, st.get("state")
-    return None
+    return pi_records.unrecorded_launch(script, {r.get("subagent_run_id") for r in state.get("launches") or []})
 
 
 def canonical(value):
@@ -596,7 +593,7 @@ class Compiler:
         st = self.stages[key]
         # the subagent's file, and what picks a builtin's model and prompt: the agent's settings, pi-subagents' version
         files = [self.agent_dir / ".pi" / "agents" / f"{st.get('agent')}.md", Path(self.script_path(st) or ""),
-                 self.agent_dir / ".pi" / "settings.json", *subagents_package(self.agent_dir)]
+                 self.agent_dir / ".pi" / "settings.json", *pi_records.package(self.agent_dir)]
         files += [self.agent_dir / "gates" / g for g in re.findall(r"\.\./gates/(\S+)", canonical(st.get("gate")))]
         for f in files:
             if f.is_file():
@@ -946,9 +943,8 @@ def record_reused_wave(agent_dir, plan, run, result):
     from run_steps import (
         record_without_launch,  # here, not at the top: run_steps.py imports this module
     )
-    os.chdir(agent_dir)  # run_steps.py works on the agent in the current folder
     nxt = {"id": result["wave"], "stages": result["stages"], "ends_with": result["ends_with"]}
-    recorded = record_without_launch(plan, run, nxt, result["outcome"], result.get("approved") or [])
+    recorded = record_without_launch(agent_dir, plan, run, nxt, result["outcome"], result.get("approved") or [])
     # first, and in words: a model that saw only a finished wave's result called agent_finish_wave too (run 2026-10-16-7)
     return {"ok": True, "launched": False,
             "recorded": f"wave {result['wave']} is already recorded: every stage was reused, nothing was launched. Do not "

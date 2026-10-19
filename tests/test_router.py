@@ -368,6 +368,16 @@ def test_a_call_is_checked_against_what_the_agent_takes(tmp_path, run_py):
         stop(proc)
 
 
+def test_a_sandbox_leaves_nothing_in_your_folder_you_cannot_remove(tmp_path, run_py, backend):
+    # rootless podman made the mount points missing inside the sandbox's home (.pi/agent, .local/…, projects/…) as its
+    # root, uid 100000 outside: folders in the user's own folder they could not delete (pytest couldn't either)
+    agent_home(tmp_path, run_py)
+    assert in_sandbox(tmp_path, "s", "true", backend).returncode == 0
+    others = [p for p in (tmp_path / "ada").rglob("*") if p.lstat().st_uid != os.getuid()]
+    assert not others, others[:5]
+    assert (tmp_path / "ada" / "home" / ".pi" / "agent").is_dir()  # made on our side, as us
+
+
 def test_a_worker_starts_in_the_hardened_sandbox(tmp_path, run_py, backend):
     # Pi's state read-only, the agent's code read-only: Pi and pi-subagents must still start and answer
     agent_home(tmp_path, run_py)

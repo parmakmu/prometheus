@@ -115,6 +115,19 @@ def test_a_leftover_run_branch_is_not_reused(tmp_path, run_py):
     assert r.data["run"] == f"{today}-2", r
 
 
+def test_the_scripts_work_on_the_agent_they_are_given_not_the_current_folder(tmp_path, run_py):
+    # the agent is a parameter (--agent), never the current folder: started elsewhere, every file lands in the agent
+    wf, k = ready_agent(tmp_path, run_py, "given")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    r = run_py([k / "run_steps.py", "--agent", wf, "start-run"], cwd=elsewhere)
+    assert r.data["ok"] and Path(r.data["path"]) == wf / "runs" / r.data["run"], r
+    r = run_py([k / "plan_edit.py", "--agent", wf, "resolve", "--change", '{"note": "from elsewhere"}'], cwd=elsewhere)
+    assert r.data["ok"] and r.data["next"]["state"] == "run_draft", r
+    assert run_py([k / "agent_repo.py", "--agent", wf, "review"], cwd=elsewhere).data["ok"]
+    assert sorted(p.name for p in elsewhere.iterdir()) == []
+
+
 def test_a_run_goes_back_to_its_branch_only_when_nothing_is_uncommitted(tmp_path, run_py):
     # someone switches branches while a run is going: the run works on its own branch again, never moving their edits
     wf, k = ready_agent(tmp_path, run_py, "back")

@@ -5,7 +5,7 @@ deciding anything at run time.
 A release is the tag v<major>.<minor> on a commit of main, made only when the plan can run that way:
   - it is ready (the critic recorded for this plan), on main, with nothing uncommitted and no active run;
   - no stage is provisional (its run would resolve: that is editing the plan, which only the agent's own runs do);
-  - every stage program (`script:`) exists (a released run never writes code);
+  - every stage program (`program:`) exists (a released run never writes code);
   - every wave compiles as a released run compiles it (run_compile.compile_frozen). A decision or a side effect
     is fine: the run asks its caller there (A2A's input-required), and goes on with the answer.
 Its interface is what a caller depends on: the params (type, required or not), the outputs (kind, format) and the
@@ -26,7 +26,7 @@ from typing import Annotated
 import agent_params
 import agent_repo
 import typer
-from agent_state import state
+from agent_state import read_next
 from plan_validate import check_ready, validate
 from run_compile import compile_frozen
 from utils import emit, read_plan, refuse, stage_kind
@@ -107,7 +107,7 @@ def problems_with(agent_dir, plan):
     """Why HEAD can't be released (empty when it can)."""
     agent_dir = Path(agent_dir)
     found = []
-    where = state(agent_dir)
+    where = read_next(agent_dir)
     if where["state"] not in ("main_ready", "plan_ready"):  # plan_ready: no run yet
         found.append(f"the agent is {where['state']} ({where['hint']}): release from main with a ready plan and no active run")
     if agent_repo.is_repo(agent_dir) and agent_repo.git(agent_dir, "status", "--porcelain").stdout.strip():
