@@ -168,7 +168,7 @@ def find_pi_subagents() -> str | None:
 
 
 # the versions prometheus is built and tested on: older ones wake the agent differently (notice turns, before_agent_start)
-MIN_VERSIONS = {"pi": "1.3.0", "pi-subagents": "0.79.0"}
+MIN_VERSIONS = {"pi": "1.3.0", "pi-subagents": "0.79.1"}
 
 
 def check_version(name: str, found: str | None) -> tuple[str | None, str | None]:

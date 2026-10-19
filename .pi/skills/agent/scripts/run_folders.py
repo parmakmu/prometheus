@@ -6,7 +6,8 @@
               same for both kinds. status: an agent's run is active (between waves, or a wave running), then
               done or stopped (a failed wave leaves it active, for a relaunch); a release's run is running or
               input_required (waiting for its caller's answer), then done, failed, stopped or error. An
-              agent's run also has revision, note, max_cost_usd, critiques [{run_id, after_waves}] (critic
+              agent's run also has revision, built_from (once done: agent_repo.built_from, what a release
+              checks), note, max_cost_usd, critiques [{run_id, after_waves}] (critic
               results recorded while the run resolved stages; plan_edit.py caps them each time); a release's
               driver, cancel, needs and error. Written by run_steps.py and plan_edit.py, or run_release.Run.
               A launch is recorded the same whatever ran it (run_steps.py, run_release.Run), by begin_launch

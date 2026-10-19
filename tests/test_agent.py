@@ -807,7 +807,7 @@ def test_scaffold_needs_agent_new(env, ext):
     assert "already has a plan" in allowed["result"]["error"]
     # /agent-new activates subagent (for probes and the critic) before its prompt goes out
     assert "subagent" not in refused["activeTools"]
-    assert "subagent" in new["activeTools"]
+    assert {"subagent", "bg_wait", "subagent_supervisor", "contact_supervisor"} <= set(new["activeTools"])  # off until delegating
 
 
 @skip_extensions
@@ -970,7 +970,7 @@ def test_extension_keeps_dotenv_out_of_pis_environment(env):
 def test_agent_run_activates_subagent(env):
     steps = env.agent_ext_report["steps"]
     assert "subagent" not in steps[0]["activeTools"]  # /agent-status launches nothing
-    assert "subagent" in steps[12]["activeTools"] and steps[12]["out"][0]["kind"] == "prompt"
+    assert {"subagent", "bg_wait"} <= set(steps[12]["activeTools"]) and steps[12]["out"][0]["kind"] == "prompt"
 
 
 @skip_extensions

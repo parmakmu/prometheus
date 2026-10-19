@@ -1031,7 +1031,7 @@ def after_launch(agent_dir, plan, run, entry, status, returned):
     keys = [s.get("id") for s in plan.get("stages") or []]
     done = bool(keys) and all(state["stages"].get(k) == "done" for k in keys)
     if done:
-        state.update({"status": "done", "finished_at": now()})
+        state.update({"status": "done", "finished_at": now(), "built_from": agent_repo.built_from(agent_dir)})
         run.save()
     total = sum(r.get("cost_usd") or 0 for r in state.get("launches") or [])
     after = validate(plan, None, None, agent_dir, run_state=state)[2]

@@ -16,7 +16,7 @@ const handlers = {};
 // pi-subagents in a fresh session: subagent registered but inactive, its loader active
 let active = ["read", "bash", "subagents_enable"];
 const pi = {
-  getAllTools() { return [...Object.keys(tools), "subagent", "subagents_enable"].map((name) => ({ name })); },
+  getAllTools() { return [...Object.keys(tools), "subagent", "subagents_enable", "bg_wait", "subagent_supervisor", "contact_supervisor"].map((name) => ({ name })); },
   getActiveTools() { return [...active]; },
   setActiveTools(names) { active = [...names]; },
   on(ev, h) { (handlers[ev] ??= []).push(h); return () => {}; },

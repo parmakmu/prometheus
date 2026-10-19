@@ -7,11 +7,13 @@ A release is the tag v<major>.<minor> on a commit of main, made only when the pl
   - no stage is provisional (its run would resolve: that is editing the plan, which only the agent's own runs do);
   - every stage program (`program:`) exists (a released run never writes code);
   - every wave compiles as a released run compiles it (run_compile.compile_frozen). A decision or a side effect
-    is fine: the run asks its caller there (A2A's input-required), and goes on with the answer.
+    is fine: the run asks its caller there (A2A's input-required), and goes on with the answer;
+  - one of the agent's own runs finished on what HEAD holds (run.yaml built_from = agent_repo.built_from: the plan,
+    programs, gates, subagents and packages), so a release has been seen to work. The tag names that run.
 Its interface is what a caller depends on: the params (type, required or not), the outputs (kind, format) and the
 side effects a caller approves. Against the last release, a change that can break a caller (a param removed, retyped
 or newly required, an output removed or changed, a side effect added) needs --breaking and raises the major
-version; anything else raises the minor. The tag's message holds the revision, the interface and whether it broke.
+version; anything else raises the minor. The tag's message holds the revision, the run, the interface and whether it broke.
 
 Usage:
   agent_release.py check [--agent DIR]               whether HEAD can be released, its interface and the changes
@@ -29,6 +31,7 @@ import typer
 from agent_state import read_next
 from plan_validate import check_ready, validate
 from run_compile import compile_frozen
+from run_folders import is_release_run, list_runs, read_run
 from utils import emit, read_plan, refuse, stage_kind
 
 TAG_RE = re.compile(r"^v(\d+)\.(\d+)$")
@@ -83,7 +86,7 @@ def compare(old, new):
 
 
 def releases(agent_dir):
-    """[{version, commit, revision, breaking, interface}], newest first."""
+    """[{version, commit, revision, breaking, run, interface}], newest first."""
     if not agent_repo.is_repo(agent_dir):
         return []
     # three NUL-ended fields per tag: name, the commit it points at, its message
@@ -108,7 +111,7 @@ def problems_with(agent_dir, plan):
     agent_dir = Path(agent_dir)
     found = []
     where = read_next(agent_dir)
-    if where["state"] not in ("main_ready", "plan_ready"):  # plan_ready: no run yet
+    if where["state"] not in ("main_ready", "plan_ready"):  # plan_ready: no run yet (then passing_run refuses)
         found.append(f"the agent is {where['state']} ({where['hint']}): release from main with a ready plan and no active run")
     if agent_repo.is_repo(agent_dir) and agent_repo.git(agent_dir, "status", "--porcelain").stdout.strip():
         found.append("there are uncommitted changes: a release is a commit, so commit or discard them first")
@@ -124,7 +127,16 @@ def problems_with(agent_dir, plan):
               "run the agent once so it is written and reviewed" for key, file in programs.items() if file and not (agent_dir / "scripts" / file).is_file()]
     if not found:
         found += compile_problems(agent_dir, plan)
+    if not found and not passing_run(agent_dir):
+        found.append("no finished run of this plan: run it to the end (/agent-run) and merge it, then release")
     return found
+
+
+def passing_run(agent_dir):
+    """The newest of the agent's own runs that finished on what HEAD holds (agent_repo.built_from), or None."""
+    built = agent_repo.built_from(agent_dir)
+    return next((rid for rid, d in reversed(list_runs(agent_dir)) if not is_release_run(d)
+                 and (s := read_run(d)).get("status") == "done" and built and s.get("built_from") == built), None)
 
 
 def compile_problems(agent_dir, plan):
@@ -175,7 +187,8 @@ def report(agent_dir, breaking_flag=False):
     already = next((r["version"] for r in releases(agent_dir) if r["commit"] == head), None)
     return {"ok": True, "releasable": not found and not already, "problems": found, "already_released": already,
                   "next_version": version, "last_release": last and last["version"], "revision": plan.get("revision", 1),
-                  "interface": face, "changes": {"breaking": breaking, "other": other}, "model_stages": model_stages(plan)}
+                  "interface": face, "changes": {"breaking": breaking, "other": other}, "model_stages": model_stages(plan),
+            "run": passing_run(agent_dir)}
 
 
 @app.command()
@@ -197,11 +210,11 @@ def tag(agent_dir: Annotated[str, typer.Option("--agent", help="agent root")] = 
     if out["changes"]["breaking"] and not breaking:
         refuse("this release can break callers (" + "; ".join(out["changes"]["breaking"]) + "): release it with --breaking, "
                "so the major version goes up and pinned callers keep the old one", changes=out["changes"])
-    message = json.dumps({"revision": out["revision"], "breaking": bool(out["changes"]["breaking"]) or breaking, "interface": out["interface"]})
+    message = json.dumps({"revision": out["revision"], "breaking": bool(out["changes"]["breaking"]) or breaking, "run": out["run"], "interface": out["interface"]})
     root = Path(agent_dir).resolve()
     agent_repo.git(root, *agent_repo.identity(root), "tag", "-a", out["next_version"], "-m", message)
     emit({"ok": True, "version": out["next_version"], "commit": agent_repo.head(root), "changes": out["changes"],
-          "interface": out["interface"], "model_stages": out["model_stages"]})
+          "interface": out["interface"], "model_stages": out["model_stages"], "run": out["run"]})
 
 
 @app.command("list")

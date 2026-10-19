@@ -9,6 +9,7 @@ from conftest import SKILL, copy_example, git_in, stamp
 SCRIPTS = SKILL / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 import agent_release as release_py
+import agent_repo
 
 PLAN = """\
 format: 1
@@ -94,10 +95,16 @@ def agent(tmp_path, run_py):
     return make_agent(tmp_path, run_py)
 
 
-def commit(folder, message="test"):
+def commit(folder, message="test", run=True):
+    """Commit everything and, with `run`, add a finished run of what was committed (a release needs one)."""
     git = git_in(folder)
     git("add", "-A")
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", message)
+    if run:
+        runs = folder / "runs"
+        run_dir = runs / f"2026-01-01-{len(list(runs.glob('*'))) + 1 if runs.is_dir() else 1}"
+        run_dir.mkdir(parents=True)
+        (run_dir / "run.yaml").write_text(f"status: done\nbuilt_from: {agent_repo.built_from(folder)}\n")
 
 
 def release(run_py, folder, *args):
@@ -124,6 +131,18 @@ def test_a_ready_agent_releases_as_v1_with_its_interface(agent, run_py):
     listed = release(run_py, agent, "list").data["releases"]
     assert [(x["version"], x["revision"], x["breaking"]) for x in listed] == [("v1.0", 1, False)]
     assert release(run_py, agent, "tag").data["error"] == "this commit is already released as v1.0"
+
+
+def test_a_release_needs_a_finished_run_of_what_it_releases(tmp_path, run_py):
+    agent = make_agent(tmp_path, run_py)
+    shutil.rmtree(agent / "runs")
+    assert any("no finished run of this plan" in p for p in release(run_py, agent, "check").data["problems"])
+    commit(agent, "ran")
+    tagged = release(run_py, agent, "tag").data
+    assert tagged["run"] == "2026-01-01-1" and release_py.releases(agent)[0]["run"] == "2026-01-01-1", tagged
+    (agent / "scripts" / "count.py").write_text("print(0)\n")
+    commit(agent, run=False)  # the program changed after the run: that run proves nothing about it
+    assert any("no finished run of this plan" in p for p in release(run_py, agent, "check").data["problems"])
 
 
 def test_a_change_that_can_break_callers_needs_breaking_and_raises_the_major(agent, run_py):

@@ -28,6 +28,7 @@ requirement: without a repo, writer children fail.
 A library, no command: the changes a person starts and ends (begin-change, review, merge) are plan_edit.py's commands,
 which check the state machine (agent_state.py) first; this module sits below it.
 """
+import hashlib
 import shutil
 import subprocess
 from pathlib import Path
@@ -65,6 +66,18 @@ def ensure_repo(agent_dir):
     """Create the agent's own repo (not the enclosing one, if any), on branch main."""
     if not is_repo(agent_dir):
         git(agent_dir, "init", "-q", "-b", MAIN)
+
+
+BUILT_FROM = ("plan.yaml", "scripts", "gates", ".pi/agents", "pyproject.toml", "uv.lock")  # what decides how it runs
+
+
+def built_from(agent_dir, ref="HEAD"):
+    """A digest of what decides how the agent runs at `ref` (BUILT_FROM, as git keeps it), or None without a commit: a
+    finished run records it, and a release needs a finished run with HEAD's."""
+    if not head(agent_dir):
+        return None
+    tree = git(agent_dir, "ls-tree", "-r", ref, "--", *BUILT_FROM).stdout
+    return hashlib.sha256(tree.encode()).hexdigest()[:16]
 
 
 def head(agent_dir):

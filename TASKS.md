@@ -45,6 +45,9 @@ frozen release as code, with no orchestrator. GitLab; users are developers; ever
   replaced before texts are clipped; `--bundle` reruns need a data bundle and no longer carry approvals (2026-10-18)
 - [x] 38. per-item reuse in map stages: the merge stores each item's record (after its gate), the split leaves out
   items an earlier run stored, the merge restores them in item order; `pattern: map` only (2026-10-18)
+- [x] 80. a release needs a finished run of what it releases (`run.yaml` `built_from` = `agent_repo.built_from`:
+  plan, programs, gates, subagents, packages; not the skill copy, so a refresh needs no rerun); the tag names the run;
+  a skill script's name no longer clashes with an embedding program's own module (2026-10-19)
 
 ## Dropped
 

@@ -74,14 +74,18 @@ function pythonFor(start: string): string {
   }
 }
 
-/** Make pi-subagents' `subagent` tool active before a command's prompt goes out. The command is the
- * user's authorization to delegate; left to the model, subagents_enable changes the tool list mid-turn,
+/** Make pi-subagents' `subagent` tool active before a command's prompt goes out, with the tools it declares
+ * beside it (DELEGATION: waiting, and answering children; since 0.79.1 they are off until then). The command is
+ * the user's authorization to delegate; left to the model, subagents_enable changes the tool list mid-turn,
  * which costs two turns and drops the prompt cache.
  * pi-subagents records the selection, so it holds on resume. No-op when pi-subagents is missing. */
+const DELEGATION = ["subagent", "bg_wait", "subagent_supervisor", "contact_supervisor"];
 function activateSubagent(pi: ExtensionAPI) {
-  if (!pi.getAllTools().some((tool) => tool.name === "subagent")) return;
+  const all = new Set(pi.getAllTools().map((tool) => tool.name));
+  if (!all.has("subagent")) return;
   const active = pi.getActiveTools();
-  if (!active.includes("subagent")) pi.setActiveTools([...active, "subagent"]);
+  const missing = DELEGATION.filter((name) => all.has(name) && !active.includes(name));
+  if (missing.length) pi.setActiveTools([...active, ...missing]);
 }
 
 interface ScriptResult {

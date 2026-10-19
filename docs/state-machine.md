@@ -240,7 +240,7 @@ The walk (see [Tests](#tests)) also checks these on the real files after every m
 
 ## Limits
 
-- **pi-subagents' records are internal**, not an API (`scriptDigest`, `workflowChildren`, the missions store). If their shape changes, the launched-twice check and the mission lookup find nothing and let the move through (they fail open), while the critic check refuses every critique (it fails closed), which the first live planning session would show. The tests use fake records of today's shape.
+- **pi-subagents' records are internal**, not an API (`scriptDigest`, `workflowChildren`, the missions store); only `pi_records.py` reads them, so a change in their shape is fixed there. If their shape changes, the launched-twice check and the mission lookup find nothing and let the move through (they fail open), while the critic check refuses every critique (it fails closed), which the first live planning session would show. The tests use fake records of today's shape.
 - **The model check explores the spec, not the scripts.** Conformance ties the two together, but only for the moves the walk tries.
 - **The walk explores each configuration once** (the value of every field), from the first history that reaches it. A bug that needs a particular history to show, such as resolving twice in one run, can still slip past it.
 - **Not in scope:** blocking tools in the extension by state (the scripts refuse the unsafe moves), and anything about the quality of a stage's output.

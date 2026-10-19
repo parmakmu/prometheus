@@ -682,6 +682,7 @@ def test_a_wave_whose_every_stage_is_reused_is_recorded_without_a_launch(tmp_pat
     (wf / "runs" / first / "work" / "counts.txt").write_text("3\n")
     done = json.dumps({"status": "done", "children": {"count": {"status": "completed", "runId": "child-1"}}})
     assert run("run_steps.py", "finish-wave", "--wave", "w1", "--result", done).data["run_status"] == "done"
+    assert read_run_state(wf / "runs" / first)["built_from"]  # what a release checks
 
     second = run("run_steps.py", "start-run").data["run"]
     r = run("run_compile.py").data

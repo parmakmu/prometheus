@@ -11,7 +11,7 @@ It takes about fifteen minutes, and you don't need any emails of your own. We'll
 | You need | Check | Install |
 | --- | --- | --- |
 | Pi 1.3.0 or later | `pi --version` | `npm install -g @earendil-works/pi-coding-agent` |
-| pi-subagents 0.79.0 or later | `grep version ~/.pi/agent/npm/node_modules/pi-subagents/package.json` | `pi install npm:pi-subagents` |
+| pi-subagents 0.79.1 or later | `grep version ~/.pi/agent/npm/node_modules/pi-subagents/package.json` | `pi install npm:pi-subagents` |
 | Node 22 or later | `node --version` | [nodejs.org](https://nodejs.org) (Pi needs it too) |
 | Python 3.14 and uv | `uv --version` | [docs.astral.sh/uv](https://docs.astral.sh/uv/) |
 | git | `git --version` | your system's package manager |

@@ -120,10 +120,10 @@ def test_check_shows_a_hand_edited_plans_errors_and_exits_1(home, monkeypatch, c
 def test_doctor_refuses_a_pi_or_pi_subagents_older_than_prometheus_needs(home, monkeypatch):
     assert cli.check_version("pi", "1.3.0") == ("1.3.0", None) and cli.check_version("pi", "1.10.0")[1] is None
     assert cli.check_version("pi", "1.0.1")[1] == "1.0.1 is too old: needs 1.3.0 or later"
-    assert cli.check_version("pi-subagents", "0.75.0")[1] == "0.75.0 is too old: needs 0.79.0 or later"
+    assert cli.check_version("pi-subagents", "0.75.0")[1] == "0.75.0 is too old: needs 0.79.1 or later"
     assert cli.check_version("pi", None) == (None, None)
     monkeypatch.setattr(cli, "run_quiet", lambda *cmd: "1.0.1" if cmd[0] == "pi" else "x")
-    monkeypatch.setattr(cli, "find_pi_subagents", lambda: "0.79.0")
+    monkeypatch.setattr(cli, "find_pi_subagents", lambda: "0.79.1")
     assert cli.show_checks() is False
 
 
@@ -160,12 +160,10 @@ def test_release_shows_the_check_and_tags_only_when_told(home, monkeypatch, caps
     assert calls == ["check", "check", "tag"] and "Released counter v1.0" in capsys.readouterr().out
 
 
-def test_a_module_named_like_a_skill_script_is_refused_by_name(tmp_path):
-    # the scripts are top-level modules (`utils`, ...): another program's own `utils`, imported first, is not taken for ours
-    (tmp_path / "utils.py").write_text("")
-    r = subprocess.run([sys.executable, "-c", "import utils, prometheus.skill"], cwd=tmp_path, capture_output=True, text=True, check=False,
-                       env={**os.environ, "PYTHONPATH": f"{tmp_path}:{ROOT}"})
-    assert r.returncode != 0 and "a module named 'utils' is already imported" in r.stderr, r.stderr
-    ok = subprocess.run([sys.executable, "-c", "import prometheus.skill, utils; print(utils.__file__)"], cwd=tmp_path,
-                        capture_output=True, text=True, check=False, env={**os.environ, "PYTHONPATH": str(ROOT)})
-    assert ok.returncode == 0 and ok.stdout.strip().endswith("scripts/utils.py"), ok.stderr
+def test_a_program_keeps_its_own_module_named_like_a_skill_script(tmp_path):
+    # the scripts are top-level modules (`utils`, ...): another program's own `utils`, imported before or after, stays its own
+    (tmp_path / "utils.py").write_text("MINE = True")
+    for code in ("import utils, prometheus.skill as s", "import prometheus.skill as s, utils"):
+        r = subprocess.run([sys.executable, "-c", f"{code}; print(utils.MINE, s.utils.__file__)"], cwd=tmp_path,
+                           capture_output=True, text=True, check=False, env={**os.environ, "PYTHONPATH": f"{tmp_path}:{ROOT}"})
+        assert r.returncode == 0 and r.stdout.startswith("True ") and r.stdout.strip().endswith("scripts/utils.py"), r.stderr

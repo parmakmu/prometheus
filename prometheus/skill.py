@@ -3,9 +3,9 @@
 
 The scripts are not a package: they run as plain files (`python3 run_steps.py`, in agents that have no prometheus) and
 import each other by name from their own folder. So that folder goes on sys.path, and they are top-level modules named
-`utils`, `pi_records`, ...: prometheus always uses its own copy (the newest), on any agent, with --agent. A process that
-already imported another module by one of those names (an embedding program's own `utils`) is refused here, by name,
-instead of getting the wrong one.
+`utils`, `pi_records`, ...: prometheus always uses its own copy (the newest), on any agent, with --agent. They are
+loaded under those names and the names handed back, so an embedding program's own `utils`, imported before or after
+prometheus, stays its own.
 
 Also: find_files (prometheus's own files: the package, or the repo in a clone), scripts_dir, and run_script (a
 script run as a command, with this Python, its JSON returned).
@@ -43,34 +43,27 @@ def run_script(script: str, *args: str) -> dict:
 
 
 _SCRIPTS = scripts_dir()
-for _name, _module in list(sys.modules.items()):
-    _file = getattr(_module, "__file__", None)
-    if (
-        (_SCRIPTS / f"{_name}.py").is_file()
-        and _file
-        and Path(_file).resolve().parent != _SCRIPTS
-    ):
-        raise ImportError(
-            f"a module named {_name!r} is already imported (from {_file}), and prometheus's own {_name}.py "
-            f"in {_SCRIPTS} must have that name: rename yours, or import prometheus first"
-        )
-sys.path.insert(
-    0, str(_SCRIPTS)
-)  # first while ours are imported, so no other folder's `utils` is taken for ours
-
-import agent_params
-import agent_release
-import agent_repo
-import agent_scaffold
-import pi_records
-import run_compile
-import run_folders
-import utils
-
-# then last: the scripts' own later imports (run_steps, agent_state, ...) still find their folder, and an embedding
-# program's own modules are not shadowed by it
-sys.path.remove(str(_SCRIPTS))
-sys.path.append(str(_SCRIPTS))
+# The scripts import each other by plain name (`import utils`), so they are loaded under those names, then the names
+# are handed back: a program's own `utils`, imported before or after prometheus, stays its own. Modules already
+# imported from this folder (the tests') are shared.
+_NAMES = {p.stem for p in _SCRIPTS.glob("*.py")}
+_ours = {n for n, m in sys.modules.items() if n in _NAMES and Path(getattr(m, "__file__", None) or "/").resolve().parent == _SCRIPTS}
+_theirs = {n: sys.modules.pop(n) for n in _NAMES & sys.modules.keys() - _ours}
+sys.path.insert(0, str(_SCRIPTS))
+try:
+    import agent_params
+    import agent_release
+    import agent_repo
+    import agent_scaffold
+    import pi_records
+    import run_compile
+    import run_folders
+    import utils
+finally:
+    sys.path.remove(str(_SCRIPTS))
+    for _name in _NAMES - _ours:
+        sys.modules.pop(_name, None)
+    sys.modules.update(_theirs)
 
 __all__ = [
     "agent_params",

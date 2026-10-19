@@ -484,9 +484,9 @@ These come from `prometheus release`, `prometheus run`, `prometheus serve` and `
 can't release: <reasons>
 ```
 
-**Cause.** A release runs with no model to decide anything, so `prometheus release` refuses a plan that would need one: a provisional stage (its run would resolve), a stage program not written yet (a released run never writes code), uncommitted changes, an active run or another branch checked out, or a plan that isn't ready. (Decisions and side effects are fine: a released run asks its caller there.)
+**Cause.** A release runs with no model to decide anything, so `prometheus release` refuses a plan that would need one: a provisional stage (its run would resolve), a stage program not written yet (a released run never writes code), uncommitted changes, an active run or another branch checked out, a plan that isn't ready, or no run that finished on what is being released (its plan, programs, gates, subagents and packages as they are now). (Decisions and side effects are fine: a released run asks its caller there.)
 
-**Fix.** Each reason says what to do: run the agent until its plan is settled and its programs are written and merged, or commit and go back to `main`. Then run `prometheus release <slug>` again.
+**Fix.** Each reason says what to do: run the agent to the end, until its plan is settled and its programs are written, and merge the run, or commit and go back to `main`. Then run `prometheus release <slug>` again.
 
 ### A release can break callers
 
