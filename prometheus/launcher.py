@@ -13,9 +13,8 @@ import subprocess
 import time
 from pathlib import Path
 
-from prometheus import cli
-from prometheus.cli import PrometheusError
-from prometheus.settings import settings
+from prometheus.errors import PrometheusError
+from prometheus.skill import pi_records, utils
 
 ENDED = {"complete", "completed"}  # the states of a launch that ran to its end (its value says how the wave went)
 
@@ -23,12 +22,12 @@ ENDED = {"complete", "completed"}  # the states of a launch that ran to its end 
 def check() -> tuple[str, Path]:
     """pi, and pi-subagents' entry point (loaded with -e: the runner disables pi's other extensions); refused without."""
     pi = shutil.which("pi")
-    subagents = settings().pi_agent / "npm" / "node_modules" / "pi-subagents" / "index.js"
+    installed = pi_records.install()
     if pi is None:
         raise PrometheusError("pi is not installed: npm install -g @earendil-works/pi-coding-agent (see `prometheus doctor`)")
-    if not subagents.is_file():
-        raise PrometheusError(f"pi-subagents is not installed ({subagents} is missing): pi install npm:pi-subagents")
-    return pi, subagents
+    if installed is None or not (installed / "index.js").is_file():
+        raise PrometheusError("pi-subagents is not installed in Pi's folder: pi install npm:pi-subagents")
+    return pi, installed / "index.js"
 
 
 def launch(folder: Path, run_dir: Path, wave: str) -> subprocess.Popen:
@@ -52,7 +51,7 @@ def outcome(run_dir: Path, wave: str) -> dict:
     launched = next((e for e in reversed(events) if e.get("event") == "launched" and e.get("wave") == wave), {})
     status_dir = end.get("status_dir") or launched.get("status_dir")
     record = read_status(status_dir)
-    found = cli.import_script("pi_records").outcome({**record, "totalCost": end.get("cost") or record.get("totalCost")})
+    found = pi_records.outcome({**record, "totalCost": end.get("cost") or record.get("totalCost")})
     state = "stopped" if record.get("state") == "stopped" else end.get("state")
     return {**found, "state": "complete" if state in ENDED else state, "value": found["value"] or {},
             "where": f"pi-subagents' record {status_dir}",
@@ -62,8 +61,8 @@ def outcome(run_dir: Path, wave: str) -> dict:
 def stop(run_dir: Path, grace_s: float):
     """Stop the run's launches still running, which another process may have started: pi-subagents' runner is a process
     of its own, asked to stop (SIGTERM), then killed after `grace_s`."""
-    alive = cli.import_script("utils").process_alive
-    still_running = cli.import_script("pi_records").STILL_RUNNING
+    alive = utils.process_alive
+    still_running = pi_records.STILL_RUNNING
     pids = []
     for launched in (e for e in read_events(run_dir) if e.get("event") == "launched"):
         record = read_status(launched.get("status_dir"))
@@ -92,8 +91,5 @@ def read_events(run_dir: Path) -> list[dict]:
 
 
 def read_status(status_dir: str | None) -> dict:
-    """pi-subagents' status.json in a launch's folder (the runner logs where), or {}."""
-    try:
-        return json.loads((Path(status_dir) / "status.json").read_text(encoding="utf-8")) if status_dir else {}
-    except (OSError, ValueError):
-        return {}
+    """pi-subagents' record of a launch, in the folder the runner logs (pi_records.read_record), or {}."""
+    return pi_records.read_record(status_dir) or {}

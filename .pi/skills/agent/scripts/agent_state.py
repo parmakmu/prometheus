@@ -8,6 +8,9 @@ guards pass: one definition for both. Checks about a move's own arguments (which
 stay in the scripts. tests/test_state_machine.py model-checks the actions from a new agent, with the invariants
 below, and runs every real script to check it lands in a state its action said.
 
+report_state(agent_dir) makes every result a script prints carry `next` (utils.emit calls back here: utils imports
+nothing above it).
+
 Usage: agent_state.py [--agent DIR]   prints {"ok", "state", "moves", "agent", ...}
 """
 
@@ -20,7 +23,7 @@ import typer
 from plan_validate import check_ready
 from pydantic import BaseModel, ConfigDict
 from run_folders import active_run
-from utils import emit, read_plan, refuse
+from utils import carry_next, emit, read_plan, refuse
 
 
 class Branch(StrEnum):
@@ -440,6 +443,13 @@ def next_of(a):
 
 def read_next(agent_dir):
     return next_of(read_state(agent_dir))
+
+
+def report_state(agent_dir):
+    """From now on, every result the script prints (utils.emit) carries `next`: the agent's state and its legal moves,
+    once it has a plan, so the model need not work out where the agent stands."""
+    agent_dir = Path(agent_dir)
+    carry_next(lambda: read_next(agent_dir) if (agent_dir / "plan.yaml").is_file() else None)
 
 
 def main(agent_dir: Annotated[str, typer.Option("--agent", help="agent root")] = "."):

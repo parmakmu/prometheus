@@ -138,32 +138,13 @@ def describe_activity(session: Path | None) -> dict | None:
 def describe_children(folder: Path, paths: dict, run_dir: Path) -> list[dict]:
     """A wave's children from its record: key, agent, status, error, what they did, output, and their files in the
     bundle."""
-    status = read_json(folder / "status.json") or {}
-    settled = {}
-    try:
-        for line in (folder / "workflow-children.jsonl").read_text(encoding="utf-8").splitlines():
-            entry = json.loads(line)
-            if entry.get("type") == "settle":
-                settled[entry.get("key")] = entry.get("result") or {}
-    except (OSError, ValueError):
-        pass
-    children = []
-    for step in status.get("steps") or []:
-        key = step.get("workflowKey")
-        result = settled.get(key) or {}
-        first = next(iter(result.get("results") or []), {})  # the child's own result: where its transcript is
-        output = str(result.get("output") or result.get("error") or "")
-        transcript = step.get("transcriptPath") or first.get("transcriptPath")
-        children.append({
-            "key": key, "agent": step.get("agent"), "status": step.get("status"),
-            "error": step.get("error") or result.get("error"), "exit_code": step.get("exitCode"), "run_id": step.get("runId"),
-            "activity": describe_activity(find_on_disk(step.get("sessionFile"), paths, run_dir)
-                                          or find_on_disk(transcript, paths, run_dir)),
-            "output": output,
-            "session": find_in_bundle(step.get("sessionFile"), paths, run_dir),
-            "transcript": find_in_bundle(transcript, paths, run_dir),
-        })
-    return children
+    return [{**{k: step[k] for k in ("key", "agent", "status", "error", "exit_code", "run_id")},
+             "activity": describe_activity(find_on_disk(step["session"], paths, run_dir)
+                                           or find_on_disk(step["transcript"], paths, run_dir)),
+             "output": step["output"],
+             "session": find_in_bundle(step["session"], paths, run_dir),
+             "transcript": find_in_bundle(step["transcript"], paths, run_dir)}
+            for step in pi_records.launch_steps(folder)]
 
 
 def describe_release_run(run_dir: Path, ended: bool):

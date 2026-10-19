@@ -5,6 +5,7 @@ import itertools
 import json
 import os
 import re
+import tempfile
 from pathlib import Path
 
 import psutil
@@ -18,23 +19,21 @@ from ruamel.yaml.scalarstring import FoldedScalarString
 
 # --- results ---------------------------------------------------------------------
 
-_agent_dir = None  # the agent whose state results carry as `next` (report_state)
+_next = None  # what every result carries as `next`, or None: set by agent_state.report_state (carry_next)
 
 
-def report_state(agent_dir):
-    """From now on, every result emit prints carries `next`: the agent's state and its legal moves
-    (agent_state.py), so the model need not work out where the agent stands."""
-    global _agent_dir
-    _agent_dir = Path(agent_dir)
+def carry_next(describe):
+    """From now on, every result emit prints carries `next`: what `describe()` returns (skipped when None). The state
+    machine hands it here (agent_state.report_state), so this module imports nothing above it."""
+    global _next
+    _next = describe
 
 
 def emit(obj, code=0):
-    if _agent_dir is not None and isinstance(obj, dict) and "next" not in obj and (_agent_dir / "plan.yaml").is_file():
-        from agent_state import (
-            read_next,  # here, not at the top: agent_state imports the validator, which imports this
-        )
+    if _next is not None and isinstance(obj, dict) and "next" not in obj:
         try:
-            obj["next"] = read_next(_agent_dir)
+            if (found := _next()) is not None:
+                obj["next"] = found
         except (OSError, ValueError, RuntimeError) as exc:  # a result must still be printed
             obj["next"] = {"error": str(exc)}
     print(json.dumps(obj, indent=2, default=str))
@@ -107,10 +106,22 @@ def write_yaml(path, data, header=""):
     buf = io.StringIO()
     rt_yaml().dump(fold_long(data), buf)
     text = buf.getvalue()
+    write_atomic(path, text if text.startswith("#") else header + text)
+
+
+def write_atomic(path, text):
+    """Write a text file whole or not at all: a temp file of its own beside it (two writers never share one), then a
+    rename, so a reader in another process sees the old file or the new one."""
     path = Path(path)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text if text.startswith("#") else header + text, encoding="utf-8")
-    tmp.replace(path)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        os.fchmod(fd, path.stat().st_mode & 0o777 if path.exists() else 0o644)  # mkstemp's is 0600: keep the file's own
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        Path(tmp).replace(path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 # --- an agent's plan: plan.yaml for people, .plan/ for how it was planned -----------------
@@ -212,9 +223,7 @@ def write_plan(agent_dir, plan):
             continue
         f.parent.mkdir(exist_ok=True)
         write_yaml(f, CommentedMap([(part, value)]), header=f"{BANNER}{part}: {what}.\n{BANNER}Part of the plan of agent \"{agent_dir.name}\" (plan.yaml); read with it.\n")
-    tmp = agent_dir / f"{PLAN_FILE}.tmp"
-    tmp.write_text(plan_text(plan, agent_dir.name), encoding="utf-8")
-    tmp.replace(agent_dir / PLAN_FILE)
+    write_atomic(agent_dir / PLAN_FILE, plan_text(plan, agent_dir.name))
 
 
 def read_json(path):

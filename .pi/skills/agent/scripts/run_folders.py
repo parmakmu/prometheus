@@ -9,9 +9,13 @@
               agent's run also has revision, note, max_cost_usd, critiques [{run_id, after_waves}] (critic
               results recorded while the run resolved stages; plan_edit.py caps them each time); a release's
               driver, cancel, needs and error. Written by run_steps.py and plan_edit.py, or run_release.Run.
-              A launch, whatever ran it: wave, stages, status, cost_usd, tokens, children {key: child run id},
-              stopped_at, error (end_launch), and where pi-subagents' own records of it are (subagent_run_id, mission_id,
-              status_dir: pi_records.py, prometheus/launcher.py).
+              A launch is recorded the same whatever ran it (run_steps.py, run_release.Run), by begin_launch
+              (wave, stages, status running, started_at; its stages running), end_launch (status: one of
+              STATUSES, finished_at, cost_usd, tokens, children {key: child run id}, stopped_at, error; its
+              stages done, or pending again) or record_reused (a wave all reused: launched false), plus where
+              pi-subagents' own records of it are (subagent_run_id, mission_id, status_dir: pi_records.py,
+              prometheus/launcher.py) and, an agent's, revision, ends_with, branch, commit, approvals,
+              decisions and params.
   work/       the children's cwd: stage outputs, decisions, batches, scripts
   .compiled/  per wave launched: <wave>.js, the script pi-subagents runs (the wave as data, `const W`,
               then wave_runner.js), and <wave>.json: the compile's result (the call), `inputs` (each
@@ -21,6 +25,7 @@
 Relative param values (an `outputs` default, say) resolve against runs/<id>/. At most one run is
 active; /agent-run continues it.
 """
+import datetime
 import json
 import re
 from pathlib import Path
@@ -30,6 +35,7 @@ from utils import read_json, read_yaml, write_yaml
 
 RUNS = "runs"
 RUN_ID_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})-(\d+)$")
+STATUSES = ("done", "failed", "blocked", "stopped")  # how a launch ended; a running one is "running"
 HEADER = "# Run state, written by the agent's scripts (or a release's runner: run_release.py). Do not edit by hand.\n"
 
 
@@ -53,11 +59,20 @@ class Run(NamedTuple):
 
 def list_runs(agent_dir):
     """[(id, dir)] of the runs here, oldest first: an agent's by id (<date>-<n>), a release's by when each started
-    (its run.yaml's started_at), since two of its ids from the same second sort by their random suffix."""
+    (its run.yaml's started_at, as a time: two of its ids from the same second sort by their random suffix)."""
     base = Path(agent_dir) / RUNS
     found = [p for p in base.iterdir() if (p / "run.yaml").is_file()] if base.is_dir() else []
-    key = lambda p: (m.group(1), int(m.group(2))) if (m := RUN_ID_RE.match(p.name)) else (str(read_run(p).get("started_at") or ""), 0)
+    key = lambda p: (m.group(1), int(m.group(2)), 0.0) if (m := RUN_ID_RE.match(p.name)) else ("", 0, started(p))
     return [(p.name, p) for p in sorted(found, key=lambda p: (key(p), p.name))]
+
+
+def started(run_dir):
+    """When a run started (run.yaml started_at) as a timestamp, 0.0 when unknown: times with different offsets (a
+    machine moved, summer time) compare as times, not as text."""
+    try:
+        return datetime.datetime.fromisoformat(str(read_run(run_dir).get("started_at"))).timestamp()
+    except ValueError:
+        return 0.0
 
 
 def is_release_run(run_dir):
@@ -97,20 +112,61 @@ def read_wave_spec(run_dir, wave):
     return spec if isinstance(spec, dict) else None
 
 
-def end_launch(entry, status, returned, ended):
-    """Record on a launch's run.yaml `entry` how it ended, the same whatever ran it: `status` (done, failed, blocked,
-    stopped), `returned` (what the wave returned: {status, children: {key: {runId, ...}}, at?, error?}, or None) and
-    `ended` (its subagents's account: cost_usd and tokens, or {})."""
+# --- a launch, the same whatever ran it (run_steps.py for an agent's run, prometheus/run_release.py for a release's) ---
+
+def now():
+    """The time every run.yaml (and what a run writes beside it) records: local, with its offset, to the millisecond
+    (two released runs can start in the same second)."""
+    return datetime.datetime.now(datetime.UTC).astimezone().isoformat(timespec="milliseconds")
+
+
+def set_stages(state, keys, status):
+    """The stages' status in a run's state; pending is the default, so it removes the key."""
+    stages = state.setdefault("stages", {})
+    for k in keys or []:
+        if status == "pending":
+            stages.pop(k, None)
+        else:
+            stages[k] = status
+
+
+def begin_launch(state, wave, stages, **fields):
+    """Append a launch of `wave` to a run's state (run.yaml `launches`), its stages running; returns the entry, to save.
+    `fields`: what the runner knows of it (an agent's: revision, branch, commit, its pi-subagents ids, approvals ...)."""
+    entry = {"wave": wave, "stages": list(stages or []), "status": "running", "started_at": now(), **fields}
+    state.setdefault("launches", []).append(entry)
+    set_stages(state, stages, "running")
+    return entry
+
+
+def end_launch(run_dir, state, entry, status, returned, ended, **fields):
+    """Record how a launch (`entry`, from begin_launch) ended: `status` (one of STATUSES), `returned` (what the wave
+    returned: {status, children: {key: {runId, ...}}, at?, error?}, or None; kept in .compiled/<wave>.json, what later
+    runs reuse by) and `ended` (pi-subagents' account: cost_usd and tokens, or {}); `fields`: more to keep on it. Its
+    stages are done, or pending again for a relaunch. Returns the entry, to save."""
+    if status not in STATUSES:
+        raise ValueError(f"a launch ends {' | '.join(STATUSES)}, not {status!r}")
+    if returned is not None:
+        record_wave_result(run_dir, entry["wave"], returned)
+    entry.update(fields)
     if ended.get("cost_usd") is not None:
         entry["cost_usd"], entry["tokens"] = ended["cost_usd"], ended.get("tokens")
-    entry["status"] = status
+    entry["status"], entry["finished_at"] = status, now()
     if isinstance(returned, dict):
         entry["children"] = {k: (v or {}).get("runId") for k, v in (returned.get("children") or {}).items()}
         if returned.get("at"):
             entry["stopped_at"] = returned["at"]
         if returned.get("error"):
             entry["error"] = returned["error"]
+    set_stages(state, entry.get("stages"), "done" if status == "done" else "pending")
     return entry
+
+
+def record_reused(run_dir, state, wave, stages, returned, **fields):
+    """A wave every stage of which was reused from an earlier run (compile: nothing_to_launch): recorded as a launch
+    that began and ended done at once, `launched: false`. Returns the entry, to save."""
+    entry = begin_launch(state, wave, stages, launched=False, **fields)
+    return end_launch(run_dir, state, entry, "done", returned, {})
 
 
 def read_run(run_dir):

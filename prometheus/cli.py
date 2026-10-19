@@ -24,12 +24,12 @@ Each setting comes from, in order: a flag, an environment variable (PROMETHEUS_A
 file (~/.config/prometheus/config.toml, written by init), a prompt (init, in a terminal only), the default: see
 settings.py, which lists them all.
 """
+import datetime
 import json
 import os
 import shutil
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
 from typing import Annotated
 
@@ -39,7 +39,30 @@ from rich.console import Console
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
-from prometheus.settings import config_file, settings
+from prometheus import share as sharing  # `share` is also a command here
+from prometheus.errors import PrometheusError
+from prometheus.run_release import (
+    list_installed,
+    load_agent,
+    read_bundle_call,
+    state_of,
+)
+from prometheus.settings import (
+    config_file,
+    get_agent,
+    get_setting,
+    settings,
+    write_config,
+)
+from prometheus.skill import (
+    agent_params,
+    agent_release,
+    find_files,
+    pi_records,
+    run_folders,
+    run_script,
+    utils,
+)
 
 COMMANDS = {"init", "doctor", "help", "release", "run", "list", "install", "pull", "share", "propose", "catalog",
             "refresh", "upgrade", "serve", "prune", "check", "bundle", "runs"}  # agent_scaffold.RESERVED holds these (a test checks)
@@ -49,69 +72,6 @@ app = typer.Typer(add_completion=False, rich_markup_mode=None, help=(
     "prometheus starts the planner (/agent-new plans an agent); prometheus <slug> starts that agent. "
     "Settings come from a flag, the environment (PROMETHEUS_AGENTS, PROMETHEUS_HOME), "
     "~/.config/prometheus/config.toml (written by init), or the default."))
-
-
-def find_files() -> Path:
-    """The folder holding prometheus's `.pi/` and `templates/`: the package itself when installed, the repo in a clone."""
-    package = Path(__file__).resolve().parent
-    for folder in (package, package.parent):
-        if (folder / ".pi" / "skills" / "agent" / "SKILL.md").is_file():
-            return folder
-    raise SystemExit(f"prometheus's files are missing beside {package}: reinstall it")
-
-
-class PrometheusError(Exception):
-    """Something the caller must fix: no such agent or release, a missing tool, a refused step."""
-
-    def __init__(self, message, details=None):
-        super().__init__(message)
-        self.details = details or {}
-
-
-def scripts_dir() -> Path:
-    """The skill's scripts: prometheus's own copy (the newest), used on any agent with --agent."""
-    return find_files() / ".pi" / "skills" / "agent" / "scripts"
-
-
-def run_script(script: str, *args: str) -> dict:
-    """Run a skill script with this Python (it has their packages) and return its JSON."""
-    r = subprocess.run([sys.executable, str(scripts_dir() / script), *args], capture_output=True, text=True, check=False)
-    try:
-        return json.loads(r.stdout)
-    except ValueError:
-        raise PrometheusError(f"{script} failed: {(r.stderr or r.stdout).strip()[-2000:]}") from None
-
-
-def import_script(name: str):
-    """A skill script as a module (they import each other by name, from their folder)."""
-    import importlib
-    folder = str(scripts_dir())
-    sys.path.insert(0, folder)
-    try:
-        return importlib.import_module(name)
-    finally:
-        sys.path.remove(folder)
-
-
-def read_config() -> dict:
-    try:
-        return tomllib.loads(config_file().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-
-
-def write_config(values: dict):
-    path = config_file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("".join(f"{key} = {json.dumps(value)}\n" for key, value in values.items()), encoding="utf-8")
-
-
-def get_setting(name: str, flag: str | None = None) -> tuple[Path, str]:
-    """A setting's folder (settings.py) and where it came from, for init and doctor: flag, environment, config file
-    or default."""
-    source = ("flag" if flag else "environment" if os.environ.get(f"PROMETHEUS_{name.upper()}")
-              else "config" if read_config().get(name) else "default")
-    return getattr(settings(**{name: flag}), name), source
 
 
 def prepare_home(home: Path, files: Path):
@@ -158,15 +118,6 @@ def start_planner(args: list[str]):
     ], {"PROMETHEUS_AGENTS": str(agents), "PI_AGENT_PYTHON": sys.executable})
 
 
-def get_agent(slug: str) -> Path:
-    """The agent's folder in the agents folder; refused when there is no agent by that name."""
-    agents, _ = get_setting("agents")
-    folder = agents / slug
-    if not (folder / "plan.yaml").is_file():
-        raise PrometheusError(f"no agent {slug!r} in {agents}: `prometheus list` lists the agents")
-    return folder
-
-
 def start_agent(slug: str, args: list[str]):
     folder = get_agent(slug)
     # the agent's own Python (.venv, from its pyproject.toml), as when pi starts in its folder
@@ -207,9 +158,11 @@ def run_quiet(*cmd: str) -> str | None:
 
 
 def find_pi_subagents() -> str | None:
-    """pi-subagents' version, from the global Pi install."""
+    """pi-subagents' version, from the global Pi install (pi_records.install)."""
+    if (installed := pi_records.install()) is None:
+        return None
     try:
-        return json.loads((settings().pi_agent / "npm" / "node_modules" / "pi-subagents" / "package.json").read_text())["version"]
+        return json.loads((installed / "package.json").read_text())["version"]
     except (OSError, ValueError, KeyError):
         return None
 
@@ -261,10 +214,8 @@ def print_checks(rows: list[tuple[str, str | None, str]]) -> bool:
 
 def check_release(agent: str) -> bool:
     """Print whether a release can run here: its secrets in the environment, its packages, the models it needs."""
-    from prometheus.run_release import load_agent
     loaded = load_agent(agent)
-    plan = import_script("utils").read_plan(loaded.folder, {}) or {}
-    agent_params = import_script("agent_params")
+    plan = utils.read_plan(loaded.folder, {}) or {}
     rows = [("release", f"{loaded.name} {loaded.version} ({loaded.release['commit'][:12]})", "")]
     for name, spec in (plan.get("params") or {}).items():
         if agent_params.kind(spec) == "secret":
@@ -278,7 +229,7 @@ def check_release(agent: str) -> bool:
     except (OSError, subprocess.TimeoutExpired) as exc:
         problem = [str(exc)]
     rows.append(("packages", not problem and "uv.lock installs here", f"uv sync --locked --dry-run: {' '.join(problem)}"))
-    model = import_script("agent_release").model_stages(plan)
+    model = agent_release.model_stages(plan)
     default = (plan.get("models") or {}).get("default") or "Pi's default model"
     rows.append(("model stages", f"{', '.join(model)}: a login or key for {default}" if model else "none: no model key needed", ""))
     return print_checks(rows)
@@ -374,7 +325,6 @@ def run_release(
                                                      "params and files (its side effects ask again); --param overrides")] = None,
 ):
     """Run a released agent from start to end, with no one to ask and no model deciding anything."""
-    from prometheus.run_release import load_agent, read_bundle_call
     values = {}
     for item in param or []:
         name, sep, value = item.partition("=")
@@ -463,7 +413,6 @@ def agent_list():
                       str(a.get("runs", 0)), f"{last['id']} {last['status']}" if last else "-",
                       "update: prometheus refresh" if a.get("stale") else "current")
     console.print(table if table.rows else f"No agents in {agents}.")
-    from prometheus.run_release import list_installed
     releases = Table("Release", "Versions here", "Runs")
     for slug in sorted(p.name for p in settings().releases.glob("*") if p.is_dir()):
         if installed := list_installed(slug):
@@ -481,8 +430,7 @@ def install(
 ):
     """Install an agent: clone it, replace what prometheus owns with your copy, then review its own code. Or, with
     @<version>, install one release of it, frozen: no repository, run as released (`prometheus run`, `serve`)."""
-    from prometheus import share
-    folder = share.install(source, name, ask_or_yes(yes, "Keep it"))
+    folder = sharing.install(source, name, ask_or_yes(yes, "Keep it"))
     if (folder / "RELEASE.json").is_file():
         record = json.loads((folder / "RELEASE.json").read_text(encoding="utf-8"))
         console.print(f"Installed {folder.name} {record['version']} ({record['commit'][:12]}), frozen, in {folder}: "
@@ -495,8 +443,7 @@ def install(
 def pull(slug: Annotated[str, typer.Argument(help="the agent")],
          yes: Annotated[bool, typer.Option("--yes", "-y", help="take the changes without asking")] = False):
     """Bring an installed agent up to its upstream's main, after showing what changed."""
-    from prometheus import share
-    out = share.pull(slug, ask_or_yes(yes, "Take these changes"))
+    out = sharing.pull(slug, ask_or_yes(yes, "Take these changes"))
     console.print(f"{slug}: " + ("updated." if out["updated"] else "kept as it was." if out.get("declined") else "already up to date."))
     raise typer.Exit(0 if out["updated"] or not out.get("declined") else 1)
 
@@ -506,8 +453,7 @@ def share(slug: Annotated[str, typer.Argument(help="the agent")],
           remote: Annotated[str, typer.Argument(help="where to push: a git URL (on GitLab, a new project is created on push if allowed)")],
           yes: Annotated[bool, typer.Option("--yes", "-y", help="push without asking")] = False):
     """Share an agent: check it for secrets, show what goes out, push main and its releases."""
-    from prometheus import share
-    out = share.share(slug, remote, ask_or_yes(yes, f"Push {slug} to {remote}"))
+    out = sharing.share(slug, remote, ask_or_yes(yes, f"Push {slug} to {remote}"))
     if not out["shared"]:
         raise typer.Exit(1)
     console.print(f"Shared {slug} ({', '.join(out['releases']) or 'no releases yet'}). Others: `prometheus install {remote}`; "
@@ -517,8 +463,7 @@ def share(slug: Annotated[str, typer.Argument(help="the agent")],
 @app.command(short_help="push a change branch upstream (a merge request on GitLab)", rich_help_panel="Sharing")
 def propose(slug: Annotated[str, typer.Argument(help="the agent, with its change branch checked out")]):
     """Propose the agent's change branch to its upstream (a merge request on GitLab)."""
-    from prometheus import share
-    out = share.propose(slug)
+    out = sharing.propose(slug)
     console.print(f"Pushed {out['branch']}." + (f" Merge request: {out['merge_request']}" if out["merge_request"] else
                                                 " Open a merge request into main on the upstream."))
 
@@ -526,9 +471,8 @@ def propose(slug: Annotated[str, typer.Argument(help="the agent, with its change
 @app.command(short_help="agents others shared by name", rich_help_panel="Sharing")
 def catalog():
     """The agents shared by name: `prometheus install <name>` installs one."""
-    from prometheus import share
     table = Table("Name", "Description", "Source")
-    for a in share.read_catalog():
+    for a in sharing.read_catalog():
         table.add_row(a["name"], a.get("description") or "", a["url"])
     console.print(table if table.rows else "The catalog is empty: share an agent, then add it to catalog.yaml with a merge request.")
 
@@ -564,10 +508,9 @@ def serve(
     public_url: Annotated[str | None, typer.Option(envvar="PROMETHEUS_PUBLIC_URL", help="where callers reach it, behind a proxy (default http://<host>:<port>): the A2A Agent Card and output links name it")] = None,
 ):
     """Serve one released agent over HTTP: start runs, follow them, download their outputs (one agent per process)."""
-    import uvicorn
+    import uvicorn  # here, not at the top: the server's libraries would slow every other command (~200 ms)
 
     from prometheus import serve as service
-    from prometheus.run_release import load_agent
     service.check_host(host, token)
     loaded = load_agent(agent)
     console.print(f"Serving {loaded.name} {loaded.version} on http://{host}:{port} (/docs describes it)")
@@ -607,8 +550,7 @@ def find_released_run(slug: str, run_id: str) -> Path:
 def list_released_runs(slug: str) -> list[dict]:
     """Every run of every release of `slug` here, oldest first: id, version (the one it was called as), state, start,
     cost, error."""
-    from prometheus.run_release import state_of
-    run_folders, read_json = import_script("run_folders"), import_script("utils").read_json
+    read_json = utils.read_json
     found = []
     for folder in (settings().releases / slug).glob("*"):
         for run_id, run_dir in run_folders.list_runs(folder):
@@ -626,7 +568,6 @@ def show_runs(
     as_json: Annotated[bool, typer.Option("--json", help="print JSON")] = False,
 ):
     """The runs of an agent's releases on this machine, or how one went (what its bundle would say). Changes nothing."""
-    import datetime
     if run_id is None:
         found = list_released_runs(slug)
         for r in found:
@@ -647,7 +588,6 @@ def show_runs(
                           (r["started"] or "")[:16].replace("T", " "), f"${r['cost_usd']:.4f}", (r["error"] or "")[:80])
         console.print(table)
         return
-    from prometheus.run_release import state_of
     shown = run_script("run_bundle.py", "show", "--run", str(find_released_run(slug, run_id)))
     if not shown.get("ok"):
         raise PrometheusError(shown.get("error") or "run_bundle.py failed")

@@ -51,8 +51,9 @@ from starlette.datastructures import (
 )
 
 from prometheus import a2a
-from prometheus.cli import PrometheusError, run_script
+from prometheus.errors import PrometheusError
 from prometheus.run_release import Agent, Run, public_needs
+from prometheus.skill import run_script
 
 LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 

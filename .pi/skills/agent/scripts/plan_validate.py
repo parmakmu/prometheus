@@ -29,6 +29,7 @@ import hashlib
 import json
 import re
 import sys
+import tomllib
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -438,7 +439,6 @@ IMPORT_PACKAGES = {"yaml": "pyyaml", "bs4": "beautifulsoup4", "PIL": "pillow", "
 def project_packages(root: Path):
     """Normalised names of the packages the agent's pyproject.toml lists, or None if unreadable."""
     try:
-        import tomllib
         deps = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
     except (ImportError, OSError, KeyError, TypeError, ValueError):
         return None
@@ -1232,17 +1232,12 @@ def main(
     if plan_path.name == PLAN_FILE:
         errors += [f"{part}: belongs in .plan/{part}.yaml, not plan.yaml (plan.yaml is for people to read)"
                    for part in parts_in_plan_file(plan_path.resolve().parent)]
-    where = None
-    if agent_root is not None:
-        from agent_state import read_next  # imported late: it imports this module
-        where = read_next(agent_root)
     print(json.dumps({
         "valid": not errors,
         "status": plan.get("status") if isinstance(plan, dict) else None,
         "errors": errors,
         "warnings": warnings,
         "summary": summary,
-        "state": where,
     }, indent=2))
     sys.exit(0 if not errors else 1)
 

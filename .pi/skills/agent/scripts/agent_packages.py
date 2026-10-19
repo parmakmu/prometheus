@@ -16,10 +16,11 @@ from pathlib import Path
 from typing import Annotated
 
 import agent_repo
+import agent_state
 import typer
 from packaging.requirements import InvalidRequirement, Requirement
 from run_folders import active_run
-from utils import emit, refuse, report_state
+from utils import emit, refuse
 
 
 def is_requirement(text):
@@ -45,7 +46,7 @@ def main(
     root = Path(agent_dir).resolve()
     if not (root / "plan.yaml").is_file() or not (root / "pyproject.toml").is_file():
         refuse(f"{root} is not an agent (no plan.yaml or pyproject.toml)", 2)
-    report_state(root)
+    agent_state.report_state(root)
     if bad := [p for p in packages if not is_requirement(p)]:
         refuse(f"not a package requirement: {', '.join(bad)}")
     if not reason.strip():

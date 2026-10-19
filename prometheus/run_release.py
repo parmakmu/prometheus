@@ -44,9 +44,17 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from prometheus import cli, launcher
-from prometheus.cli import PrometheusError, run_script
-from prometheus.settings import settings
+from prometheus import launcher
+from prometheus.errors import PrometheusError
+from prometheus.settings import get_setting, settings
+from prometheus.skill import (
+    agent_params,
+    agent_release,
+    run_compile,
+    run_folders,
+    run_script,
+    utils,
+)
 
 RELEASE_FILE = "RELEASE.json"  # in an unpacked release: its record (version, commit, interface); run_bundle.py reads it
 VERSION_RE = re.compile(r"^v\d+(\.\d+)?$")  # a release (v1: the newest 1.x); anything else names a commit to build
@@ -143,9 +151,6 @@ def state_of(record: dict) -> str:
     return "complete" if status == "done" else status
 
 
-def mark_done(state: dict, stages: list | None) -> dict:
-    """A run's stages (run.yaml), with `stages` done."""
-    return {**(state.get("stages") or {}), **{s: "done" for s in stages or []}}
 INTERRUPTED = "the process running it stopped before it ended: start it again"
 
 
@@ -175,6 +180,7 @@ class Run:
         self.process: subprocess.Popen | None = None
         self.cancelled = threading.Event()
         self.lock = threading.RLock()
+        self.locked = 0  # how deep this run's holder (one thread: the RLock) is in exclusive(), so it flocks once
 
     @property
     def id(self) -> str:
@@ -193,11 +199,12 @@ class Run:
 
     # --- state and events ---------------------------------------------------------
     def read_state(self) -> dict:
-        return cli.import_script("run_folders").read_run(self.dir)
+        return run_folders.read_run(self.dir)
 
     def write_state(self, **changes) -> dict:
-        run_folders = cli.import_script("run_folders")
-        with self.lock:
+        """Change run.yaml: read, merge, save, under exclusive(), so a write from another process (a cancel, an
+        answer) is never lost between this one's read and its save."""
+        with self.exclusive():
             state = {**self.read_state(), **changes}
             run_folders.Run(self.id, self.dir, state).save()
         return state
@@ -209,17 +216,30 @@ class Run:
         name = state_of(state)
         driver = state.get("driver") or {}
         if name == "running" and not (self.thread and self.thread.is_alive()) \
-                and cli.import_script("utils").process_alive(driver.get("pid"), driver.get("started")) is False:
+                and utils.process_alive(driver.get("pid"), driver.get("started")) is False:
             self.finish("error", INTERRUPTED)
             return "error"
         return name
 
     @contextlib.contextmanager
     def exclusive(self):
-        """Held while the run's state is checked and changed, across threads and processes (a file lock)."""
-        with self.lock, (self.dir / ".lock").open("a") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
-            yield
+        """Held while the run's state is checked and changed, across threads and processes (a file lock). Reentrant:
+        a thread already inside goes on (a second flock, on another descriptor, would wait for itself)."""
+        with self.lock:
+            if self.locked:
+                self.locked += 1
+                try:
+                    yield
+                finally:
+                    self.locked -= 1
+                return
+            with (self.dir / ".lock").open("a") as f:
+                fcntl.flock(f, fcntl.LOCK_EX)
+                self.locked = 1
+                try:
+                    yield
+                finally:
+                    self.locked = 0
 
     def cancel_requested(self) -> bool:
         return self.cancelled.is_set() or bool(self.read_state().get("cancel"))
@@ -256,11 +276,21 @@ class Run:
         return run_script("run_compile.py", "--agent", str(self.agent.folder), "--frozen", str(self.dir),
                           "--params", json.dumps(self.values), "--approve", ",".join(self.read_state().get("preapproved") or []))
 
+    def save_launches(self, state: dict) -> dict:
+        """Save the launches and stages of `state` (run.yaml, as run_folders' begin_launch and end_launch changed it)."""
+        return self.write_state(launches=state.get("launches") or [], stages=state.get("stages") or {})
+
     def finish(self, state: str, error: str | None = None):
-        launches = self.read_state().get("launches") or []
+        with self.exclusive():
+            record = self.read_state()
+            for entry in record.get("launches") or []:  # one the driver didn't see end (it raised): its stages pending again
+                if entry.get("status") == "running":
+                    run_folders.end_launch(self.dir, record, entry, "stopped" if state == "stopped" else "failed", None, {},
+                                           error=error)
+            launches = self.save_launches(record).get("launches") or []
         cost = round(sum(r.get("cost_usd") or 0 for r in launches), 6)
         self.write_state(status="done" if state == "complete" else state, error=error, needs=None,
-                         finished_at=datetime.datetime.now(datetime.UTC).isoformat())
+                         finished_at=run_folders.now())
         self.log(event="end", state=state, error=error, cost_usd=cost)
 
     def drive(self, compiled: dict | None = None):
@@ -279,33 +309,37 @@ class Run:
                     return self.finish("error", describe_refusal(self.agent, compiled))
                 wave = compiled["wave"]
                 if compiled.get("nothing_to_launch"):  # every stage reused from an earlier run: recorded, not launched
-                    cli.import_script("run_folders").record_wave_result(self.dir, wave, compiled["outcome"])
-                    state = self.read_state()
-                    self.write_state(launches=[*(state.get("launches") or []), {"wave": wave, "stages": compiled.get("stages"),
-                                                                                "status": "done", "cost_usd": 0.0, "launched": False}],
-                                     stages=mark_done(state, compiled.get("stages")))
+                    with self.exclusive():  # read, change, save: no other process writes in between
+                        record = self.read_state()
+                        run_folders.record_reused(self.dir, record, wave, compiled.get("stages"), compiled["outcome"])
+                        self.save_launches(record)
                     self.log(event="wave_end", wave=wave, state="complete", reused=True, cost=None)
                     compiled = None
                     continue
                 if self.cancel_requested():  # canceled while it compiled: launch nothing
                     break
+                with self.exclusive():  # read, change, save: no other process writes in between
+                    record = self.read_state()
+                    run_folders.begin_launch(record, wave, compiled.get("stages"))
+                    self.save_launches(record)
                 self.process = launcher.launch(self.agent.folder, self.dir, wave)
                 if self.cancel_requested():  # canceled as it launched: cancel() saw no process to stop
                     self.process.send_signal(signal.SIGTERM)
                 self.process.wait()
                 ended = launcher.outcome(self.dir, wave)
                 value = ended["value"]
-                run_folders = cli.import_script("run_folders")
-                # what later runs reuse by (run_compile.reuse_earlier: the record's `result` beside its `inputs`)
-                run_folders.record_wave_result(self.dir, wave, value)
-                state = self.read_state()
-                launch = run_folders.end_launch({"wave": wave, "stages": compiled.get("stages"), **ended["launch"]},
-                                                value.get("status") or ended["state"], value, ended)
-                self.write_state(launches=[*(state.get("launches") or []), launch])
-                if self.cancel_requested() or ended["state"] == "stopped":
+                stopped = self.cancel_requested() or ended["state"] == "stopped"
+                done = not stopped and ended["state"] == "complete" and value.get("status") == "done"
+                status = ("stopped" if stopped else "done" if done
+                          else value.get("status") if value.get("status") in ("failed", "blocked") else "failed")
+                # its result in .compiled/<wave>.json is what later runs reuse by (run_compile.reuse_earlier)
+                with self.exclusive():  # read, change, save: no other process writes in between
+                    record = self.read_state()
+                    run_folders.end_launch(self.dir, record, record["launches"][-1], status, value, ended, **ended["launch"])
+                    self.save_launches(record)
+                if stopped:
                     return self.finish("stopped", ended.get("error") or "canceled")
-                if ended["state"] == "complete" and value.get("status") == "done":
-                    self.write_state(stages=mark_done(state, compiled.get("stages")))
+                if done:
                     compiled = None
                     continue
                 failed = value.get("at") or [k for k, c in (value.get("children") or {}).items() if c.get("status") == "failed"]
@@ -317,7 +351,7 @@ class Run:
 
     def go(self, compiled: dict | None = None):
         self.cancelled.clear()
-        self.write_state(driver=cli.import_script("utils").this_process())  # who drives it: a later process can tell it died (state)
+        self.write_state(driver=utils.this_process())  # who drives it: a later process can tell it died (state)
         self.thread = threading.Thread(target=self.drive, args=(compiled,), daemon=True)
         self.thread.start()
 
@@ -355,10 +389,10 @@ class Run:
             for stage, value in (decisions or {}).items():
                 path = Path(asked[stage]["write_answer_to"])
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(json.dumps({"stage": stage, "answer": value, "recorded_at": datetime.datetime.now(datetime.UTC).isoformat()}, indent=2),
+                path.write_text(json.dumps({"stage": stage, "answer": value, "recorded_at": run_folders.now()}, indent=2),
                                 encoding="utf-8")
             self.write_state(status="running", needs=None, preapproved=sorted({*(state.get("preapproved") or []), *approve}),
-                             driver=cli.import_script("utils").this_process())
+                             driver=utils.this_process())
         self.log(event="resumed", approved=list(approve), decided=sorted(decisions or {}))
         self.go()
 
@@ -420,7 +454,7 @@ class Agent:
     def __init__(self, folder: Path, release: dict):
         """`folder`: the release unpacked (release_folder); `release`: its record."""
         self.folder = folder
-        self.name = cli.import_script("utils").agent_name(folder)
+        self.name = utils.agent_name(folder)
         self.release = release
         self.version = release["version"]
         self.interface = release.get("interface") or {"params": {}, "outputs": {}, "side_effects": []}
@@ -443,16 +477,16 @@ class Agent:
     @property
     def output_params(self) -> set[str]:
         """The params an output's path names (where the run writes): for a server, always inside the run."""
-        PARAM_RE = cli.import_script("run_compile").PARAM_RE
-        plan = cli.import_script("utils").read_plan(self.folder, {}) or {}
+        PARAM_RE = run_compile.PARAM_RE
+        plan = utils.read_plan(self.folder, {}) or {}
         return {m for o in plan.get("outputs") or [] if isinstance(o, dict) for m in PARAM_RE.findall(str(o.get("path") or ""))}
 
     def output_file_name(self, name: str) -> str:
         """The file an output param names inside a run: its default's name (outputs/emails.xlsx -> emails.xlsx), else the
         param's name with the output's format as extension (report -> report.txt)."""
-        PARAM_RE = cli.import_script("run_compile").PARAM_RE
-        plan = cli.import_script("utils").read_plan(self.folder, {}) or {}
-        default = cli.import_script("agent_params").spec_of((plan.get("params") or {}).get(name)).get("default")
+        PARAM_RE = run_compile.PARAM_RE
+        plan = utils.read_plan(self.folder, {}) or {}
+        default = agent_params.spec_of((plan.get("params") or {}).get(name)).get("default")
         if default:
             return Path(str(default)).name
         fmt = next((o.get("format") for o in plan.get("outputs") or [] if isinstance(o, dict)
@@ -462,8 +496,8 @@ class Agent:
     @property
     def folder_params(self) -> set[str]:
         """The params naming a folder (an input or output of kind folder): over HTTP, several files under one name."""
-        PARAM_RE = cli.import_script("run_compile").PARAM_RE
-        plan = cli.import_script("utils").read_plan(self.folder, {}) or {}
+        PARAM_RE = run_compile.PARAM_RE
+        plan = utils.read_plan(self.folder, {}) or {}
         return {m for o in [*(plan.get("inputs") or []), *(plan.get("outputs") or [])]
                 if isinstance(o, dict) and o.get("kind") == "folder" for m in PARAM_RE.findall(str(o.get("path") or ""))}
 
@@ -498,9 +532,8 @@ class Agent:
 
     def resolve_outputs(self, run_dir: Path, values: dict) -> dict[str, Path | None]:
         """Each plan output's path with the run's values (agent_params.resolve, as the compiler does)."""
-        agent_params = cli.import_script("agent_params")
-        PARAM_RE = cli.import_script("run_compile").PARAM_RE
-        read_plan = cli.import_script("utils").read_plan
+        PARAM_RE = run_compile.PARAM_RE
+        read_plan = utils.read_plan
         plan = read_plan(self.folder, {}) or {}
         specs = plan.get("params") or {}
         known = {**{n: agent_params.spec_of(s).get("default") for n, s in specs.items()}, **values}
@@ -533,8 +566,8 @@ class Agent:
             (run_dir / "call.json").write_text(json.dumps({"agent": self.name, "version": self.version, "params": values,
                                                            "approve": list(approve)}, indent=1), encoding="utf-8")
             run = Run(self, run_dir, values, self.resolve_outputs(run_dir, values))
-            run.write_state(id=run_id, status="running", started_at=datetime.datetime.now(datetime.UTC).isoformat(),
-                            preapproved=sorted(approve), stages={}, launches=[], driver=cli.import_script("utils").this_process())
+            run.write_state(id=run_id, status="running", started_at=run_folders.now(),
+                            preapproved=sorted(approve), stages={}, launches=[], driver=utils.this_process())
             compiled = run.compile()
             preflight = compiled.get("preflight") or {}
             if not compiled.get("ok") and not (preflight.get("decisions_needed") or preflight.get("approvals_needed")):
@@ -558,7 +591,7 @@ def load_agent(name: str, version: str | None = None) -> Agent:
         name, version = name.rsplit("@", 1)
     folder = Path(name).expanduser()
     if not (folder / "plan.yaml").is_file():
-        folder = cli.get_setting("agents")[0] / name
+        folder = get_setting("agents")[0] / name
     if (folder / "plan.yaml").is_file():
         if version is not None and not VERSION_RE.match(version):
             return load_build(folder.resolve(), version)
@@ -567,7 +600,7 @@ def load_agent(name: str, version: str | None = None) -> Agent:
         return Agent(unpack(folder.resolve(), release), release)
     installed = list_installed(name)
     if not installed:
-        raise PrometheusError(f"no agent {name!r}: not in {cli.get_setting('agents')[0]}, and no release of it installed in "
+        raise PrometheusError(f"no agent {name!r}: not in {get_setting('agents')[0]}, and no release of it installed in "
                               f"{settings().releases} (`prometheus install <source>@v1` installs one)")
     release = pick_release(installed, version)
     return Agent(release_folder(name, release), release)
@@ -583,7 +616,7 @@ def load_build(folder: Path, ref: str) -> Agent:
                               "commit runs as a build")
     release = {"version": "build", "commit": found.stdout.strip()}
     agent = Agent(unpack(folder, release), release)
-    agent.interface = cli.import_script("agent_release").interface(cli.import_script("utils").read_plan(agent.folder, {}) or {})
+    agent.interface = agent_release.interface(utils.read_plan(agent.folder, {}) or {})
     return agent
 
 

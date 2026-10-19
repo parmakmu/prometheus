@@ -28,9 +28,9 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
-from prometheus import cli
-from prometheus.cli import PrometheusError
+from prometheus.errors import PrometheusError
 from prometheus.run_release import Run, public_needs
+from prometheus.skill import utils
 
 PROTOCOL = "1.0"
 CONTENT_TYPE = "application/a2a+json"
@@ -88,7 +88,7 @@ def answer(body: dict, status: int = 200) -> JSONResponse:
 
 def agent_card(agent, public_url: str, token: bool) -> dict:
     """The Agent Card: the agent as one skill, its description saying what a message must carry."""
-    plan = cli.import_script("utils").read_plan(agent.folder, {}) or {}
+    plan = utils.read_plan(agent.folder, {}) or {}
     takes = []
     for name, spec in agent.params.items():
         if name in agent.output_params or spec["type"] == "secret":

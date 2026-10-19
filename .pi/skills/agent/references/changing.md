@@ -11,7 +11,7 @@ changes (resolved stages, gates, stage programs) go to branch `run/<id>`;
 
 After a run ends with a `review`, after a change is ready, or whenever a
 `run/…`, `revise/…` or `improve/…` branch is checked out with no run active
-(`<python> <skill>/scripts/agent_repo.py review`, `<python>` being the
+(`<python> <skill>/scripts/plan_edit.py review`, `<python>` being the
 nearest `.venv/bin/python`).
 
 1. Read `git diff main...<branch>` and summarise it in words, without

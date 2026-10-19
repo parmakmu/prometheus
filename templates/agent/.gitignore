@@ -10,3 +10,5 @@ runs/
 __pycache__/
 *.pyc
 .DS_Store
+# a write cut short (utils.write_atomic: a temp file, then a rename)
+.*.tmp

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Version an agent's plan with git: one repo per agent.
 
 The repo tracks the plan with its gates, agents and the skill copy; the
@@ -26,35 +25,25 @@ compares the repo's staged index (git write-tree, from the child's cwd inside
 the agent) before and after each writer child. The same check makes git a
 requirement: without a repo, writer children fail.
 
-Usage (from the agent root, or --agent DIR):
-  agent_repo.py begin-change     start or continue a change branch (no active run; improve needs a run first)
-  agent_repo.py review           the checked-out branch against main: commits, files
-  agent_repo.py merge --action merge|keep|discard
+A library, no command: the changes a person starts and ends (begin-change, review, merge) are plan_edit.py's commands,
+which check the state machine (agent_state.py) first; this module sits below it.
 """
-import datetime
-import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Annotated
 
-import typer
-from plan_validate import check_ready, validate
+from plan_validate import check_ready
 from run_folders import active_run, list_runs
 from utils import (
     PLAN_DIR,
     PLAN_PARTS,
-    emit,
     load_yaml,
     read_plan,
-    refuse,
-    report_state,
 )
 
 MAIN = "main"
 CHANGE_KINDS = ("revise", "improve")  # a change to the plan between runs: /agent-revise, /agent-improve
 FALLBACK_IDENTITY = ["-c", "user.name=prometheus", "-c", "user.email=prometheus@localhost"]
-app = typer.Typer(add_completion=False)
 
 
 def available():
@@ -229,46 +218,6 @@ def unmerged_branches(agent_dir):
     return waiting + [current] if is_review_branch(current) and current not in waiting else waiting
 
 
-# --- commands -----------------------------------------------------------------
-
-@app.callback()
-def main(ctx: typer.Context, agent_dir: Annotated[str, typer.Option("--agent", help="agent root")] = "."):
-    ctx.obj = agent_dir = Path(agent_dir).resolve()  # the agent every command works on: passed on, never the current folder
-    if not (agent_dir / "plan.yaml").is_file():
-        refuse(f"{agent_dir} is not an agent (no plan.yaml)", 2)
-    if not available():
-        refuse("git is required; ask the user to install it", 2)
-    report_state(agent_dir)
-
-
-@app.command("begin-change")
-def begin_change(ctx: typer.Context, kind: Annotated[str, typer.Option(help="revise (/agent-revise) | improve (/agent-improve)")] = "revise"):
-    """Start (or continue) a branch for changing the plan: revise/<date>-<n> or improve/<date>-<n>."""
-    if kind not in CHANGE_KINDS:
-        refuse(f"kind must be one of {', '.join(CHANGE_KINDS)}")
-    agent_dir = ctx.obj
-    import agent_state  # here, not at the top: agent_state imports this module
-    agent_state.require(agent_dir, agent_state.revise if kind == "revise" else agent_state.improve)
-    if not has_run(agent_dir):
-        emit({"ok": True, "branch": branch(agent_dir), "mode": "planning", "note": "no run yet: planning edits the plan directly"})
-    b = branch(agent_dir)
-    if is_change_branch(b):
-        open_kind = b.split("/")[0]
-        if open_kind != kind:
-            refuse(f"{b} is an open /agent-{open_kind} change: finish it first (review: merge, keep "
-                   f"or discard), then start /agent-{kind}")
-        emit({"ok": True, "branch": b, "mode": open_kind, "continued": True})
-    today = datetime.datetime.now().astimezone().date().isoformat()  # local date
-    taken = [int(m.group(1)) for x in git(agent_dir, "branch", "--list", f"{kind}/{today}-*", "--format=%(refname:short)").stdout.split()
-             if (m := re.match(rf"^{kind}/{today}-(\d+)$", x))]
-    new = f"{kind}/{today}-{max(taken, default=0) + 1}"
-    git(agent_dir, "switch", "-q", "-c", new)  # uncommitted changes come along: main changes only by a merge
-    # the plan is left as it is: an edit to it unreadies it (critique.plan_digest) until the critic is
-    # recorded, which also raises the revision; a change to gates, scripts or lessons alone needs no critic
-    sha, _ = commit(agent_dir, f"{kind} started: changes left uncommitted on main")
-    emit({"ok": True, "branch": new, "mode": kind, "revision": plan_revision(agent_dir)[0], "commit": sha})
-
-
 def main_plan(agent_dir):
     """The plan as main has it (plan.yaml with .plan/), or None."""
     r = git(agent_dir, "show", f"{MAIN}:plan.yaml", check=False)
@@ -287,12 +236,6 @@ def why_not_ready(agent_dir, plan):
     return check_ready(plan, main_plan(agent_dir) if branch(agent_dir) not in (None, MAIN) else None)
 
 
-@app.command()
-def review(ctx: typer.Context):
-    """Show the checked-out branch against main."""
-    emit({"ok": True, "review": review_info(ctx.obj), "unmerged": unmerged_branches(ctx.obj)})
-
-
 AT_REVIEW = "Uncommitted changes at review"
 
 
@@ -307,41 +250,3 @@ def merge_message(agent_dir, b, summary, steps):
     stat = git(agent_dir, "diff", "--cached", "--stat").stdout.rstrip()
     parts = [f"r{plan_revision(agent_dir)[0]}: {b}", summary.strip(), stat, "\n".join(f"- {s}" for s in steps)]
     return "\n\n".join(p for p in parts if p)
-
-
-@app.command()
-def merge(ctx: typer.Context, action: Annotated[str, typer.Option(help="merge | keep | discard")],
-          summary: Annotated[str, typer.Option(help="merge: what the branch changes, in words, for the commit message")] = ""):
-    """Finish the review of the checked-out branch and switch back to main."""
-    agent_dir = ctx.obj
-    if action not in ("merge", "keep", "discard"):
-        refuse("action must be merge, keep or discard")
-    b = branch(agent_dir)
-    import agent_state  # here, not at the top: agent_state imports this module
-    agent_state.require(agent_dir, agent_state.merge, action)
-    if action == "merge":
-        plan = read_plan(agent_dir, {})
-        errors = validate(plan, None, None, agent_dir)[0]
-        if errors or why_not_ready(agent_dir, plan):
-            refuse(f"the plan on {b} is {plan.get('status')}" + (f" with errors {errors[:3]}" if errors else "")
-                   + ": only a ready, valid plan can reach main. Finish the change (critic, agent_record_critique), or keep or discard the branch.")
-    leave_branch(agent_dir)
-    if action == "merge":
-        # one commit on main per merged branch (a squash); the branch's commits were its working steps
-        steps = [s for s in git(agent_dir, "log", "--reverse", "--format=%s", f"{MAIN}..{b}").stdout.splitlines() if s != AT_REVIEW]
-        if git(agent_dir, "merge", "-q", "--squash", b, check=False).returncode != 0:
-            git(agent_dir, "reset", "-q", "--merge", check=False)
-            git(agent_dir, "switch", "-q", b)
-            refuse(f"main has moved and {b} conflicts with it; the branch is checked out again. Resolve by hand, or discard it.")
-        if git(agent_dir, "diff", "--cached", "--quiet", check=False).returncode != 0:
-            git(agent_dir, *identity(agent_dir), "commit", "-q", "-m", merge_message(agent_dir, b, summary, steps))
-        tag_ready(agent_dir)
-    if action in ("merge", "discard"):
-        git(agent_dir, "branch", "-q", "-D", b)  # -D: a squashed branch is not an ancestor of main
-    rev, status = plan_revision(agent_dir)
-    emit({"ok": True, "action": action, "branch": b, "main": head(agent_dir), "revision": rev, "status": status,
-         "unmerged": unmerged_branches(agent_dir)})
-
-
-if __name__ == "__main__":
-    app()

@@ -56,7 +56,9 @@ first, "ok" is false and "preflight" lists it: decisions to collect (with the
 file to write each answer to), approvals to get, params to set (missing_params),
 environment variables the user must set for secrets (missing_secrets), or plan errors.
 
-The compiler never launches anything.
+The compiler never launches anything. It also says what comes after a launch (after_launch: the next wave and what its
+compile will ask, or at the end the review, the deliverables and the report), for run_steps.py finish-wave and for a
+wave it records without a launch, so run_steps.py imports this module and never the reverse.
 """
 import hashlib
 import json
@@ -78,9 +80,11 @@ from run_folders import (
     RUNS,
     active_run,
     list_runs,
+    now,
     read_run,
     read_wave,
     read_wave_spec,
+    record_reused,
     stages_done,
     write_wave,
 )
@@ -90,7 +94,6 @@ from utils import (
     read_json,
     read_plan,
     refuse,
-    report_state,
     stage_kind,
 )
 
@@ -851,7 +854,7 @@ class Compiler:
         reused_items = [it for step in steps for it in step.get("layer") or []]
         if steps and all("layer" in step for step in steps) and all("reuse" in it for it in reused_items):
             # every stage is reused: nothing to launch. What the runner would have returned, so the wave is recorded
-            # without one (run_steps.record_without_launch; run_release.Run for a released run)
+            # without one (run_folders.record_reused, from run_steps.py or run_release.Run)
             result["nothing_to_launch"] = True
             result["outcome"] = {"wave": wid, "revision": revision, "status": "done", "children": {
                 it["key"]: {**{k: it["reuse"].get(k) for k in ("runId", "outputReference", "structuredOutput")},
@@ -937,12 +940,155 @@ def save_wave(run_dir, result, compiler):
     return result
 
 
+# --- after a launch: what agent_finish_wave returns (run_steps.py finish-wave), and a wave recorded without one ----
+
+def close_mission(run, status, summary):
+    """The subagent call that closes the run's mission (one mission per run)."""
+    mid = next((r.get("mission_id") for r in reversed(run.state.get("launches") or []) if r.get("mission_id")), None)
+    return {"action": "mission.close", "missionId": mid, "missionStatus": status, "summary": summary} if mid else None
+
+
+def commit(agent_dir, message, run):
+    """Commit the agent on the run's branch; the note, or why it was not committed (never fatal)."""
+    try:
+        return agent_repo.commit(agent_dir, message, to=run.branch)[1]
+    except RuntimeError as exc:
+        return f"not committed: {exc}"
+
+
+def launch_fields(agent_dir, plan, nxt, approved, answers):
+    """What an agent's run keeps on a launch, beside what every run does: the plan's revision, what follows the wave,
+    the branch and commit it ran from, and the approvals, decisions and param values it ran with."""
+    return {"revision": plan.get("revision", 1), "ends_with": nxt["ends_with"], "branch": agent_repo.branch(agent_dir),
+            "commit": agent_repo.head(agent_dir), "approvals": approved, "decisions": answers,
+            "params": agent_params.record(plan.get("params"), agent_params.load(agent_dir, plan.get("params")))}
+
+
+def record_without_launch(agent_dir, plan, run, nxt, returned, approved):
+    """A wave every stage of which is reused from an earlier run (compile_wave: nothing_to_launch), recorded as
+    launched and finished at once, with no launch (run_folders.record_reused): what agent_finish_wave would return."""
+    entry = record_reused(run.dir, run.state, nxt["id"], nxt["stages"], returned,
+                          **launch_fields(agent_dir, plan, nxt, approved, {}))
+    run.save()
+    return after_launch(agent_dir, plan, run, entry, "done", returned)
+
+
+def count_items(path: Path):
+    """How many items a deliverable holds, where that can be read without a model: a JSON array's entries, a JSON
+    lines file's lines, a CSV's rows (header not counted), a folder's files; else None."""
+    try:
+        if path.is_dir():
+            return sum(1 for f in path.rglob("*") if f.is_file())
+        suffix = path.suffix.lower()
+        if suffix == ".json":
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return len(data) if isinstance(data, list) else None
+        if suffix in (".jsonl", ".ndjson"):
+            return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+        if suffix == ".csv":
+            return max(0, sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip()) - 1)
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    return None
+
+
+def list_deliverables(agent_dir, plan, run):
+    """The plan's outputs as this run has them: {id, path (relative to the agent when inside it), exists, items (how
+    many, when count_items can tell)}, resolved as the compiler resolves them (params, and relative paths inside the
+    run): the final report checks a count from here instead of reading the file."""
+    compiler = Compiler(agent_dir, plan, agent_params.load(agent_dir, plan.get("params")), run.dir, run.state, set())
+    found = []
+    for o in plan.get("outputs") or []:
+        if not isinstance(o, dict) or not o.get("id") or not (path := compiler.out_path(o)):
+            continue
+        path = Path(path)
+        shown = path.relative_to(agent_dir) if path.is_relative_to(agent_dir) else path
+        entry = {"id": o["id"], "path": str(shown), "exists": path.exists()}
+        if path.exists() and (items := count_items(path)) is not None:
+            entry["items"] = items
+        found.append(entry)
+    return found
+
+
+def next_preflight(agent_dir, plan, run, wave):
+    """What the next wave's compile would ask for first (decisions, approvals, params, secrets), so the
+    parent collects it in the same turn instead of compiling once just to hear it."""
+    try:
+        compiled = Compiler(agent_dir, plan, agent_params.load(agent_dir, plan.get("params")),
+                            run.dir, run.state, set(run.state.get("preapproved") or [])).compile(wave)
+    except (OSError, ValueError, KeyError, TypeError):  # only a hint: the compile itself reports what went wrong
+        return None
+    return {k: v for k, v in (compiled.get("preflight") or {}).items() if v} or None
+
+
+def after_launch(agent_dir, plan, run, entry, status, returned):
+    # status: how the launch ended (run_folders.STATUSES)
+    """Once a launch is recorded: commit what the wave wrote, end the run after its last wave, and say what comes next:
+    agent_finish_wave's result."""
+    state, wave = run.state, entry["wave"]
+    wave_status = "done" if status == "done" else "pending"
+    git_note = commit(agent_dir, f"run {run.id}, wave {wave}: files the wave wrote", run)  # while the run is still active
+    keys = [s.get("id") for s in plan.get("stages") or []]
+    done = bool(keys) and all(state["stages"].get(k) == "done" for k in keys)
+    if done:
+        state.update({"status": "done", "finished_at": now()})
+        run.save()
+    total = sum(r.get("cost_usd") or 0 for r in state.get("launches") or [])
+    after = validate(plan, None, None, agent_dir, run_state=state)[2]
+    nxt = None if done else (after.get("waves") or [None])[0]  # after a failed wave: that wave again
+    if nxt:
+        nxt = {k: nxt[k] for k in ("id", "stages", "ends_with")}
+        if preflight := next_preflight(agent_dir, plan, run, nxt):
+            nxt["preflight"] = preflight
+    return {"ok": True, "run": run.id, "run_status": state["status"], "wave_status": wave_status,
+          "ends_with": entry.get("ends_with") if status == "done" else None,
+          # a summary only: outputs are files the gates checked; read one only when something needs a look
+          "children": {k: {"status": (v or {}).get("status"), "output": (v or {}).get("outputReference")}
+                       for k, v in ((returned or {}).get("children") or {}).items()} if isinstance(returned, dict) else None,
+          "error": entry.get("error"), "failure_kind": entry.get("failure_kind"), "cost_usd": entry.get("cost_usd"),
+          "stopped_at": entry.get("stopped_at"), "git_note": git_note,
+          # what to compile next, so the parent goes straight to agent_compile_wave (no check in between)
+          "next_wave": nxt,
+          "review": agent_repo.review_info(agent_dir) if done else None,
+          "mission_close": close_mission(run, "completed", f"Agent run {run.id} completed ({len(keys)} stages"
+                                         + (f", ${total:.4f} in children" if total else "") + ").") if done else None,
+          # the criteria the final report goes through, so the parent need not read the plan for them
+          "done_when": plan.get("done_when") if done else None,
+          # where the deliverables are in this run: the report names them, nothing to work out
+          "outputs": list_deliverables(agent_dir, plan, run) if done else None,
+          "report": write_report(agent_dir, plan, run) if done else None}
+
+
+def write_report(agent_dir, plan, run):
+    """The final report, settled by code where it can be: each deliverable with how its stage's output was checked
+    (gate, review, or reused from a run where they passed), and what is left for the model: the criteria, when some
+    deliverable no check covers. `do` says which."""
+    stages = {s.get("id"): s for s in plan.get("stages") or [] if isinstance(s, dict)}
+    by_output = {o.get("id"): k for k, s in stages.items() for o in s.get("writes") or [] if isinstance(o, dict)}
+    children = {}
+    for launch in run.state.get("launches") or []:
+        children.update(((read_wave(run.dir, launch.get("wave")).get("result") or {}).get("children")) or {})
+    lines, unchecked = [], []
+    for d in list_deliverables(agent_dir, plan, run):
+        key = by_output.get(d["id"])
+        st, child = stages.get(key) or {}, children.get(key) or {}
+        how = ("reused from an earlier run, checked there" if child.get("reused")
+               else ", ".join(c for c, ok in (("its gate passed", st.get("gate") not in (None, "", "true")),
+                                              ("its review passed", st.get("review"))) if ok))
+        if not how:
+            unchecked.append(d["path"])
+        items = f", {d['items']} items" if "items" in d else ""
+        lines.append(f"{d['path']} ({'present' if d['exists'] else 'MISSING'}{items}): {how or 'no check covers it'}")
+    return {"deliverables": lines, "criteria": plan.get("done_when") or [],
+            "do": ("Report the deliverables and criteria as they stand: every deliverable was checked. Open nothing."
+                   if not unchecked else
+                   f"Report the deliverables as they stand. Only these no check covers: {', '.join(unchecked)}. Judge "
+                   "the criteria about them from their items count; open one only if that can't settle it, once.")}
+
+
 def record_reused_wave(agent_dir, plan, run, result):
-    """A wave every stage of which is reused, recorded as it is compiled (run_steps.record_without_launch): nothing is
+    """A wave every stage of which is reused, recorded as it is compiled (record_without_launch): nothing is
     launched, and the result is what agent_finish_wave would have returned, with `launched: false`."""
-    from run_steps import (
-        record_without_launch,  # here, not at the top: run_steps.py imports this module
-    )
     nxt = {"id": result["wave"], "stages": result["stages"], "ends_with": result["ends_with"]}
     recorded = record_without_launch(agent_dir, plan, run, nxt, result["outcome"], result.get("approved") or [])
     # first, and in words: a model that saw only a finished wave's result called agent_finish_wave too (run 2026-10-16-7)
@@ -982,7 +1128,7 @@ def main(
         compiler = result.pop("_compiler", None)
         launchable = result.get("ok") and not result.get("done")
         emit(save_wave(frozen, result, compiler) if launchable else result, 0 if result.get("ok") else 1)
-    report_state(agent_dir)
+    agent_state.report_state(agent_dir)
     if not check:
         agent_state.require(agent_dir, agent_state.compile_wave)
     if not check and (run := active_run(agent_dir)):

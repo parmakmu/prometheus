@@ -96,16 +96,22 @@ The skill is `.pi/skills/agent/`; the planner is Prometheus where it must be tol
 
 Python scripts in `.pi/skills/agent/scripts/` hold all logic and print one JSON object (`utils.emit`; refusals
 `utils.refuse`); runs via `run_folders.py`, YAML via `utils.read_yaml`/`write_yaml`, commits name their branch. A script works on the agent it is given: `--agent` (default `.`), made absolute once in
-`main` and passed on as `agent_dir` (commands: `ctx.obj`); no script `chdir`s or reads `Path.cwd()` below `main`. The two
+`main` and passed on as `agent_dir` (commands: `ctx.obj`); no script `chdir`s or reads `Path.cwd()` below `main`. Scripts import downward only, at the top (`utils` < `run_folders` <
+`agent_params` < `plan_validate` < `agent_repo` < `agent_state` < the commands; `run_steps` imports `run_compile`): a command lives in
+the module above what it needs (the review's are `plan_edit`'s), and `utils.emit` gets `next` from `agent_state.report_state`.
+Files are written whole (`utils.write_atomic`: a temp file of its own, then a rename). The two
 extensions are thin: run a script (`$PI_AGENT_PYTHON`, else the nearest `.venv`, else `python3`), format its JSON.
 `templates/agent/` plus a copy of the skill make each agent (`agent_scaffold.py`), so it runs without Prometheus.
 `wave_runner.js` is the only JS a wave carries; `run_batcher.py` is stdlib-only. Only the skill's `pi_records.py` reads
-pi-subagents' files, and only `prometheus/launcher.py` (`check`, `launch`, `outcome`, `stop`) runs a released wave;
-the rest read a launch as `run.yaml` keeps it (`run_folders.end_launch`), so another executor replaces those two. Libraries: typer, pydantic
+pi-subagents' files or knows where it is installed (prometheus calls it too), and only `prometheus/launcher.py` (`check`, `launch`, `outcome`, `stop`) runs a released wave;
+the rest read a launch as `run.yaml` keeps it (`run_folders.begin_launch`/`end_launch`/`record_reused`, used by an agent's run
+and a release's alike: one entry shape, statuses `STATUSES`), so another executor replaces those two. Libraries: typer, pydantic
 (`plan_validate.py`: shape, then one `Checker` method per rule group), pydantic-settings + python-dotenv, ruamel.yaml,
 packaging (requirements, versions), psutil (`process_alive`: a reused pid is not the process recorded), graphlib. Web app: `ui/router.ts` (routes; split into `common`, `sandbox` + `bwrap`/`podman`, `workers`, `files`,
 `subagents`) + one `ui/worker.ts`
-(Pi SDK) per user and agent, page in `ui/web`. `prometheus/settings.py` holds prometheus's settings (one `BaseSettings`, read fresh each call; an agent's folder is a
+(Pi SDK) per user and agent, page in `ui/web`. `prometheus/skill.py` imports the skill's scripts prometheus uses, once (`from prometheus.skill import pi_records`,
+at the top; no dynamic imports), and nothing imports `cli.py`: library modules use `errors.py`, `settings.py`, `skill.py`
+(only `serve`/`uvicorn` stay inside the `serve` command: ~200 ms on every other one); `prometheus/settings.py` holds prometheus's settings (one `BaseSettings`, read fresh each call; an agent's folder is a
 parameter, never a setting). `prometheus/cli.py` is the `prometheus` command (typer + rich): `init`,
 `doctor`, the planner (`pi -e <ext> --skill <skill> --append-system-prompt <role>` in `~/.prometheus`, whose `.pi/` has
 only settings.json and a link to `plan-critic.md`) and `prometheus <slug>`; the planner extension finds its root from
@@ -136,7 +142,7 @@ Doing the work
   each item's record in `work/<stage>/items/<key>.json` after its gate (reused ones too: the newest store is whole), the
   split leaves out items an earlier finished run's store holds (`<stage>/items` fingerprint: without `over` and batch); outputs anywhere inside the run, not
   only work/, are copied). A wave all of whose stages are reused is recorded at compile, not launched
-  (`nothing_to_launch`; `run_steps.record_without_launch`; `launched: false` with agent_finish_wave's result). A launched wave is two files in
+  (`nothing_to_launch`; `run_folders.record_reused`; `launched: false` with agent_finish_wave's result). A launched wave is two files in
   `.compiled/`: `<wave>.js` (its data, `const W`, and the runner) and `<wave>.json` (the call, `inputs` = fingerprints,
   `result` once it ended). No fallbacks for older formats: we are still developing.
 - Cost is the plan's: `models: {default, review}`, a stage's `model`, `limits.max_cost_usd` (preflight `budget`;
@@ -207,8 +213,9 @@ Web app
 
 - Review fixes (2026-10-09): `install` refreshes with `--no-lock` until you confirm (uv lock may build the agent's
   packages); `share` scans the history it pushes too; serve's and A2A's async routes run blocking work in a thread pool;
-  a run records its driver's pid (`run.yaml` `driver`), so a run whose process died ends as an error; `Run.answer`
-  and `cancel` hold a file lock (`runs/<id>/.lock`); a cancel is seen before and right after a launch, from any process;
+  a run records its driver's pid (`run.yaml` `driver`), so a run whose process died ends as an error; every write of a
+  released run's `run.yaml` holds its file lock (`runs/<id>/.lock`, `Run.exclusive`, reentrant: `write_state`, the launch
+  records, `answer`, `cancel`), and its times are `run_folders.now()` (local, offset, milliseconds) as an agent's run's; a cancel is seen before and right after a launch, from any process;
   the batcher's a2a op follows links (endpoint, artifacts) only on the plan's origin; uploads are capped as they
   arrive (`LimitBody`); an empty serve token is none.
 

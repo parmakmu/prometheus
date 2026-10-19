@@ -120,7 +120,7 @@ An agent built with prometheus calls another one with a stage of `pattern: a2a`.
 
 Set these in your shell, or in whatever starts prometheus or an agent, such as a scheduled job or a service's unit file. None of them is read from an agent's `.env`, which holds only the agent's params and is never loaded into Pi's environment.
 
-The folders can also be set in `~/.config/prometheus/config.toml` (which `prometheus init` writes), by their name without the prefix, in lower case: `agents`, `home`, `releases`, `cache`, `catalog`, and `pi_agent` for `PI_CODING_AGENT_DIR`. A flag wins over the environment, and the environment over `config.toml`.
+The folders can also be set in `~/.config/prometheus/config.toml` (which `prometheus init` writes), by their name without the prefix, in lower case: `agents`, `home`, `releases`, `cache` and `catalog` (not `PI_CODING_AGENT_DIR`, which is Pi's own and read only from the environment). A flag wins over the environment, and the environment over `config.toml`.
 
 | Variable | Read by | Does | Default |
 | --- | --- | --- | --- |

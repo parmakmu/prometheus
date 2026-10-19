@@ -1,4 +1,6 @@
 """The `prometheus` command (prometheus/cli.py): where settings come from, init, and how pi is started."""
+import json
+import os
 import subprocess
 import sys
 import tomllib
@@ -6,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from prometheus import cli, settings
+from prometheus import cli, settings, skill
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / ".pi" / "skills" / "agent" / "scripts"
@@ -32,18 +34,30 @@ def test_settings_come_from_flag_then_environment_then_config_then_default(home,
 
 
 def test_every_folder_setting_reads_the_environment_then_the_config_file(home, monkeypatch):
-    for name in ("PROMETHEUS_RELEASES", "PROMETHEUS_CACHE", "PROMETHEUS_CATALOG", "PI_CODING_AGENT_DIR",
-                 "XDG_DATA_HOME", "XDG_CACHE_HOME"):
+    for name in ("PROMETHEUS_RELEASES", "PROMETHEUS_CACHE", "PROMETHEUS_CATALOG", "XDG_DATA_HOME", "XDG_CACHE_HOME"):
         monkeypatch.delenv(name, raising=False)
     s = settings.settings()
-    assert (s.releases, s.cache, s.catalog, s.pi_agent) == (
-        home / ".local/share/prometheus/releases", home / ".cache/prometheus", None, home / ".pi/agent")
+    assert (s.releases, s.cache, s.catalog) == (home / ".local/share/prometheus/releases", home / ".cache/prometheus", None)
     cli.write_config({"releases": str(home / "from-config"), "catalog": "~/catalog.yaml"})
     monkeypatch.setenv("PROMETHEUS_CACHE", "")  # empty is unset, not the current folder
-    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(home / "pi"))
     s = settings.settings()
-    assert (s.releases, s.cache, s.catalog, s.pi_agent) == (
-        home / "from-config", home / ".cache/prometheus", home / "catalog.yaml", home / "pi")
+    assert (s.releases, s.cache, s.catalog) == (home / "from-config", home / ".cache/prometheus", home / "catalog.yaml")
+
+
+def test_pi_subagents_is_found_where_pi_keeps_it_or_in_the_agent_first(home, monkeypatch):
+    # one place knows where pi-subagents is installed (pi_records.install): doctor and the launcher ask it
+    def installed(root, version):
+        folder = root / "npm" / "node_modules" / "pi-subagents"
+        folder.mkdir(parents=True)
+        (folder / "package.json").write_text(json.dumps({"version": version}))
+        return folder
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(home / "pi"))
+    pi_records = skill.pi_records
+    assert pi_records.install() is None and cli.find_pi_subagents() is None
+    global_ = installed(home / "pi", "0.79.0")
+    assert pi_records.install() == global_ and cli.find_pi_subagents() == "0.79.0"
+    project = installed(home / "agent" / ".pi", "0.80.0")
+    assert pi_records.install(home / "agent") == project and pi_records.install() == global_
 
 
 def test_init_without_a_terminal_writes_the_config_and_the_planner_folder(home, monkeypatch):
@@ -144,3 +158,14 @@ def test_release_shows_the_check_and_tags_only_when_told(home, monkeypatch, caps
     assert calls == ["check"]
     cli.release("counter", breaking=False, yes=True)
     assert calls == ["check", "check", "tag"] and "Released counter v1.0" in capsys.readouterr().out
+
+
+def test_a_module_named_like_a_skill_script_is_refused_by_name(tmp_path):
+    # the scripts are top-level modules (`utils`, ...): another program's own `utils`, imported first, is not taken for ours
+    (tmp_path / "utils.py").write_text("")
+    r = subprocess.run([sys.executable, "-c", "import utils, prometheus.skill"], cwd=tmp_path, capture_output=True, text=True, check=False,
+                       env={**os.environ, "PYTHONPATH": f"{tmp_path}:{ROOT}"})
+    assert r.returncode != 0 and "a module named 'utils' is already imported" in r.stderr, r.stderr
+    ok = subprocess.run([sys.executable, "-c", "import prometheus.skill, utils; print(utils.__file__)"], cwd=tmp_path,
+                        capture_output=True, text=True, check=False, env={**os.environ, "PYTHONPATH": str(ROOT)})
+    assert ok.returncode == 0 and ok.stdout.strip().endswith("scripts/utils.py"), ok.stderr

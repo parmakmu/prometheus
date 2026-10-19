@@ -40,6 +40,7 @@ import json
 import re
 import shutil
 import subprocess
+import tomllib
 from pathlib import Path
 from typing import Annotated
 
@@ -80,7 +81,6 @@ def add_skill_packages(path: Path, template: str):
     """Bring the agent's pyproject.toml up to the template: its dependencies the agent lacks
     (keeping the packages the agent added), and its requires-python when the agent's `>=`
     floor is lower (a higher one is the agent's own); what changed."""
-    import tomllib
     text = path.read_text(encoding="utf-8")
     try:
         have = tomllib.loads(text)["project"]["dependencies"]

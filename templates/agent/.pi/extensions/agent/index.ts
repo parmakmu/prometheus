@@ -426,7 +426,7 @@ async function check(pi: ExtensionAPI, root: string, signal?: AbortSignal) {
     errors: v.data?.errors ?? [v.stderr.trim()],
     warnings: v.data?.warnings ?? [],
     summary: v.data?.summary,
-    state: v.data?.state, // where the agent stands and the legal moves (agent_state.py)
+    state: c.data?.next, // where the agent stands and the legal moves (agent_state.py), as every move's result says
     compiles: c.data?.ok ?? false,
     compile_errors: c.data?.compile_errors ?? {},
   };
@@ -768,9 +768,9 @@ export default function agentExtension(pi: ExtensionAPI) {
       ctx.ui.notify("The agent is busy; wait for it to finish, then run the command again.", "warning");
       return;
     }
-    const r = await runScript(pi, root, "agent_repo.py", ["begin-change", "--kind", kind]);
+    const r = await runScript(pi, root, "plan_edit.py", ["begin-change", "--kind", kind]);
     if (!r.data?.ok) {
-      ctx.ui.notify(r.data?.error ?? `agent_repo.py begin-change failed: ${(r.stderr || r.stdout).trim().slice(0, 500)}`, "error");
+      ctx.ui.notify(r.data?.error ?? `plan_edit.py begin-change failed: ${(r.stderr || r.stdout).trim().slice(0, 500)}`, "error");
       return;
     }
     return { root, branch: r.data.branch ?? "main", mode: r.data.mode };
@@ -1043,7 +1043,7 @@ export default function agentExtension(pi: ExtensionAPI) {
       action: Type.Union([Type.Literal("merge"), Type.Literal("keep"), Type.Literal("discard")]),
       summary: Type.Optional(Type.String({ description: "merge: what the branch changes, in words, for the commit message" })),
     }),
-    script: "agent_repo.py",
+    script: "plan_edit.py",
     args: (p) => ["merge", "--action", p.action, ...opt("--summary", p.summary)],
   });
 

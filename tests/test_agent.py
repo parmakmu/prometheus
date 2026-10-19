@@ -530,7 +530,7 @@ def test_a_new_run_starts_from_main_and_keeps_the_branch_waiting_for_review(env)
 
 def test_merge_run_branch(env):
     steps = int(env.git("rev-list", "--count", f"main..run/{env.rid}").stdout)
-    r = env.run(["agent_repo.py", "merge", "--action", "merge"])
+    r = env.run(["plan_edit.py", "merge", "--action", "merge"])
     assert r.data, r
     # one commit on main for the whole run, however many the run's branch made
     assert steps > 1 and env.git("rev-list", "--count", f"{env.main0}..main").stdout.strip() == "1"
@@ -619,7 +619,7 @@ def test_a_run_that_changed_nothing_has_no_branch_to_review(env):
 
 
 def test_agent_revise_change_branch_from_main(env):
-    r = env.run(["agent_repo.py", "begin-change"])
+    r = env.run(["plan_edit.py", "begin-change"])
     assert r.data, r
     today = datetime.datetime.now().astimezone().date().isoformat()
     assert (r.data["ok"], r.data["branch"], r.data["revision"]) == (True, f"revise/{today}-1", 2)
@@ -638,7 +638,7 @@ def test_direct_edits_on_the_change_branch_critique_marks_it_ready(env):
 def test_merged_change_goal_changed_on_main_tag_r3(env):
     before = env.git("rev-parse", "main").stdout.strip()
     revise = env.git("symbolic-ref", "--short", "HEAD").stdout.strip()
-    r = env.run(["agent_repo.py", "merge", "--action", "merge"])
+    r = env.run(["plan_edit.py", "merge", "--action", "merge"])
     assert r.data, r
     assert revise.startswith("revise/") and env.git("rev-list", "--count", f"{before}..main").stdout.strip() == "1"
     assert env.git("log", "-1", "--format=%s", "main").stdout.strip() == f"r3: {revise}"
@@ -648,13 +648,13 @@ def test_merged_change_goal_changed_on_main_tag_r3(env):
 
 
 def test_a_draft_change_cannot_merge_discard_leaves_main_unchanged(env):
-    r = env.run(["agent_repo.py", "begin-change"])
+    r = env.run(["plan_edit.py", "begin-change"])
     assert r.data and r.data["ok"]
     plan_path = env.b / "plan.yaml"  # an edit the critic has not seen
     plan_path.write_text(plan_path.read_text(encoding="utf-8").replace("goal: >-\n", "goal: >-\n  Not reviewed.\n", 1), encoding="utf-8")
-    r = env.run(["agent_repo.py", "merge", "--action", "merge"])
+    r = env.run(["plan_edit.py", "merge", "--action", "merge"])
     assert "only a ready, valid plan" in (r.data or {}).get("error", "")
-    r = env.run(["agent_repo.py", "merge", "--action", "discard"])
+    r = env.run(["plan_edit.py", "merge", "--action", "discard"])
     assert r.data and (r.data["ok"], r.data["revision"]) == (True, 3)
     assert env.git("branch", "--list", "revise/*").stdout.strip() == ""
 
@@ -984,7 +984,7 @@ def test_script_tools_pass_their_arguments(env):
 @skip_extensions
 def test_change_branch_guard(env, ext):
     _subprocess.run(["python3", str(env.k / "run_steps.py"), "stop"], cwd=env.b, capture_output=True, check=False)
-    _subprocess.run(["python3", str(env.k / "agent_repo.py"), "begin-change"], cwd=env.b, capture_output=True, check=False)
+    _subprocess.run(["python3", str(env.k / "plan_edit.py"), "begin-change"], cwd=env.b, capture_output=True, check=False)
     steps = [
         {"toolCall": {"toolName": "edit", "input": {"path": "plan.yaml"}}},
         {"toolCall": {"toolName": "bash", "input": {"command": "cat plan.yaml"}}},

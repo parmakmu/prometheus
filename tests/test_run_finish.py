@@ -124,7 +124,7 @@ def test_the_scripts_work_on_the_agent_they_are_given_not_the_current_folder(tmp
     assert r.data["ok"] and Path(r.data["path"]) == wf / "runs" / r.data["run"], r
     r = run_py([k / "plan_edit.py", "--agent", wf, "resolve", "--change", '{"note": "from elsewhere"}'], cwd=elsewhere)
     assert r.data["ok"] and r.data["next"]["state"] == "run_draft", r
-    assert run_py([k / "agent_repo.py", "--agent", wf, "review"], cwd=elsewhere).data["ok"]
+    assert run_py([k / "plan_edit.py", "--agent", wf, "review"], cwd=elsewhere).data["ok"]
     assert sorted(p.name for p in elsewhere.iterdir()) == []
 
 
@@ -191,23 +191,23 @@ def test_improve_and_revise_get_their_own_branches(tmp_path, run_py):
     wf, k = ready_agent(tmp_path, run_py, "kinds")
     assert run_py([k / "run_steps.py", "start-run"], cwd=wf).data["ok"]
     assert run_py([k / "run_steps.py", "stop"], cwd=wf).data["ok"]  # a run exists, none is active
-    r = run_py([k / "agent_repo.py", "begin-change", "--kind", "improve"], cwd=wf)
+    r = run_py([k / "plan_edit.py", "begin-change", "--kind", "improve"], cwd=wf)
     assert r.data["ok"] and r.data["branch"].startswith("improve/") and r.data["mode"] == "improve", r
-    again = run_py([k / "agent_repo.py", "begin-change", "--kind", "improve"], cwd=wf)  # already open: continue it
+    again = run_py([k / "plan_edit.py", "begin-change", "--kind", "improve"], cwd=wf)  # already open: continue it
     assert again.data["branch"] == r.data["branch"] and again.data["continued"], again
-    other = run_py([k / "agent_repo.py", "begin-change"], cwd=wf)  # a revise does not land on the improve branch
+    other = run_py([k / "plan_edit.py", "begin-change"], cwd=wf)  # a revise does not land on the improve branch
     assert "open /agent-improve change" in errors(other), other
-    assert run_py([k / "agent_repo.py", "review"], cwd=wf).data["review"]["branch"] == r.data["branch"]
+    assert run_py([k / "plan_edit.py", "review"], cwd=wf).data["review"]["branch"] == r.data["branch"]
 
 
 def test_a_change_that_leaves_the_plan_alone_merges_without_the_critic(tmp_path, run_py):
     wf, k = ready_agent(tmp_path, run_py, "lesson")
     assert run_py([k / "run_steps.py", "start-run"], cwd=wf).data["ok"] and run_py([k / "run_steps.py", "stop"], cwd=wf).data["ok"]
-    r = run_py([k / "agent_repo.py", "begin-change", "--kind", "improve"], cwd=wf)
+    r = run_py([k / "plan_edit.py", "begin-change", "--kind", "improve"], cwd=wf)
     assert r.data["ok"] and r.data["next"]["state"] == "change_ready", r  # the plan is not drafted
     with (wf / ".pi" / "APPEND_SYSTEM.md").open("a", encoding="utf-8") as f:
         f.write("\n## Lessons for this agent\n- Ask once.\n")
-    r = run_py([k / "agent_repo.py", "merge", "--action", "merge", "--summary", "Adds a lesson: ask once."], cwd=wf)
+    r = run_py([k / "plan_edit.py", "merge", "--action", "merge", "--summary", "Adds a lesson: ask once."], cwd=wf)
     assert r.data["ok"] and (r.data["revision"], r.data["status"]) == (1, "ready"), r
     log = subprocess.run(["git", "log", "-1", "--format=%s"], cwd=wf, capture_output=True, text=True, check=True).stdout.strip()
     assert log.startswith("r1: improve/")
@@ -241,7 +241,7 @@ def test_a_merge_is_one_commit_on_main_and_deletes_the_branch(tmp_path, run_py):
     git("add", "-A")
     git("commit", "-qm", "main moved")
     git("switch", "-q", "revise/2026-01-01-1")
-    r = run_py([wf / ".pi" / "skills" / "agent" / "scripts" / "agent_repo.py", "merge", "--action", "merge"], cwd=wf)
+    r = run_py([wf / ".pi" / "skills" / "agent" / "scripts" / "plan_edit.py", "merge", "--action", "merge"], cwd=wf)
     assert r.data and r.data["ok"], r
     assert git("branch", "--list").split() == ["*", "main"]
     assert git("rev-list", "--merges", "--count", "main").strip() == "0"
@@ -272,7 +272,7 @@ def test_a_merge_that_conflicts_with_main_leaves_both_unchanged(tmp_path, run_py
     git("commit", "-qm", "main moved")
     main = git("rev-parse", "main")
     git("switch", "-q", "revise/2026-01-01-1")
-    r = run_py([wf / ".pi" / "skills" / "agent" / "scripts" / "agent_repo.py", "merge", "--action", "merge"], cwd=wf)
+    r = run_py([wf / ".pi" / "skills" / "agent" / "scripts" / "plan_edit.py", "merge", "--action", "merge"], cwd=wf)
     assert "conflicts" in errors(r), r
     assert git("symbolic-ref", "--short", "HEAD").strip() == "revise/2026-01-01-1"
     assert git("rev-parse", "main") == main and not git("status", "--porcelain").strip()
@@ -334,8 +334,8 @@ def test_a_run_needs_a_ready_plan(tmp_path, run_py):
 
 def test_improve_needs_a_run(tmp_path, run_py):
     wf, k = ready_agent(tmp_path, run_py, "early")
-    assert "nothing to improve" in errors(run_py([k / "agent_repo.py", "begin-change", "--kind", "improve"], cwd=wf))
-    assert run_py([k / "agent_repo.py", "begin-change"], cwd=wf).data["mode"] == "planning"  # revise: plan on main
+    assert "nothing to improve" in errors(run_py([k / "plan_edit.py", "begin-change", "--kind", "improve"], cwd=wf))
+    assert run_py([k / "plan_edit.py", "begin-change"], cwd=wf).data["mode"] == "planning"  # revise: plan on main
 
 
 def test_leftovers_on_main_go_to_a_branch_once_a_run_exists(tmp_path, run_py):
@@ -349,9 +349,9 @@ def test_leftovers_on_main_go_to_a_branch_once_a_run_exists(tmp_path, run_py):
     assert r.data["ok"] and git("branch", "--show-current").stdout.strip() == f"run/{r.data['run']}", r
     assert git("rev-parse", "main").stdout == main
     assert run_py([k / "run_steps.py", "stop"], cwd=wf).data["ok"]
-    assert run_py([k / "agent_repo.py", "merge", "--action", "discard"], cwd=wf).data["ok"]
+    assert run_py([k / "plan_edit.py", "merge", "--action", "discard"], cwd=wf).data["ok"]
     (wf / "gates" / "stray2.py").write_text("", encoding="utf-8")
-    r = run_py([k / "agent_repo.py", "begin-change"], cwd=wf)
+    r = run_py([k / "plan_edit.py", "begin-change"], cwd=wf)
     assert r.data["ok"] and git("rev-parse", "main").stdout == main, r
     assert "gates/stray2.py" in git("show", "--name-only", "--format=", "HEAD").stdout
 
@@ -692,7 +692,7 @@ def test_a_wave_whose_every_stage_is_reused_is_recorded_without_a_launch(tmp_pat
     assert any("reused from run" in n for n in r["notes"])
     state = read_run_state(wf / "runs" / second)
     launch = state["launches"][0]
-    assert (launch["status"], launch["launched"], launch["subagent_run_id"]) == ("done", False, None) and state["status"] == "done"
+    assert (launch["status"], launch["launched"], launch.get("subagent_run_id")) == ("done", False, None) and state["status"] == "done"
     assert (wf / "runs" / second / "work" / "counts.txt").read_text() == "3\n"
     assert r["outputs"] == [{"id": "counts", "path": f"runs/{second}/work/counts.txt", "exists": True}], r["outputs"]
     assert r["report"]["deliverables"] == [f"runs/{second}/work/counts.txt (present): reused from an earlier run, checked there"]
@@ -705,7 +705,7 @@ def test_a_deliverables_items_are_counted_where_a_program_can_tell(tmp_path):
     import sys
     sys.path.insert(0, str(SKILL / "scripts"))
     try:
-        from run_steps import count_items
+        from run_compile import count_items
     finally:
         sys.path.remove(str(SKILL / "scripts"))
     files = {"a.json": '[{"file": "1.eml"}, {"file": "2.eml"}]', "b.json": '{"not": "a list"}', "c.jsonl": '{"a": 1}\n\n{"a": 2}\n',

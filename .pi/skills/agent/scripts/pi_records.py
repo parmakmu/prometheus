@@ -1,6 +1,6 @@
 """What Prometheus reads of pi-subagents' own files: its async runs' records (status.json, workflow-children.jsonl), its
-missions and its package. The only module that knows where pi-subagents keeps them or what they hold; everything else
-reads a launch as run.yaml records it (run_folders.end_launch: status, cost_usd, tokens, children, error), from
+missions and where it is installed. The only module that knows where pi-subagents keeps them or what they hold; everything else
+reads a launch as run.yaml records it (run_folders.begin_launch, end_launch: status, cost_usd, tokens, children, error), from
 outcome() here or, for a released run, from prometheus/launcher.py."""
 import hashlib
 import json
@@ -28,8 +28,39 @@ def read_status(run_id):
     """The status.json of async run `run_id`, or None."""
     if not RUN_ID_RE.match(str(run_id or "")):
         return None
-    status = read_json(runs_root() / str(run_id) / "status.json")
+    return read_record(runs_root() / str(run_id))
+
+
+def read_record(folder):
+    """The status.json in a launch's record folder (a released run's runner logs where it is), or None."""
+    status = read_json(Path(folder) / "status.json") if folder else None
     return status if isinstance(status, dict) else None
+
+
+def launch_steps(folder):
+    """A finished launch's children as its record folder keeps them (status.json `steps`, each one's settled result in
+    workflow-children.jsonl): [{key, agent, status, error, exit_code, run_id, output, session, transcript}], session
+    and transcript as pi-subagents named them (paths, or None). `launch_children` is the live view, while it runs."""
+    status = read_record(folder) or {}
+    settled = {}
+    try:
+        for line in (Path(folder) / "workflow-children.jsonl").read_text(encoding="utf-8").splitlines():
+            entry = json.loads(line)
+            if entry.get("type") == "settle":
+                settled[entry.get("key")] = entry.get("result") or {}
+    except (OSError, ValueError):
+        pass
+    steps = []
+    for step in status.get("steps") or []:
+        key = step.get("workflowKey")
+        result = settled.get(key) or {}
+        first = next(iter(result.get("results") or []), {})  # the child's own result: where its transcript is
+        steps.append({"key": key, "agent": step.get("agent"), "status": step.get("status"),
+                      "error": step.get("error") or result.get("error"), "exit_code": step.get("exitCode"),
+                      "run_id": step.get("runId"), "output": str(result.get("output") or result.get("error") or ""),
+                      "session": step.get("sessionFile"),
+                      "transcript": step.get("transcriptPath") or first.get("transcriptPath")})
+    return steps
 
 
 def outcome(status):
@@ -144,12 +175,18 @@ def bundle_name(path: Path) -> str:
     return f"subagents/{path.relative_to(root)}" if path.is_relative_to(root) else f"sessions/{path.relative_to(tmp)}"
 
 
+def install(agent_dir=None):
+    """The folder pi-subagents is installed in (its package.json, index.js): the agent's project install first, when
+    `agent_dir` is given, else Pi's global one (Pi's folder: PI_CODING_AGENT_DIR, utils.pi_agent_dir); None if neither."""
+    for root in ([Path(agent_dir) / ".pi" / "npm"] if agent_dir else []) + [pi_agent_dir() / "npm"]:
+        if ((folder := root / "node_modules" / "pi-subagents") / "package.json").is_file():
+            return folder
+    return None
+
+
 def package(agent_dir):
-    """pi-subagents' package.json (its version), project install first, else Pi's; [] when not found."""
-    for root in (Path(agent_dir) / ".pi" / "npm", pi_agent_dir() / "npm"):
-        if (f := root / "node_modules" / "pi-subagents" / "package.json").is_file():
-            return [f]
-    return []
+    """pi-subagents' package.json (its version), as `install` finds it; [] when not found."""
+    return [folder / "package.json"] if (folder := install(agent_dir)) else []
 
 
 def missions():

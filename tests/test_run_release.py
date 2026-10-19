@@ -15,7 +15,7 @@ import pytest
 from conftest import SKILL, git_in, stamp
 from test_agent_release import commit, make_agent
 
-from prometheus import run_release
+from prometheus import run_release, skill
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 
@@ -73,7 +73,7 @@ def fake_launch(folder, run_dir, wave):
     """pi running a compiled wave, without pi: each program stage's command runs as the batcher would (`uv run` as this
     Python), and the runner's events and pi-subagents' record are written as they would be. A stage fails when its
     program does; the wave stops there."""
-    spec = run_release.cli.import_script("run_folders").read_wave_spec(run_dir, wave)
+    spec = skill.run_folders.read_wave_spec(run_dir, wave)
     status = run_dir / "pi-subagents" / wave
     status.mkdir(parents=True)
     events, children, failed = [{"event": "launched", "wave": wave, "status_dir": str(status)}], {}, []
@@ -130,6 +130,36 @@ def test_a_run_approved_up_front_is_one_wave(released, fake_pi, tmp_path):
     assert (result.ok, result.state, result.cost_usd) == (True, "complete", 0.001)
     assert [w["wave"] for w in result.record["launches"]] == ["all"]
     assert result.outputs["count_file"].read_text() == "3\n"
+
+
+def test_a_released_run_records_its_launches_as_an_agents_run_does(released, fake_pi, tmp_path, monkeypatch):
+    # one record of a launch whatever ran it (run_folders.begin_launch, end_launch): running while it runs, then how it ended
+    during = {}
+    def launch(folder, run_dir, wave):
+        during.update(skill.run_folders.read_run(run_dir))
+        return fake_launch(folder, run_dir, wave)
+    monkeypatch.setattr(run_release.launcher, "launch", launch)
+    (tmp_path / "in.txt").write_text("a\n")
+    result = run_release.load_agent(str(released)).start(params={"source": str(tmp_path / "in.txt")}, approve=["save"]).wait(30)
+    assert set(during["stages"].values()) == {"running"} and during["launches"][-1]["status"] == "running"
+    launch_ = result.record["launches"][-1]
+    assert launch_["status"] in skill.run_folders.STATUSES and launch_["status"] == "done"
+    assert {"started_at", "finished_at", "subagent_run_id", "cost_usd"} <= set(launch_)
+    assert set(result.record["stages"].values()) == {"done"}
+
+
+def test_a_driver_that_breaks_mid_wave_leaves_no_launch_running(released, fake_pi, tmp_path, monkeypatch):
+    def broken(run_dir, wave):
+        raise RuntimeError("the record could not be read")
+    monkeypatch.setattr(run_release.launcher, "outcome", broken)
+    (tmp_path / "in.txt").write_text("a\n")
+    result = run_release.load_agent(str(released)).start(params={"source": str(tmp_path / "in.txt")}, approve=["save"]).wait(30)
+    assert result.state == "error" and "the record could not be read" in result.error
+    launch_ = result.record["launches"][-1]
+    assert launch_["status"] == "failed" and "the record could not be read" in launch_["error"]
+    assert "running" not in (result.record.get("stages") or {}).values()  # pending again, as after any failed launch
+    with pytest.raises(ValueError, match="not 'complete'"):
+        skill.run_folders.end_launch(tmp_path, {}, {"wave": "w1"}, "complete", None, {})
 
 
 def test_a_side_effect_not_approved_stops_the_run_until_it_is_answered(released, fake_pi, tmp_path):
@@ -214,7 +244,7 @@ def test_a_judgment_made_on_the_same_input_is_reused_by_the_next_call(tmp_path, 
     first = agent.run(params={"source": str(tmp_path / "in.txt")}, timeout=30)
     second = agent.run(params={"source": str(tmp_path / "in.txt")}, timeout=30)
     assert first.ok and second.ok
-    briefs = json.dumps(run_release.cli.import_script("run_folders").read_wave_spec(first.run_dir, "all"))
+    briefs = json.dumps(skill.run_folders.read_wave_spec(first.run_dir, "all"))
     assert 'Agent \\"describer\\", stage \\"describe\\"' in briefs  # its name, from RELEASE.json: not its folder's, v1.0
     children = json.loads((second.run_dir / ".compiled" / "all.json").read_text())["result"]["children"]
     assert children["describe"]["reused"] and "describe-review" not in children
@@ -298,13 +328,13 @@ def test_a_driver_pid_another_process_reused_counts_as_dead(released, fake_pi, t
     # this process holds the pid now, but started after the driver recorded under it: not the driver
     run.write_state(status="running", driver={"pid": os.getpid(), "started": time.time() - 3600 * 24 * 365})
     assert run_release.Run.reopen(agent, run.id).wait().error == run_release.INTERRUPTED
-    run.write_state(status="running", error=None, driver=run_release.cli.import_script("utils").this_process())
+    run.write_state(status="running", error=None, driver=skill.utils.this_process())
     assert run_release.Run.reopen(agent, run.id).state == "running"  # the driver itself: alive
 
 
 def test_a_run_another_process_drives_is_waited_for_by_its_state(released, fake_pi, tmp_path):
     agent, run = paused_run(released, tmp_path)
-    run.write_state(status="running", needs=None, driver=run_release.cli.import_script("utils").this_process())
+    run.write_state(status="running", needs=None, driver=skill.utils.this_process())
     reopened = run_release.Run.reopen(agent, run.id)  # no thread here: the run goes on elsewhere
     threading.Timer(1, run.finish, args=("complete",)).start()
     assert reopened.wait(30, poll_s=0.1).state == "complete"
@@ -323,7 +353,7 @@ def test_a_cancel_from_another_process_kills_a_wave_that_ignores_it_after_the_gr
     status.mkdir()
     (status / "status.json").write_text(json.dumps({"state": "running", "pid": stubborn.pid}))
     run.log(event="launched", wave="w2", status_dir=str(status))
-    run.write_state(status="running", needs=None, driver=run_release.cli.import_script("utils").this_process())
+    run.write_state(status="running", needs=None, driver=skill.utils.this_process())
     started = time.monotonic()
     run_release.Run.reopen(agent, run.id).cancel(grace_s=1)
     assert stubborn.wait(5) == -9 and 0.9 < time.monotonic() - started < 5  # asked, waited for, then killed
@@ -449,3 +479,34 @@ def test_a_release_installed_frozen_runs_without_the_agents_repository(released,
     git("-c", "user.name=t", "-c", "user.email=t@t", "tag", "-f", "-a", "v1.0", "-m", git("tag", "-l", "--format=%(contents)", "v1.0").stdout)
     with pytest.raises(run_release.PrometheusError, match="a release never changes"):
         share.install(f"{released}@v1.0")
+
+
+def test_a_change_to_a_run_from_another_process_is_never_lost(released, tmp_path):
+    # run.yaml is read, merged and saved under the run's file lock, by every writer: a driver's save waits for a cancel
+    # written meanwhile elsewhere (two Run objects on one folder flock as two processes do), and keeps it
+    agent = run_release.load_agent(str(released))
+    run_dir = agent.folder / "runs" / "r-lock"
+    run_dir.mkdir(parents=True)
+    driver, other = (run_release.Run(agent, run_dir, {}, {}) for _ in range(2))
+    driver.write_state(status="running")
+    with other.exclusive():
+        saving = threading.Thread(target=driver.write_state, kwargs={"note": "from the driver"})
+        saving.start()
+        time.sleep(0.3)
+        assert saving.is_alive()  # waits for the other's lock
+        other.write_state(cancel=True)  # reentrant: inside its own exclusive()
+    saving.join(5)
+    state = driver.read_state()
+    assert (state["cancel"], state["note"], state["status"]) == (True, "from the driver", "running")
+    assert not [p for p in run_dir.iterdir() if p.name.endswith(".tmp")]
+
+
+def test_a_file_written_whole_keeps_its_mode_and_leaves_no_temp_file(tmp_path):
+    target = tmp_path / "plan.yaml"
+    target.write_text("old")
+    target.chmod(0o640)
+    skill.utils.write_atomic(target, "new")
+    assert (target.read_text(), target.stat().st_mode & 0o777) == ("new", 0o640)
+    skill.utils.write_atomic(tmp_path / "fresh.yaml", "x")
+    assert (tmp_path / "fresh.yaml").stat().st_mode & 0o777 == 0o644
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["fresh.yaml", "plan.yaml"]

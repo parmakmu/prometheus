@@ -17,13 +17,23 @@ import re
 import shutil
 import subprocess
 import tempfile
+import tomllib
 from pathlib import Path
 
 from ruamel.yaml import YAML
 
-from prometheus import cli
-from prometheus.cli import PrometheusError
-from prometheus.settings import settings
+from prometheus import run_release
+from prometheus.errors import PrometheusError
+from prometheus.run_release import VERSION_RE
+from prometheus.settings import get_agent, get_setting, settings
+from prometheus.skill import (
+    agent_repo,
+    agent_scaffold,
+    find_files,
+    run_folders,
+    run_script,
+    utils,
+)
 
 REFRESH_COMMIT = "Refresh from prometheus"  # agent_scaffold.py's message: install and pull make these locally
 
@@ -36,7 +46,7 @@ def git(folder: Path, *args: str, check: bool = True) -> subprocess.CompletedPro
 
 
 def read_catalog() -> list[dict]:
-    path = settings().catalog or cli.find_files() / "catalog.yaml"
+    path = settings().catalog or find_files() / "catalog.yaml"
     try:
         data = YAML(typ="safe").load(path.read_text(encoding="utf-8")) or {}
     except OSError:
@@ -46,7 +56,7 @@ def read_catalog() -> list[dict]:
 
 def owned_by_prometheus(rel: str) -> bool:
     """Whether a refresh rewrites this file: the template's files and the skill copy (the plan itself is the agent's)."""
-    scaffold = cli.import_script("agent_scaffold")
+    scaffold = agent_scaffold
     return rel.startswith(".pi/skills/agent/") or (rel in {str(p) for p in scaffold.template_files()} and rel != "plan.yaml")
 
 
@@ -62,26 +72,24 @@ def list_own_code(folder: Path) -> list[tuple[str, int]]:
 
 def list_own_packages(folder: Path) -> list[str]:
     """The packages the agent added to its pyproject.toml beyond the template's."""
-    import tomllib
     try:
         have = tomllib.loads((folder / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
-        base = tomllib.loads((cli.find_files() / "templates" / "agent" / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
+        base = tomllib.loads((find_files() / "templates" / "agent" / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
     except (OSError, KeyError, ValueError):
         return []
-    name = cli.import_script("utils").package_name
+    name = utils.package_name
     return [d for d in have if name(d) not in {name(b) for b in base}]
 
 
 def read_lessons(folder: Path) -> str:
     """What /agent-improve wrote into the agent's role from its runs (it goes into every turn's prompt)."""
-    heading = cli.import_script("agent_scaffold").LESSONS_HEADING
+    heading = agent_scaffold.LESSONS_HEADING
     text = (folder / ".pi" / "APPEND_SYSTEM.md").read_text(encoding="utf-8") if (folder / ".pi" / "APPEND_SYSTEM.md").is_file() else ""
     return text[text.index(heading) + len(heading):].strip() if heading in text else ""
 
 
 def describe(folder: Path) -> dict:
     """What a person should look at before trusting (install, pull) or publishing (share) an agent."""
-    utils = cli.import_script("utils")
     plan = utils.read_plan(folder, {}) or {}
     stages = [s for s in plan.get("stages") or [] if isinstance(s, dict)]
     return {"goal": plan.get("goal"), "stages": len(stages),
@@ -91,7 +99,7 @@ def describe(folder: Path) -> dict:
 
 def refresh(folder: Path, lock: bool = True) -> dict:
     """`lock`: write uv.lock, which resolves (and may build) the agent's packages: only for an agent you trust."""
-    r = cli.run_script("agent_scaffold.py", folder.name, "--root", str(folder.parent), "--refresh", *([] if lock else ["--no-lock"]))
+    r = run_script("agent_scaffold.py", folder.name, "--root", str(folder.parent), "--refresh", *([] if lock else ["--no-lock"]))
     if not r.get("ok"):
         raise PrometheusError(f"refreshing {folder.name} failed: {r.get('error')}")
     return r
@@ -101,18 +109,17 @@ def install(source: str, slug: str | None = None, confirm=lambda info: True) -> 
     """Clone an agent (a catalog name, a URL or a folder), refresh it from this prometheus, and keep it only if
     `confirm(describe(...))` says so; returns its folder. With "@v1" (or "@v1.2"), a release instead, frozen
     (install_release)."""
-    from prometheus.run_release import VERSION_RE
     head, at, tail = source.rpartition("@")
     source, version = (head, tail) if at and VERSION_RE.match(tail) else (source, None)  # git@host:… is a URL
     entry = next((a for a in read_catalog() if a["name"] == source), None)
     url = entry["url"] if entry else source
     slug = slug or (entry and entry["name"]) or re.sub(r"\.git$", "", url.rstrip("/").rsplit("/", 1)[-1].rsplit(":", 1)[-1])
-    scaffold = cli.import_script("agent_scaffold")
+    scaffold = agent_scaffold
     if not scaffold.SLUG_RE.match(slug) or slug in scaffold.RESERVED:
         raise PrometheusError(f"{slug!r} can't name an agent: pass another with --as")
     if version:
         return install_release(url, slug, version, confirm)
-    agents = cli.get_setting("agents")[0]
+    agents = get_setting("agents")[0]
     folder = agents / slug
     if folder.exists():
         raise PrometheusError(f"{folder} exists: `prometheus pull {slug}` updates it, or install with --as <another name>")
@@ -139,7 +146,6 @@ def install_release(url: str, slug: str, version: str, confirm=lambda info: True
     fetched (into a scratch repository, deleted after), unpacked into the releases folder as any release is
     (run_release.unpack), and kept only if `confirm(describe(...))` says so. Nothing is refreshed: it runs as released.
     Installed already: its folder, unchanged (a moved tag is refused)."""
-    from prometheus import run_release
     listed = subprocess.run(["git", "ls-remote", "--tags", "--refs", "--", url, "v*"], capture_output=True, text=True, check=False)
     if listed.returncode != 0:
         raise PrometheusError(f"cannot read {url}: {(listed.stderr or listed.stdout).strip()}")
@@ -150,7 +156,7 @@ def install_release(url: str, slug: str, version: str, confirm=lambda info: True
         repo = Path(scratch) / slug
         git(repo.parent, "init", "-q", str(repo))
         git(repo, "fetch", "-q", "--depth", "1", "--", url, f"refs/tags/{wanted}:refs/tags/{wanted}")
-        release = next(r for r in cli.run_script("agent_release.py", "list", "--agent", str(repo))["releases"] if r["version"] == wanted)
+        release = next(r for r in run_script("agent_release.py", "list", "--agent", str(repo))["releases"] if r["version"] == wanted)
         installed = run_release.release_folder(slug, release)
         if (installed / run_release.RELEASE_FILE).is_file():
             return run_release.unpack(repo, release, slug, source=url)  # here already (or refused: its tag moved)
@@ -170,7 +176,7 @@ def check_clean_main(folder: Path, step: str):
         raise PrometheusError(f"{folder.name} has {branch or 'no branch'} checked out: {step} works on main (merge, keep or discard it first)")
     if git(folder, "status", "--porcelain").stdout.strip():
         raise PrometheusError(f"{folder.name} has uncommitted changes: {step} needs them committed or discarded")
-    run = cli.import_script("run_folders").active_run(folder)
+    run = run_folders.active_run(folder)
     if run:
         raise PrometheusError(f"{folder.name} has an active run ({run.id}): {step} after it ends")
 
@@ -178,7 +184,7 @@ def check_clean_main(folder: Path, step: str):
 def pull(slug: str, confirm=lambda info: True) -> dict:
     """Bring main up to the upstream's (`origin`), after `confirm` saw what changes. Local commits on main may only be
     refreshes (install and pull make them); anything else is a change to propose first."""
-    folder = cli.get_agent(slug)
+    folder = get_agent(slug)
     check_clean_main(folder, "pull")
     git(folder, "fetch", "-q", "--tags", "origin")
     upstream = "origin/main"
@@ -212,7 +218,7 @@ def scan_for_secrets(folder: Path) -> list[str]:
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        found += [f"{rel}: looks like {what}" for pattern, what in cli.import_script("utils").SECRET_PATTERNS if pattern.search(text)]
+        found += [f"{rel}: looks like {what}" for pattern, what in utils.SECRET_PATTERNS if pattern.search(text)]
     return found + scan_history(folder, set(found))
 
 
@@ -228,14 +234,14 @@ def scan_history(folder: Path, found_now: set[str]) -> list[str]:
             if Path(file).name.startswith(".env"):
                 found.append(f"{file}: a values file (it may hold secrets) is in commit {commit}")
         elif line.startswith("+") and not line.startswith("+++"):
-            found += [f"{file}: looks like {what}, in commit {commit}" for pattern, what in cli.import_script("utils").SECRET_PATTERNS
+            found += [f"{file}: looks like {what}, in commit {commit}" for pattern, what in utils.SECRET_PATTERNS
                       if pattern.search(line) and f"{file}: looks like {what}" not in found_now]
     return list(dict.fromkeys(found))
 
 
 def share(slug: str, remote: str, confirm=lambda info: True) -> dict:
     """Push main and its releases to `remote` (made `origin`), after the scan and `confirm`."""
-    folder = cli.get_agent(slug)
+    folder = get_agent(slug)
     check_clean_main(folder, "share")
     if secrets := scan_for_secrets(folder):
         raise PrometheusError("not shared, it may contain secrets: " + "; ".join(secrets))
@@ -253,14 +259,12 @@ def share(slug: str, remote: str, confirm=lambda info: True) -> dict:
 
 def propose(slug: str) -> dict:
     """Push the checked-out change branch to origin; on GitLab, open a merge request into main as it is pushed."""
-    folder = cli.get_agent(slug)
+    folder = get_agent(slug)
     branch = git(folder, "branch", "--show-current").stdout.strip()
-    agent_repo = cli.import_script("agent_repo")
     if not agent_repo.is_change_branch(branch):
         raise PrometheusError(f"{slug} has {branch or 'no branch'} checked out: propose a change branch (/agent-revise or /agent-improve)")
     if git(folder, "status", "--porcelain").stdout.strip():
         raise PrometheusError(f"{slug} has uncommitted changes: finish the change first")
-    utils = cli.import_script("utils")
     plan = utils.read_plan(folder, {}) or {}
     if why := agent_repo.why_not_ready(folder, plan):
         raise PrometheusError(f"the change isn't ready to propose: {why}")

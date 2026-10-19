@@ -36,7 +36,6 @@ from typer.testing import CliRunner
 pytestmark = pytest.mark.xdist_group("state-walk")
 
 sys.path.insert(0, str(SKILL / "scripts"))
-import agent_repo
 import agent_state
 import plan_edit
 import run_compile
@@ -102,11 +101,11 @@ def invoke(wf, move):
             "agent_record_decision": (run_steps.app, ["decision", "--stage", "count", "--answer", "true"]),
             "agent_resolve": (plan_edit.app, ["resolve", "--change", '{"note": "walk"}']),
             "agent_stop_run": (run_steps.app, ["stop"]),
-            "agent_merge:merge": (agent_repo.app, ["merge", "--action", "merge"]),
-            "agent_merge:keep": (agent_repo.app, ["merge", "--action", "keep"]),
-            "agent_merge:discard": (agent_repo.app, ["merge", "--action", "discard"]),
-            "/agent-revise": (agent_repo.app, ["begin-change"]),
-            "/agent-improve": (agent_repo.app, ["begin-change", "--kind", "improve"]),
+            "agent_merge:merge": (plan_edit.app, ["merge", "--action", "merge"]),
+            "agent_merge:keep": (plan_edit.app, ["merge", "--action", "keep"]),
+            "agent_merge:discard": (plan_edit.app, ["merge", "--action", "discard"]),
+            "/agent-revise": (plan_edit.app, ["begin-change"]),
+            "/agent-improve": (plan_edit.app, ["begin-change", "--kind", "improve"]),
         }[move]
     here = Path.cwd()
     os.chdir(wf)
