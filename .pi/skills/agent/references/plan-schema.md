@@ -141,6 +141,10 @@ agents:
   `.pi/agents/` and make it `source: project`.
 - **rule** every `source: project` agent has a file in `.pi/agents/`;
   *warning* one listed as builtin (a plain name) does too.
+- **rule** a subagent's connectors (`mcp:<server>` in `tools`) are in the
+  agent's `.pi/mcp.json` and its `skills` in `.pi/skills/` (added with
+  `agent_add_connector`, `agent_add_skill`); *warning* while the plan is a
+  draft, or when one is only in your own Pi (`~/.pi/agent`).
 - Builtin contexts: `oracle` is `fork`; the others are `fresh`.
 
 ## Unknowns

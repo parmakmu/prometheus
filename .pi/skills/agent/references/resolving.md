@@ -15,7 +15,9 @@ if a kind may change.
 
 1. Write gates for the stages you make concrete into `gates/` (a package
    they import: `agent_add_package`, which asks the user), and new agents into `.pi/agents/`
-   (`<skill>/references/agent-profiles.md`).
+   (`<skill>/references/agent-profiles.md`). If the discovery showed the work
+   needs what the agent lacks (an app to reach, know-how), find it with
+   `agent_find_capability` and propose it: `agent_add_connector`, `agent_add_skill`.
 2. One `agent_resolve` call: `findings` for the resolved unknowns, and
    each provisional stage whose `resolves_after` is done, in full and
    without `provisional` / `resolves_after` (`pattern`, `agent`, `writes`,
@@ -34,5 +36,6 @@ if a kind may change.
 ## What you may edit while resolving
 
 The plan only through `agent_resolve` and `agent_record_critique`, plus `gates/`,
-`.pi/agents/` and packages (`agent_add_package`); stage programs are the
+`.pi/agents/`, packages, connectors and skills (`agent_add_package`,
+`agent_add_connector`, `agent_add_skill`); stage programs are the
 children's. Nothing else.

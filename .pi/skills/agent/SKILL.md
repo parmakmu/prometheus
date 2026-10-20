@@ -156,6 +156,12 @@ inside the agent (`references/resolving.md`, `references/changing.md`).
   app lets an agent reach only hosts the user allowed, and offers these.
 - A secret is used only in a stage program's `args` and its gate. A stage
   that calls a service with a token is a program, or uses a connector.
+- What the agent lacks is found, not improvised: `agent_find_capability`,
+  then propose the best fit (each tool asks the user): a connector to reach
+  an app (`agent_add_connector`), a skill for know-how a judgment stage
+  needs (`agent_add_skill`), a package for work a program does
+  (`agent_add_package`: converting files is a package and a program, not a
+  skill). The stage's subagent lists it (`references/agent-profiles.md`).
 - Cost: programs as commands cost nothing per run; a `reviewer` on every
   stage doubles its children. Review where a wrong output would spread.
   Set `models` (or a stage's `model`) only to models the user named.

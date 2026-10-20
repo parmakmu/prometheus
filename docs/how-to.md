@@ -27,6 +27,7 @@ The examples use emails-to-excel, the agent from the tutorial. Put your own agen
 - [How to improve an agent from a run on another machine](#how-to-improve-an-agent-from-a-run-on-another-machine)
 - [How to review and merge a branch](#how-to-review-and-merge-a-branch)
 - [How to make a stage use a connector](#how-to-make-a-stage-use-a-connector)
+- [How to give a stage a skill](#how-to-give-a-stage-a-skill)
 
 **Running an agent from code**
 
@@ -216,14 +217,28 @@ New runs and changes wait until you have chosen. A kept branch shows in `/agent-
 
 ### How to make a stage use a connector
 
-Use this for a side effect that writes to an app or sends a message. Built-in subagents such as `worker` have no connector tools, so the stage needs a subagent of its own.
+Use this for a stage that reads from an app or writes to one, such as a side effect that sends a message. A connector is an MCP server the agent carries in its `.pi/mcp.json`, so it works wherever the agent is copied, installed or served. Built-in subagents such as `worker` get no connector tools, so the stage also needs a subagent of its own.
 
-1. Type `/agent-revise` and ask for the stage to use the connector, naming the server, for example `/agent-revise build-workbook should write to Notion through mcp:notion`.
-2. In the diff, check the two edits the agent makes on the branch:
-   - a subagent in the agent's `.pi/agents/`, such as `.pi/agents/notion-writer.md`, whose `tools` list has the connector (`mcp:<server>` or `mcp:<server>/<tool>`), or `bash` for a command-line tool;
+1. Type `/agent-revise` and say what the stage should reach, for example `/agent-revise build-workbook should write to Notion`. You can name a server, or let the agent search the MCP registry (`agent_find_capability`). It looks for the app's own server first (Notion's is `com.notion/mcp`) and tells you when it proposes a third party's.
+2. Approve the connector when the agent asks. The dialog shows the command it starts (an `npx` or `uvx` package pinned to one version) or the URL it connects to, the environment variables it reads, and why the agent wants it. Nothing is written if you decline.
+3. Set the variables it reads, such as `NOTION_TOKEN`, in the environment you start `pi` from, not in `.env`: Pi starts the server, and `.env` never reaches Pi's environment. For a server that signs in with OAuth, run `/mcp login <server>` instead. Once it connects, the agent can see its tools and pick the ones the stage needs; before that, it waits rather than guess their names.
+4. In the diff, check the three edits the agent makes on the branch:
+   - the server's entry in `.pi/mcp.json`;
+   - a subagent in `.pi/agents/`, such as `.pi/agents/notion-writer.md`, whose `tools` list has the connector (`mcp:<server>` or, better, `mcp:<server>/<tool>`);
    - the stage's `agent:` in the plan, naming that subagent.
-3. Run `prometheus check emails-to-excel`. It must report no stage whose subagent "cannot reach" what it writes.
-4. Review the diff and merge.
+5. Run `prometheus check emails-to-excel`. It must report no stage whose subagent "cannot reach" what it writes, and no connector that "is not configured".
+6. Review the diff and merge.
+
+A connector the agent adds during a run, because a discovery stage found it needs one, goes through the same approval and lands on the run's branch.
+
+### How to give a stage a skill
+
+Use this when a judgment stage needs know-how it would otherwise improvise: a format's quirks, a house style, a checklist. A skill is a folder with a `SKILL.md` that a stage's child reads when its task matches. Work a program can do, such as converting PDF or Word files to text, is better done by a package and a program: ask for that instead, and the agent adds the package with `agent_add_package`.
+
+1. Type `/agent-revise` and say what the stage lacks, for example `/agent-revise the review stage should follow our tone guide`, or name a skill's repository. The agent can search Pi packages on npm and GitHub (`agent_find_capability`).
+2. Approve the skill when the agent asks. The dialog shows its description, where it comes from (a git commit, or an npm package's version), how many files it has and which of them are code. Only the commit or version you saw is installed.
+3. In the diff, check the skill's folder in `.pi/skills/<name>/`, with `SOURCE.json` naming where it came from, and the subagent in `.pi/agents/` that lists it (`skills: <name>`). Read the skill as you would a program: its text instructs every child that loads it, and its scripts run.
+4. Run `prometheus check <slug>`, then review and merge.
 
 ## Running an agent from code
 

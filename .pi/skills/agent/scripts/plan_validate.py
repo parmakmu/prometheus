@@ -53,8 +53,11 @@ from run_folders import active_run, last_run
 from utils import (
     PLAN_FILE,
     load_yaml,
+    mcp_server_key,
     package_name,
     parts_in_plan_file,
+    pi_agent_dir,
+    read_mcp_servers,
     read_plan,
     stage_kind,
 )
@@ -522,10 +525,25 @@ def project_agent_names(root: Path):
     return set(project_subagents(root))
 
 
+def read_frontmatter_list(meta, key):
+    """A list field of an agent's frontmatter (a list, or a comma-separated string) as a list of names."""
+    value = meta.get(key)
+    return [str(x).strip() for x in (value.split(",") if isinstance(value, str) else value or []) if str(x).strip()]
+
+
 def agent_tools(meta):
-    """An agent's `tools` (a list, or a comma-separated string) as a list of names."""
-    tools = meta.get("tools")
-    return [str(x).strip() for x in (tools.split(",") if isinstance(tools, str) else tools or []) if str(x).strip()]
+    """An agent's `tools` as a list of names."""
+    return read_frontmatter_list(meta, "tools")
+
+
+def agent_connectors(meta):
+    """The MCP servers an agent's `tools` select (`mcp:<server>` or `mcp:<server>/<tool>`)."""
+    return sorted({t.removeprefix("mcp:").split("/")[0] for t in agent_tools(meta) if t.startswith("mcp:")})
+
+
+def agent_skills(meta):
+    """The skills an agent's `skills` (or `skill`) names: pi-subagents finds each in .pi/skills/<name>/."""
+    return read_frontmatter_list(meta, "skills") + read_frontmatter_list(meta, "skill")
 
 
 def load_agents(plan, cli_agents, cli_external, warn):
@@ -559,7 +577,7 @@ def validate(raw, cli_agents=None, cli_external=None, agent_root=None, run_state
     except ValidationError as exc:
         return shape_errors(exc, raw), [], {}
     c = Checker(plan, raw, cli_agents, cli_external, agent_root, run_state)
-    for rules in (c.limits, c.inputs, c.stage_index, c.graph, c.stages, c.outputs, c.outside_readers, c.side_effect_reach, c.run_and_waves,
+    for rules in (c.limits, c.inputs, c.stage_index, c.graph, c.stages, c.outputs, c.outside_readers, c.side_effect_reach, c.capabilities, c.run_and_waves,
                   c.unknowns, c.assumptions, c.critique, c.questions, c.params, c.agent_folder):
         rules()
     return c.errors, c.warnings, c.summary()
@@ -934,6 +952,37 @@ class Checker:
                 self.warn(f"{where}: builtin agent '{st.agent}' writes {', '.join(targets)} but has no connector tools "
                           "(builtin agents get no extension or MCP tools), so it can reach it only with a CLI through bash. "
                           "For a connector, use a subagent in .pi/agents/ whose tools list it (mcp:<server>)")
+
+    def capabilities(self):
+        """A subagent's connectors (`mcp:<server>` tools) and skills come with the agent: its .pi/mcp.json and
+        .pi/skills/ (agent_add_connector, agent_add_skill). One only in your own Pi (~/.pi/agent) works here but not
+        where the agent is copied, installed or served; one nowhere fails the stage's launch (a connector) or leaves
+        the child without it (a skill: pi-subagents only warns)."""
+        if not self.agent_root:
+            return
+        root, user = self.agent_root, pi_agent_dir()
+        own, theirs = read_mcp_servers(root / ".pi" / "mcp.json"), read_mcp_servers(user / "mcp.json")
+        missing = self.err if self.plan.status == "ready" else self.warn
+        for name, meta in sorted(project_subagents(root).items()):
+            where = f"agent '{name}'"
+            for server in agent_connectors(meta):
+                if mcp_server_key(server) in own:
+                    continue
+                if mcp_server_key(server) in theirs:
+                    self.warn(f"{where}: connector '{server}' is configured only in your Pi ({user / 'mcp.json'}), so the agent can't "
+                              "reach it where it is copied, installed or served; add it to the agent with agent_add_connector")
+                else:
+                    missing(f"{where}: connector '{server}' is not configured: .pi/mcp.json has no server '{server}'; "
+                            "add it with agent_add_connector (agent_find_capability finds one)")
+            for skill in agent_skills(meta):
+                if (root / ".pi" / "skills" / skill / "SKILL.md").is_file():
+                    continue
+                if (user / "skills" / skill / "SKILL.md").is_file():
+                    self.warn(f"{where}: skill '{skill}' is only in your Pi ({user / 'skills'}), so the agent goes without it "
+                              "where it is copied, installed or served; add it to the agent with agent_add_skill")
+                else:
+                    missing(f"{where}: skill '{skill}' is not in .pi/skills/; add it with agent_add_skill "
+                            "(agent_find_capability finds one)")
 
     def outputs(self):
         for out in self.plan.outputs:

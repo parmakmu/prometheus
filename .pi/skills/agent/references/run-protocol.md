@@ -124,7 +124,8 @@ pass `status` and `result` from the completion notice.
   `agent_compile_wave` with `approve`; otherwise go straight to
   `agent_compile_wave`. Skip `agent_check` and re-reading `run.yaml` between
   waves of one session.
-- `failed` / `blocked` — read `<skill>/references/run-failures.md`.
+- `failed` / `blocked` — read `<skill>/references/run-failures.md` (with
+  `missing`: its "A stage needs what the agent lacks").
 
 Then compile `next_wave` as above, or after a failure or a new session start
 again at **Every start**.

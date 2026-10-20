@@ -61,12 +61,12 @@ def owned_by_prometheus(rel: str) -> bool:
 
 
 def list_own_code(folder: Path) -> list[tuple[str, int]]:
-    """The agent's own files that run or reach a model (gates, programs, subagent profiles), with their line counts;
-    a frozen release's from its folder (its repository is empty)."""
+    """The agent's own files that run or reach a model (gates, programs, subagent profiles, its connectors in
+    .pi/mcp.json and skills), with their line counts; a frozen release's from its folder (its repository is empty)."""
     files = git(folder, "ls-files").stdout.splitlines() or \
         sorted(str(f.relative_to(folder)) for f in folder.rglob("*") if f.is_file() and ".git" not in f.relative_to(folder).parts)
-    own = [f for f in files if f.startswith(("gates/", "scripts/", ".pi/agents/", ".pi/extensions/")) and not owned_by_prometheus(f)
-           and not f.endswith(".gitkeep")]
+    own = [f for f in files if (f.startswith(("gates/", "scripts/", ".pi/agents/", ".pi/extensions/", ".pi/skills/")) or f == ".pi/mcp.json")
+           and not owned_by_prometheus(f) and not f.endswith(".gitkeep")]
     return [(f, len((folder / f).read_text(encoding="utf-8", errors="replace").splitlines())) for f in own]
 
 

@@ -207,6 +207,19 @@ builtin agent '<name>' writes <target> but has no connector tools
 
 **Fix.** To use a connector, give the stage a subagent in `.pi/agents/` whose `tools` list it. See [How to make a stage use a connector](how-to.md#how-to-make-a-stage-use-a-connector).
 
+### A connector or skill is not the agent's
+
+```text
+agent '<name>': connector '<server>' is not configured: .pi/mcp.json has no server '<server>'
+agent '<name>': skill '<skill>' is not in .pi/skills/
+agent '<name>': connector '<server>' is configured only in your Pi (<file>) …
+agent '<name>': skill '<skill>' is only in your Pi (<folder>) …
+```
+
+**Cause.** A subagent lists a connector (`mcp:<server>` in its `tools`) or a skill (`skills:`) that the agent doesn't carry. With neither, the stage's launch fails (a connector) or its child goes on without the skill, so the first two messages are errors once the plan is ready. The last two are warnings: the connector or skill is in your own Pi (`~/.pi/agent`), so it works on your machine but not where the agent is copied, installed or served.
+
+**Fix.** Ask the agent to add it (`/agent-revise`): it uses `agent_add_connector` or `agent_add_skill`, which ask you first. See [How to make a stage use a connector](how-to.md#how-to-make-a-stage-use-a-connector) and [How to give a stage a skill](how-to.md#how-to-give-a-stage-a-skill).
+
 ## During a run
 
 ### A wave is running
@@ -362,6 +375,7 @@ resolving cannot change [<fields>] … locked
 
 ```text
 main is checked out and no run is active: gates, scripts, agents and packages change only on a run or change branch
+main is checked out and no run is active: <packages | connectors | skills> change only on a run or change branch
 ```
 
 **Cause.** After the first run, `main` changes only by a reviewed merge. That holds in a fresh clone too, which has no `runs/`: `main`'s history shows the run. The message usually means the checked-out branch was switched, from a terminal or an editor, while a change was in progress.
@@ -804,7 +818,7 @@ With `SANDBOX=podman`, a stage fails with "Tunnel connection failed: 403 Forbidd
 
 ### An agent can't change its own code in the web app
 
-A change to a file under the agent's `.pi/` (its extension, skill copy, settings or subagent profiles), or to `.git/config`, fails with "Read-only file system". `/agent-improve` can hit this when it proposes a change to a subagent profile.
+A change to a file under the agent's `.pi/` (its extension, skill copy, settings, subagent profiles, connectors or skills), or to `.git/config`, fails with "Read-only file system". `/agent-improve` can hit this when it proposes a change to a subagent profile, and `agent_add_connector` or `agent_add_skill` always do.
 
 **Cause.** In the web app, an agent's sandbox can't change its own code: your terminal's `pi` would run that code with no sandbox.
 
@@ -899,6 +913,30 @@ no active run: start one with agent_start_run (run_steps.py start-run)
 **Cause.** The agent tried to resolve, record a decision, compile or stop outside a run.
 
 **What the agent does.** Before the first run, or on a change branch, it edits `plan.yaml` directly. After a run has finished, it suggests `/agent-revise` instead.
+
+### Connectors and skills blocked
+
+The agent was blocked from writing `.pi/mcp.json` or into `.pi/skills/`, or from running `pi mcp add` or `pi install`.
+
+**Cause.** A connector's command runs and a skill's text instructs every child that loads it, so they are added only through `agent_add_connector` and `agent_add_skill`, which show you what will be added and ask.
+
+**What the agent does.** It calls the tool, which asks you. A stage's child can't ask anyone, so it finishes without it or fails naming what it needs, and the agent asks you afterwards.
+
+### A connector or skill is refused
+
+```text
+npx fetches '<package>' at whatever version is newest at each launch: pin one (pkg@1.2.0)
+<field>: write credentials as ${NAME}, set in the environment Pi starts in; .pi/mcp.json is in the agent's git repository
+a value starting with ! runs a command each time Pi starts …
+'<source>' is neither an https URL of a git repository … nor npm:<package>@<version>
+<file> is a link: a skill is copied as files …
+the agent already has a skill named '<name>', from <source> …
+<source> is now <pin>, not <pin>, what the user approved: preview it again
+```
+
+**Cause.** What the agent proposed could change after you approved it, or would put a credential in git. A package `npx`, `bunx` or `uvx` fetches must name one version; credentials are written as `${NAME}`, read from the environment Pi starts in; a skill comes from an https git repository at one commit, or from one version of an npm package checked against its published checksum, as plain files. A skill of the same name from another source is never overwritten, and a source that changed between the preview and your yes is not installed.
+
+**What the agent does.** It fixes the entry (pins the version, writes `${NAME}`) or picks another skill, and asks you again. To replace a skill of the same name from another source, ask it to remove the old one on a change branch first.
 
 ### Package not in pyproject.toml
 

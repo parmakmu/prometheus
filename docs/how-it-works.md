@@ -267,6 +267,8 @@ Because each launch records which revision of the plan it used, you can always s
 
 Sooner or later a wave will fail. A gate might reject an output, a reviewer might find a serious problem, or the wave might not start at all. When that happens, the agent tells you plainly what went wrong and asks what you'd like to do: try the wave again, change the plan, or stop the run.
 
+One failure is worth knowing about: a child finds it needs something the agent doesn't have, such as a Python package to read a file format, a connector to reach an app, or a skill. A child can't ask you, so it stops and says what it needs. The agent then searches for it, shows you what it found, and adds it only if you say yes; then it tries the wave again.
+
 > [!TIP]
 > Trying again doesn't mean starting over. Any child that already finished, and whose inputs haven't changed, is skipped.
 
@@ -310,7 +312,7 @@ The model cost is the subagents'. The agent's own model, which asks the question
 
 You'll notice run 3 actually cost more than run 2. That's the investment. Writing a program that can be reused (214 and 129 lines here, taking arguments rather than fixed paths) is more work than doing the job once. But you only pay for it once. After that, each program takes a tenth of a second where a model used to take fifteen or twenty, and the only stage still using a model is `discover` (with the reviewer that checks its report).
 
-Even `discover` runs only when the emails change. A child may read only what its stage lists, so its output depends only on what it is told and what it reads. When those match a run that already finished the stage, the agent copies that run's outputs instead of launching it again. "Match" covers more than the instructions and the inputs' contents: the stage's subagent, program and gates, the agent's settings and pi-subagents' version count too. Reuse applies to judgment and deterministic stages whose outputs stay inside the run, unless the plan says `reuse: false`. It never applies to side effects, decisions, or a stage whose subagent has connector tools, since what those read isn't in any file. The compile's result tells you which stages were reused.
+Even `discover` runs only when the emails change. A child may read only what its stage lists, so its output depends only on what it is told and what it reads. When those match a run that already finished the stage, the agent copies that run's outputs instead of launching it again. "Match" covers more than the instructions and the inputs' contents: the stage's subagent and the skills it loads, program and gates, the agent's settings and pi-subagents' version count too. Reuse applies to judgment and deterministic stages whose outputs stay inside the run, unless the plan says `reuse: false`. It never applies to side effects, decisions, or a stage whose subagent has connector tools, since what those read isn't in any file. The compile's result tells you which stages were reused.
 
 > [!TIP]
 > Once your emails always arrive in the same format, new emails needn't run `discover` either: see [How to drop a discovery stage](how-to.md#how-to-drop-a-discovery-stage-once-the-input-is-stable).
@@ -339,6 +341,8 @@ The steps are in [How to run an agent from code](how-to.md#how-to-run-an-agent-f
 | **run** | one execution of the plan, in its own folder `runs/<id>/` |
 | **wave** | the stages launched together before the agent next needs you |
 | **subagent** | a profile a stage runs as: one of pi-subagents' builtins (`scout`, `worker`, `reviewer`, …), or one in the agent's `.pi/agents/` (every agent has `batcher`, `reader` and `plan-critic` there) |
+| **connector** | an MCP server the agent carries in its `.pi/mcp.json`, through which a stage reaches an app; added only with your yes |
+| **skill** | know-how a stage's child reads when its task matches: a folder in the agent's `.pi/skills/`, added only with your yes |
 | **child** | one subagent doing a stage, or part of one |
 | **side effect** | a stage that changes something outside the run |
 | **resolve** | filling in later stages during a run, from what discovery found |

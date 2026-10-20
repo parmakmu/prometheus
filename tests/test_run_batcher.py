@@ -1,5 +1,6 @@
 """run_batcher.py: split a folder into batches, merge JSON batch outputs."""
 import json
+import sys
 
 from conftest import SKILL
 
@@ -87,6 +88,30 @@ def test_run_reports_a_failing_program_on_stderr(run_py, tmp_path):
 def test_run_reports_a_failing_gate(run_py, tmp_path):
     r = run_op(run_py, tmp_path, "true", gate="echo 'row count 7, expected 8' >&2; exit 1")
     assert r.returncode == 1 and "gate failed" in r.stderr and "expected 8" in r.stderr
+
+
+def test_a_program_lacking_a_package_reports_it_for_the_parent(run_py, tmp_path):
+    # no model can add a package: the batcher writes the stage's report and marks the failure (no fix child)
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "convert.py").write_text("import markitdown_not_installed_xyz.cli\n", encoding="utf-8")
+    (tmp_path / "scripts" / "local_bug.py").write_text("import helpers.missing_sub\n", encoding="utf-8")  # its own module
+    (tmp_path / "scripts" / "helpers").mkdir()
+    (tmp_path / "scripts" / "stdlib.py").write_text("import tomllib.nope\n", encoding="utf-8")
+    report = tmp_path / "work" / ".missing" / "convert.json"
+
+    def run(program):
+        req = {"op": "run", "command": f"{sys.executable} scripts/{program}.py", "missing": str(report)}
+        return run_py([SKILL / "scripts" / "run_batcher.py", json.dumps(req)], cwd=tmp_path)
+
+    r = run("convert")
+    assert r.returncode == 1 and "MISSING_REPORTED" in r.stderr and "'markitdown_not_installed_xyz'" in r.stderr, r
+    assert json.loads(report.read_text())["kind"] == "package"
+    assert json.loads(report.read_text())["need"] == "markitdown_not_installed_xyz"
+    report.unlink()
+    for program in ("local_bug", "stdlib"):  # a bug for the fix child, not a package to add
+        r = run(program)
+        assert r.returncode == 1 and "MISSING_REPORTED" not in r.stderr and "No module named" in r.stderr, (program, r)
+        assert not report.exists(), program
 
 
 def test_run_fails_a_program_that_hangs(run_py, tmp_path):

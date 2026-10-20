@@ -59,7 +59,7 @@ All three are run by the batcher, the part of a wave that executes commands with
 
 That's deliberate. Every child of a run shares one sandbox and one environment, and a child reading an email can be told by that email to send what it finds somewhere. So a stage that needs a token to call a service does it with a program, or through a connector (a tool, such as an MCP server, that holds its own credentials).
 
-A secret that only a connector reads, such as the connector's own token, goes in the environment you start Pi from, or in the connector's configuration, because `.env` isn't loaded into Pi's environment. Declaring it in the plan is still worth it: the run then checks that it's set before launching.
+A secret that only a connector reads, such as the connector's own token, goes in the environment you start Pi from, because `.env` isn't loaded into Pi's environment. The connector's entry in the agent's `.pi/mcp.json` names it as `${NAME}`: the file is in git, so `agent_add_connector` refuses a value written out. Declaring it in the plan is still worth it: the run then checks that it's set before launching.
 
 ## Where values come from
 

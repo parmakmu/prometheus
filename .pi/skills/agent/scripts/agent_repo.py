@@ -68,7 +68,9 @@ def ensure_repo(agent_dir):
         git(agent_dir, "init", "-q", "-b", MAIN)
 
 
-BUILT_FROM = ("plan.yaml", "scripts", "gates", ".pi/agents", "pyproject.toml", "uv.lock")  # what decides how it runs
+# what decides how it runs: with its connectors and skills (agent_capabilities.py), not the skill copy (a refresh's)
+BUILT_FROM = ("plan.yaml", "scripts", "gates", ".pi/agents", "pyproject.toml", "uv.lock", ".pi/mcp.json", ".pi/skills")
+SKILL_COPY = ".pi/skills/agent/"
 
 
 def built_from(agent_dir, ref="HEAD"):
@@ -77,6 +79,7 @@ def built_from(agent_dir, ref="HEAD"):
     if not head(agent_dir):
         return None
     tree = git(agent_dir, "ls-tree", "-r", ref, "--", *BUILT_FROM).stdout
+    tree = "".join(line for line in tree.splitlines(keepends=True) if f"\t{SKILL_COPY}" not in line)
     return hashlib.sha256(tree.encode()).hexdigest()[:16]
 
 
@@ -210,6 +213,19 @@ def has_run(agent_dir):
     if not available() or not is_repo(agent_dir):
         return False
     return bool(git(agent_dir, "log", MAIN, "-1", "-E", f"--grep={RUN_MARK}", "--format=%h", check=False).stdout.strip())
+
+
+def find_change_blocker(agent_dir, what):
+    """Why `what` (packages, connectors, skills) can't change now, or None. Like gates and programs, they change only
+    where a change can be reviewed: during a run between its waves, or on a change branch; not on main once a run
+    exists."""
+    if run := active_run(agent_dir):
+        return f"a wave of run {run.id} is running: add the {what} between waves" if run.wave_running else None
+    if not has_run(agent_dir) or branch(agent_dir) not in (None, MAIN):
+        return None
+    waiting = unmerged_branches(agent_dir)
+    return (f"main is checked out and no run is active: {what} change only on a run or change branch, reviewed before they reach main."
+            + (f" {', '.join(waiting)} waiting for review." if waiting else " Ask the user to start a change with /agent-revise."))
 
 
 def is_change_branch(name):

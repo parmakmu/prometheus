@@ -40,6 +40,11 @@ structured result your task asks for.
 - **Tools**: the fewest. Judgment and review: `read, grep, find, ls`. Script
   writers: add `bash, write`. Side effects: the one tool for the action plus
   read tools.
+- **Connectors and skills**: the agent's own only. A connector's tools as
+  `mcp:<server>/<tool>` (a server in `.pi/mcp.json`: `agent_add_connector`,
+  whose result lists its `tools`; never guess one);
+  know-how as `skills: <name>` (a folder in `.pi/skills/`: `agent_add_skill`).
+  With `inheritSkills: false` the child sees only the skills listed.
 - **Context**: `fresh`; `fork` only if the stage needs the parent's history.
 - **Body**: stable rules only, ending with what it must not do.
 - **`runner`**: only for external CLIs, which lose structured output, fork,

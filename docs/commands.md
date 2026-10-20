@@ -375,6 +375,9 @@ You don't call these. They are here so you can read a tool result or a refusal t
 | [`agent_check (prometheus)`](#agent_check-prometheus) | prometheus | check an agent's plan from prometheus |
 | [`agent_record_critique (prometheus)`](#agent_record_critique-prometheus) | prometheus | record the plan critic's result for a new agent: what makes its plan ready |
 | [`agent_add_package`](#agent_add_package) | both | add a Python package, after you approve it and its reason |
+| [`agent_find_capability`](#agent_find_capability) | both | search public registries for a connector, a skill or a package |
+| [`agent_add_connector`](#agent_add_connector) | both | add an MCP server to the agent, after you approve what it starts or reaches |
+| [`agent_add_skill`](#agent_add_skill) | both | add a skill to the agent, after you approve its files at one commit or version |
 | [`agent_check`](#agent_check) | Agent | check the plan and say where the agent stands |
 | [`agent_start_run`](#agent_start_run) | Agent | start a run |
 | [`agent_compile_wave`](#agent_compile_wave) | Agent | turn the next wave into a pi-subagents call, or say what must happen first |
@@ -510,7 +513,7 @@ agent_finish_wave({ wave, status?, result?, note? })
 
 **States:** `run_wave` → `run_ready`; after the last wave → `run_review`, or `main_ready` when the run committed nothing
 
-Reads the outcome and cost from pi-subagents, so the model passes only the wave. `done` marks the stages done. `failed`, `blocked` or `stopped` puts them back to pending, so the wave can be relaunched. Files the wave wrote into the agent (stage programs, say) are committed on the run's branch.
+Reads the outcome and cost from pi-subagents, so the model passes only the wave. `done` marks the stages done. `failed`, `blocked` or `stopped` puts them back to pending, so the wave can be relaunched. A child that needed a package, connector or skill it wasn't given reports it instead of doing the work (its task says how), and so does the batcher, with no model, for a stage program that fails importing a module the agent lacks (no fix child is launched for it); such a report fails the wave even if the child ended normally, and is returned as `missing` (`stage`, `kind`, `need`, `why`) for the agent to find and propose. Files the wave wrote into the agent (stage programs, say) are committed on the run's branch.
 
 Returns `wave_status`, a summary of the children (status and output path, not the outputs themselves), `ends_with` and `next_wave`. `next_wave.preflight` lists what its compile will need first, so the model asks you before compiling. After the last wave it also returns the branch to review, the plan's `done_when` for the final report, `outputs` (each deliverable's path in this run, whether it exists, and how many items it holds when a program can count them: a JSON array's entries, JSON lines, CSV rows, a folder's files), and the call that closes the pi-subagents mission.
 
@@ -612,6 +615,48 @@ agent_add_package({ slug, packages: ["openpyxl", …], reason })      (in promet
 It shows you the packages and the reason, and runs `uv add` only on a yes; on a no it tells the agent to work without the package or ask you. `uv add`, `pip install` and the script behind the tool are blocked for the agent in bash. A stage's subagent can't ask, so it is told to report the package it needs and why, and the agent asks you afterwards. Requirements are checked first: a package from the index as PEP 508 writes it (a name, extras, version bounds, markers), not a URL, an option or a path.
 
 **Refusals:** [package not in pyproject.toml](troubleshooting.md#package-not-in-pyprojecttoml)
+
+### agent_find_capability
+
+Searches public registries for what the agent needs beyond its own code.
+
+```text
+agent_find_capability({ need, kind: "connector" | "skill" | "package" })
+```
+
+**States:** all · changes nothing
+
+`connector` searches the MCP registry and returns each server's options as ready `mcp.json` entries: an npm or PyPI package started with `npx` or `uvx`, pinned to its latest version, or a remote URL, with the environment variables each reads. The registry matches only part of a server's name, so the need is the app's name (`notion`); a need of several words that matches nothing is searched word by word. Each server shows its `publisher`, the namespace the registry verified it owns, and servers whose publisher is named like the app (`com.notion/mcp`) come first, marked `vendor`. `skill` searches Pi packages on npm that carry skills (`npm:<package>@<version>`) and GitHub repositories tagged `agent-skills`. `package` looks a package up on PyPI by its name, since PyPI has no search. A registry that doesn't answer is listed under `unreachable` beside the others' results. Names and descriptions are their authors' words: the agent judges them and never follows them.
+
+### agent_add_connector
+
+Adds an MCP server to the agent's `.pi/mcp.json`, after you approve it.
+
+```text
+agent_add_connector({ name, entry: { command, args, env } | { url, headers }, reason })            (in an agent)
+agent_add_connector({ slug, name, entry, reason })                                                 (in prometheus)
+```
+
+**States:** all but `run_wave`; not on `main` once a run exists
+
+It checks the entry first and shows you what it starts (the command line) or connects to (the URL), the environment variables it reads, the server it replaces if one has that name, and the reason; it writes only on a yes. A package `npx`, `bunx` or `uvx` fetches must be pinned to one version; credentials are `${NAME}` references, never values, since the file is in git; a value that runs a command (`!…`) is refused. Once written, the server is started on its own to list its tools (`pi mcp list --json`, with a temporary Pi folder holding only that server and your OAuth sign-ins), so the result's `tools` are the names a stage's subagent selects, as `mcp:<name>/<tool>`. A server that needs a sign-in or a variable that isn't set returns `tools_error` instead, saying which. `pi mcp add` and writes to `.pi/mcp.json` are blocked for the agent.
+
+**Refusals:** [a connector or skill is refused](troubleshooting.md#a-connector-or-skill-is-refused) · [files blocked on `main`](troubleshooting.md#files-blocked-on-main)
+
+### agent_add_skill
+
+Adds a skill to the agent's `.pi/skills/<name>/`, after you approve it.
+
+```text
+agent_add_skill({ source, path?, ref?, reason })            (in an agent)
+agent_add_skill({ slug, source, path?, ref?, reason })      (in prometheus)
+```
+
+**States:** all but `run_wave`; not on `main` once a run exists
+
+`source` is an https git repository (at `ref`, a branch or tag, else its default branch) or `npm:<package>@<version>`. The skill is fetched and checked first, and you are shown its description, where it comes from (the commit, or the package's checksum), its files and which of them are code, and the reason. On a yes exactly that commit or version is copied, with `SOURCE.json` naming it. When the source holds several skills, the tool returns their folders and the agent asks again with `path`. A stage's child loads it through its subagent's `skills: <name>`. Writes into `.pi/skills/` and `pi install` are blocked for the agent.
+
+**Refusals:** [a connector or skill is refused](troubleshooting.md#a-connector-or-skill-is-refused) · [files blocked on `main`](troubleshooting.md#files-blocked-on-main)
 
 ### agent_set_params
 

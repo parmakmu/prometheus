@@ -74,7 +74,13 @@ import agent_repo
 import agent_state
 import pi_records
 import typer
-from plan_validate import agent_tools, check_ready, project_subagents, validate
+from plan_validate import (
+    agent_skills,
+    agent_tools,
+    check_ready,
+    project_subagents,
+    validate,
+)
 from ruamel.yaml.error import YAMLError
 from run_folders import (
     RUNS,
@@ -98,6 +104,10 @@ from utils import (
 )
 
 HERE = Path(__file__).resolve().parent
+# a child that needs a package, connector or skill it wasn't given reports it here (work/.missing/<stage>.json) and stops
+MISSING_DIR = ".missing"
+MISSING_KINDS = ("package", "connector", "skill")
+MISSING_EXAMPLE = '{"kind": "package" | "connector" | "skill", "need": "<its name, or what it must do>", "why": "<what for>"}'
 PARAM_RE = re.compile(r"\$\{([^}]*)\}")
 GATES_RE = re.compile(r"(?<![\w./-])\.\./gates/")
 BATCHER = "batcher"
@@ -209,6 +219,10 @@ class Compiler:
         path = Path(self.resolve_text(raw)).expanduser()
         return str(path if path.is_absolute() else self.work / path)
 
+    def missing_path(self, key):
+        """Where a child reports what it needs and wasn't given (MISSING_DIR): after_launch reads it."""
+        return str(self.work / MISSING_DIR / f"{key}.json")
+
     def decision_path(self, key):
         st = self.stages[key]
         for o in st.get("writes") or []:
@@ -306,9 +320,8 @@ class Compiler:
             lit(f"\nWrite this stage's program at {script}, then run it{run_as} to write the outputs; do not process "
                 "items by hand. Later runs reuse it" + (", running it with exactly these arguments without a model"
                 if command else "") + ": take every input and output location as a command-line argument "
-                f"(nothing of this run hard-coded), use the packages {self.agent_dir / 'pyproject.toml'} lists (if it "
-                "needs one the file lacks, do not add it yourself: the user must approve a new package, and you cannot ask. "
-                "Say which package and why in your answer, or fail the stage; never a `# /// script` block), "
+                f"(nothing of this run hard-coded), use the packages {self.agent_dir / 'pyproject.toml'} lists (one "
+                "the file lacks is reported as the rules below say; never a `# /// script` block), "
                 "and say how to run it in its docstring.\n")
         elif kind == "deterministic":
             lit("\nThis is mechanical work: write a program that does it, run it, and keep the program "
@@ -321,7 +334,9 @@ class Compiler:
         lit("\nRules: use only the listed inputs; write only the listed outputs" + (" and the program" if script else "")
             + "; do not contact other agents "
             "or spawn subagents. If you cannot continue without a decision, use contact_supervisor with reason "
-            "need_decision instead of guessing.")
+            "need_decision instead of guessing. If the work needs what you were not given (a Python package, a "
+            "connector to reach an app, a skill), do not install, fetch or improvise it: only the user can approve "
+            f"one, and you cannot ask. Write {MISSING_EXAMPLE} to {self.missing_path(key)} and stop without the outputs.")
         return parts[0]["text"] if len(parts) == 1 else parts
 
     # --- items -----------------------------------------------------------------
@@ -401,7 +416,7 @@ class Compiler:
         gate (no model). `fix` is the child the runner launches only if that fails: it is shown the
         failure, repairs the program and runs it again, checked by the usual acceptance gate."""
         command = self.program_command(st)
-        req = {"op": "run", "command": command, **self.batcher_gate(st)}
+        req = {"op": "run", "command": command, "missing": self.missing_path(key), **self.batcher_gate(st)}
         if self.timeout:
             req["timeout"] = self.timeout
         req.update(self.secrets_for(req))
@@ -553,7 +568,7 @@ class Compiler:
     # --- wave ------------------------------------------------------------------------
     def fingerprint(self, key, item, review, in_wave, skip=None):
         """What a model stage's output depends on, hashed: its child and review items (this run's
-        folder masked), the contents of what it reads, its subagent's file, program and gates.
+        folder masked), the contents of what it reads, its subagent's file and skills, program and gates.
         None when that can't be known: it reads an app or url, a returned result, or the output of
         a stage in this wave that has no fingerprint (a program). A map stage's item is its map step: its
         batch size, instructions, subagent and model; what it maps over is among its reads. `skip`: a read
@@ -601,6 +616,8 @@ class Compiler:
         for f in files:
             if f.is_file():
                 digest_tree(f, h)
+        for skill in agent_skills(project_subagents(self.agent_dir).get(st.get("agent")) or {}):  # read as instructions
+            digest_tree(self.agent_dir / ".pi" / "skills" / skill, h)
         return h.hexdigest()
 
     def can_reuse(self, key):
@@ -1046,6 +1063,8 @@ def after_launch(agent_dir, plan, run, entry, status, returned):
           "children": {k: {"status": (v or {}).get("status"), "output": (v or {}).get("outputReference")}
                        for k, v in ((returned or {}).get("children") or {}).items()} if isinstance(returned, dict) else None,
           "error": entry.get("error"), "failure_kind": entry.get("failure_kind"), "cost_usd": entry.get("cost_usd"),
+          # what children needed and weren't given: run-failures.md, "A stage needs what the agent lacks"
+          **({"missing": entry["missing"]} if entry.get("missing") else {}),
           "stopped_at": entry.get("stopped_at"), "git_note": git_note,
           # what to compile next, so the parent goes straight to agent_compile_wave (no check in between)
           "next_wave": nxt,

@@ -592,6 +592,14 @@ def test_a_failing_program_gets_a_fix_child(env, run_node):
     assert r.data["result"]["children"]["extract"]["status"] == "failed"
 
 
+def test_a_program_lacking_a_package_gets_no_fix_child(env, run_node):
+    # only the user can add a package: the batcher reported it for the parent, and a model repairing it can't help
+    r = run_node([HERE / "mock-subagents.mjs", env.b / "runs" / env.rid2 / ".compiled" / "w1.json", "--missing", "extract"])
+    assert r.data and r.data["result"]["status"] == "failed", r
+    assert "extract-fix" not in {e["key"] for e in r.data["log"]}
+    assert r.data["result"]["children"]["extract"]["status"] == "failed"
+
+
 def test_check_reports_the_last_run(env):
     r = env.run(["plan_validate.py", "plan.yaml"])
     assert r.data, r
@@ -777,7 +785,8 @@ def test_prometheus_extension_registers_commands_and_tools(env, ext):
         {"cmd": "agent-list", "complete": "inv"},
     ])
     env.prometheus_ext_report = report
-    assert (len(report["commands"]), len(report["tools"])) == (4, 4)  # agent_scaffold, agent_check, agent_record_critique, agent_add_package
+    # agent_scaffold, agent_check, agent_record_critique, agent_add_package, agent_find_capability, agent_add_connector, agent_add_skill
+    assert (len(report["commands"]), len(report["tools"])) == (4, 7)
 
 
 @skip_extensions
@@ -869,6 +878,33 @@ def test_packages_are_added_only_through_the_approval_tool(env, ext):
 
 
 @skip_extensions
+def test_connectors_and_skills_are_added_only_through_the_approval_tools(env, ext):
+    # an MCP server's command runs and a skill instructs children: no pi mcp add / pi install, no writes into
+    # .pi/mcp.json or .pi/skills/, and the tools refuse without a user to ask
+    commands = ("pi mcp add notion -- npx -y x@1.0.0", "pi install npm:pi-pdf", "pi mcp remove notion",
+                "python .pi/skills/agent/scripts/agent_capabilities.py connector x --entry {}",
+                "git clone https://github.com/x/y .pi/skills/y", "echo '{}' > .pi/mcp.json", "cat .pi/mcp.json", "ls .pi/skills",
+                "pi mcp list", "pip install x")
+    blocked = [True] * 6 + [False, False, False, True]
+    for name, cwd, tool_args, base in (("prometheus", env.prometheus, {"slug": "invoice-check"}, "agents/invoice-check/"), ("agent", env.b, {}, "")):
+        steps = [{"toolCall": {"toolName": "bash", "input": {"command": c}}} for c in commands]
+        steps += [{"toolCall": {"toolName": "write", "input": {"path": f"{base}.pi/mcp.json"}}},
+                  {"toolCall": {"toolName": "edit", "input": {"path": f"{base}.pi/skills/pdf/SKILL.md"}}},
+                  {"toolCall": {"toolName": "read", "input": {"path": f"{base}.pi/mcp.json"}}}]
+        steps += [{"tool": "agent_add_connector", "params": {"name": "notion", "entry": {"url": "https://a.test"}, "reason": "r", **tool_args}},
+                  {"tool": "agent_add_skill", "params": {"source": "https://github.com/x/y", "reason": "r", **tool_args}},
+                  {"tool": "agent_find_capability", "params": {"need": "convert pdf files", "kind": "package"}}]
+        report = drive(ext, ext.tmp / ".ext" / f"{name}.ts", cwd, steps)
+        guards = report["steps"][:len(commands) + 3]
+        assert [s["blocked"] for s in guards] == [*blocked, True, True, False], name
+        assert "agent_add_connector" in guards[0]["reason"] and "agent_add_skill" in guards[0]["reason"], name
+        connector, skill, find = report["steps"][len(commands) + 3:]
+        assert "approval" in connector["error"] and "approval" in skill["error"], name  # no one to ask: nothing added
+        assert find["result"]["ok"] is False and "by its name" in find["result"]["error"], name
+        assert not (cwd / base / ".pi" / "mcp.json").exists(), name
+
+
+@skip_extensions
 def test_agent_extension_registers_commands_and_tools(env, ext):
     steps = [
         {"cmd": "agent-status", "args": ""},
@@ -894,7 +930,7 @@ def test_agent_extension_registers_commands_and_tools(env, ext):
     ]
     report = drive(ext, ext.tmp / ".ext" / "agent.ts", env.b, steps)
     env.agent_ext_report = report
-    assert (len(report["commands"]), len(report["tools"])) == (8, 13)
+    assert (len(report["commands"]), len(report["tools"])) == (8, 16)
 
 
 @skip_extensions

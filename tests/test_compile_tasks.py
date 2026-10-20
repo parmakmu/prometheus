@@ -53,7 +53,7 @@ def test_a_program_runs_with_uv_in_the_agents_environment(tmp_path):
     c = cw.Compiler(tmp_path, plan, {}, tmp_path / "runs" / "r1", {}, set())
     assert c.program_command(c.stages["export"]).startswith(f"uv run {tmp_path / 'scripts' / 'export.py'} ")
     task = c.task("export", c.stages["export"], set())
-    assert "do not add it yourself" in task and "uv add" not in task
+    assert "do not install, fetch or improvise it" in task and ".missing/export.json" in task and "uv add" not in task
 
 
 def test_check_skips_a_resume_of_an_earlier_waves_stage(tmp_path):

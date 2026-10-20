@@ -106,6 +106,28 @@ def test_finish_returns_the_mission_close_call(finished):
     assert (finished["mission_close"]["missionId"], finished["mission_close"]["missionStatus"]) == ("m-1", "completed")
 
 
+def test_a_child_that_lacks_a_capability_fails_its_wave_and_says_what_it_needs(tmp_path, run_py):
+    # a child can't ask for a package, connector or skill: its task says to report it in work/.missing/ and stop;
+    # finish-wave fails the launch even when the child ended normally, and hands the report to the parent
+    wf, k = ready_agent(tmp_path, run_py, "lacks")
+    pis = tmp_path / "pi-subagents"
+    env = {**os.environ, "PI_SUBAGENTS_TEMP_ROOT": str(pis)}
+    assert run_py([k / "run_steps.py", "start-run"], cwd=wf).data["ok"]
+    compiled = run_py([k / "run_compile.py"], cwd=wf, env=env).data
+    run_dir = wf / "runs" / compiled["run"]
+    report = run_dir / "work" / ".missing" / "count.json"
+    assert str(report) in Path(compiled["call"]["workflow"]).read_text(encoding="utf-8")  # the task says where
+    assert run_py([k / "run_steps.py", "start-wave", "--wave", "w1", "--subagent-run-id", "wf-m"], cwd=wf).data["ok"]
+    report.parent.mkdir(parents=True)
+    report.write_text(json.dumps({"kind": "package", "need": "markitdown", "why": "read the .docx files"}), encoding="utf-8")
+    returned = {"status": "done", "children": {"count": {"runId": "c-1", "status": "completed"}}}
+    r = run_py([k / "run_steps.py", "finish-wave", "--wave", "w1", "--result", json.dumps(returned)], cwd=wf, env=env).data
+    assert r["wave_status"] == "pending" and r["run_status"] == "active", r
+    assert r["missing"] == [{"stage": "count", "kind": "package", "need": "markitdown", "why": "read the .docx files"}]
+    assert "stage count needs a package it lacks: markitdown" in r["error"]
+    assert not report.exists() and read_run_state(run_dir)["launches"][-1]["missing"] == r["missing"]  # a relaunch starts clean
+
+
 def test_a_leftover_run_branch_is_not_reused(tmp_path, run_py):
     # runs/ is not in git: deleting a kept run's folder frees its id, but its branch run/<id> stays
     wf, k = ready_agent(tmp_path, run_py, "left")

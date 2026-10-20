@@ -8,7 +8,8 @@
 // An item is a pi-subagents child. Its `task` is text, or parts [{text} | {result: key} |
 // {failure: key}] that splice in the result, or the error, of a child launched earlier in this
 // wave; `resumeFrom: key` resumes that child. A layer item with `fix` runs a stage's program as
-// a command (no model); only if that fails is `fix`, a model child, launched to repair it. A
+// a command (no model); only if that fails is `fix`, a model child, launched to repair it (not when it
+// failed for a package the agent lacks, which the batcher reported for the parent instead). A
 // layer item with `reuse` completed in the wave's last launch and is unchanged: its earlier
 // result stands in and it is not launched again (run_compile.py, reuse_finished); a map's
 // `reuse` does the same for its batches ({<key>-<n>: result}) and its reduce.
@@ -90,8 +91,10 @@ try {
       if (items.slice(0, i + W.max_parallel).some((it) => failed(R[it.key]) && !fixable.has(it.key))) break;
     }
     let bad = items.map((it) => it.key).filter((k) => R[k] !== undefined && failed(R[k]));
-    // a stage program that failed as a command: its fix child repairs it and runs it again
-    const fixes = (step.layer || []).filter((it) => it.fix && bad.includes(it.key)).map((it) => child(it.fix));
+    // a stage program that failed as a command: its fix child repairs it and runs it again; not one that lacks a
+    // package (run_batcher.py's MISSING_MARK): only the user can add it, and the stage reported it for the parent
+    const lacks = (k) => String(R[k].error || R[k].output || "").includes("MISSING_REPORTED");
+    const fixes = (step.layer || []).filter((it) => it.fix && bad.includes(it.key) && !lacks(it.key)).map((it) => child(it.fix));
     if (fixes.length) {
       const fixed = await runs.all(fixes);
       fixed.forEach((r, j) => { R[fixes[j].key] = r; });

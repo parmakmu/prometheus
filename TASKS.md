@@ -9,6 +9,8 @@ frozen release as code, with no orchestrator. GitLab; users are developers; ever
 ## Open
 
 - [ ] 28. live: emails-to-excel with an approval in the browser
+- [ ] 85. live: a stage reaching an app through a connector the agent carries (`.pi/mcp.json`, `mcp:<server>/<tool>`)
+  and one loading a skill (`skills:`), in a background wave: contributing's `mcp:` and `skills:` notes are unverified
 
 ## Done (details in git history and `docs/design.md`)
 
@@ -45,6 +47,10 @@ frozen release as code, with no orchestrator. GitLab; users are developers; ever
   replaced before texts are clipped; `--bundle` reruns need a data bundle and no longer carry approvals (2026-10-18)
 - [x] 38. per-item reuse in map stages: the merge stores each item's record (after its gate), the split leaves out
   items an earlier run stored, the merge restores them in item order; `pattern: map` only (2026-10-18)
+- [x] 81–84. connectors and skills are proposed, never installed by a run (2026-10-20): `agent_find_capability`
+  (MCP registry, npm pi-packages, GitHub, PyPI by name), `agent_add_connector` (`.pi/mcp.json`, pinned, `${NAME}`
+  credentials) and `agent_add_skill` (`.pi/skills/<name>/`, one git commit or npm version) preview, ask, write on a
+  branch; guards on `pi mcp add`/`pi install`/the files; `built_from`, reuse fingerprints, share review, validator
 - [x] 80. a release needs a finished run of what it releases (`run.yaml` `built_from` = `agent_repo.built_from`:
   plan, programs, gates, subagents, packages; not the skill copy, so a refresh needs no rerun); the tag names the run;
   a skill script's name no longer clashes with an embedding program's own module (2026-10-19)

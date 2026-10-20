@@ -82,6 +82,19 @@ def test_a_stage_whose_subagent_has_a_connector_runs_again(tmp_path):
     assert "reuse" in got["discover"] and "reuse" not in got["summarise"]
 
 
+def test_a_changed_skill_runs_the_stage_that_loads_it_again(tmp_path):
+    # a skill is instructions the child reads: its contents are part of what the stage's output depends on
+    (tmp_path / ".pi" / "agents").mkdir(parents=True)
+    (tmp_path / ".pi" / "agents" / "worker.md").write_text("---\nname: worker\nskills: tone\n---\nWorks.\n")
+    (tmp_path / ".pi" / "skills" / "tone").mkdir(parents=True)
+    (tmp_path / ".pi" / "skills" / "tone" / "SKILL.md").write_text("---\nname: tone\ndescription: d\n---\nBe brief.\n")
+    setup_first_run(tmp_path)
+    assert "reuse" in items(compile_run(tmp_path, "2026-01-01-2")[1]["spec"])["summarise"]
+    (tmp_path / ".pi" / "skills" / "tone" / "SKILL.md").write_text("---\nname: tone\ndescription: d\n---\nBe warm.\n")
+    got = items(compile_run(tmp_path, "2026-01-01-3")[1]["spec"])
+    assert "reuse" in got["discover"] and "reuse" not in got["summarise"]
+
+
 def test_a_changed_input_runs_the_stage_and_those_after_it(tmp_path):
     setup_first_run(tmp_path)
     (tmp_path / "mail" / "b.eml").write_text("Subject: new\n\nmore")

@@ -7,7 +7,8 @@ Only the extensions' `agent_add_package` tool runs this, and only after it showe
 packages and the reason and got a yes; bash running it, or `uv add`, is blocked. A package is a
 requirement as `uv add` takes it (`openpyxl`, `pandas>=2`, `httpx[http2]`), nothing else. Like gates,
 scripts and agents, packages change only where a change can be reviewed: not on `main` once a run
-exists (a run's or a /agent-revise branch). Prints the packages now listed in pyproject.toml.
+exists (a run's or a /agent-revise branch; agent_repo.find_change_blocker). Prints the packages now
+listed in pyproject.toml.
 """
 import shutil
 import subprocess
@@ -19,7 +20,6 @@ import agent_repo
 import agent_state
 import typer
 from packaging.requirements import InvalidRequirement, Requirement
-from run_folders import active_run
 from utils import emit, refuse
 
 
@@ -53,13 +53,8 @@ def main(
         refuse("say why the agent needs the package: the user is asked to approve it with the reason")
     if not shutil.which("uv"):
         refuse("uv is not installed: ask the user to install it (https://docs.astral.sh/uv/)", 2)
-    if run := active_run(root):
-        if run.wave_running:
-            refuse(f"a wave of run {run.id} is running: add the package between waves")
-    elif agent_repo.has_run(root) and agent_repo.branch(root) in (None, agent_repo.MAIN):
-        waiting = agent_repo.unmerged_branches(root)
-        refuse("main is checked out and no run is active: packages change only on a run or change branch, reviewed before they reach main."
-               + (f" {', '.join(waiting)} waiting for review." if waiting else " Ask the user to start a change with /agent-revise."))
+    if blocker := agent_repo.find_change_blocker(root, "packages"):
+        refuse(blocker)
     r = subprocess.run(["uv", "add", "--project", str(root), *packages], capture_output=True, text=True, check=False)
     if r.returncode != 0:
         refuse(f"uv add failed: {(r.stderr or r.stdout).strip()[-1500:]}")

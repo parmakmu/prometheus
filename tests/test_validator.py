@@ -213,6 +213,39 @@ def test_a_side_effect_agent_must_reach_its_target(tmp_path):
     assert not any("cannot reach" in e for e in errors) and not any("connector" in w for w in warnings), (errors, warnings)
 
 
+def test_connectors_and_skills_come_with_the_agent(tmp_path, monkeypatch):
+    # a subagent's mcp:<server> and skills: are the agent's own (.pi/mcp.json, .pi/skills/); only in your Pi, a warning
+    user = tmp_path / "pi-agent"
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(user))
+    root = tmp_path / "agent"
+    (root / ".pi" / "agents").mkdir(parents=True)
+    plan = copy.deepcopy(INV)
+    plan["agents"]["available"].append({"name": "drafter", "source": "project"})
+    st(plan, "drafts")["agent"] = "drafter"
+    (root / ".pi" / "agents" / "drafter.md").write_text("---\nname: drafter\ntools: [read, mcp:gmail/create_draft]\nskills: email-tone\n---\nbody\n",
+                                                       encoding="utf-8")
+
+    def problems():
+        errors, warnings, _summary = plan_validate.validate(copy.deepcopy(plan), agent_root=root)
+        return [e for e in errors if "agent 'drafter'" in e], [w for w in warnings if "agent 'drafter'" in w]
+
+    errors, _ = problems()
+    assert any("connector 'gmail' is not configured" in e and "agent_add_connector" in e for e in errors), errors
+    assert any("skill 'email-tone' is not in .pi/skills/" in e and "agent_add_skill" in e for e in errors), errors
+    plan["status"] = "draft"  # still planning: the same, as warnings
+    assert not problems()[0] and len(problems()[1]) == 2
+    plan["status"] = "ready"
+    (user / "skills" / "email-tone").mkdir(parents=True)
+    (user / "skills" / "email-tone" / "SKILL.md").write_text("---\nname: email-tone\ndescription: d\n---\n", encoding="utf-8")
+    (user / "mcp.json").write_text('{"mcpServers": {"gmail": {"url": "https://x.test/mcp"}}}', encoding="utf-8")
+    errors, warnings = problems()
+    assert not errors and len(warnings) == 2 and all("only in your Pi" in w for w in warnings), (errors, warnings)
+    (root / ".pi" / "skills" / "email-tone").mkdir(parents=True)
+    (root / ".pi" / "skills" / "email-tone" / "SKILL.md").write_text("---\nname: email-tone\ndescription: d\n---\n", encoding="utf-8")
+    (root / ".pi" / "mcp.json").write_text('{"mcpServers": {"gmail": {"url": "https://x.test/mcp"}}}', encoding="utf-8")
+    assert problems() == ([], [])
+
+
 def test_long_strings_are_written_folded_and_read_back_the_same(tmp_path):
     from utils import load_yaml, write_yaml
     text = " ".join(["Found 8 direct .eml messages covering plain text and HTML-only ones"] * 4)

@@ -89,7 +89,8 @@ agent (what Prometheus builds; "workflow" only for pi-subagents' own: workflow s
 (`plan.yaml`) · stage · wave (stages launched as one call; derived) · launch (one attempt at a wave) · child · run
 (`runs/<id>/`; pi-subagents' id is `subagent_run_id`) · gate (`gates/`) · stage program (`scripts/`) · check
 (validating the plan) · subagent (a profile: builtin or `.pi/agents/`; the plan's `agents:`/`agent:` keep their
-names) · resolve (during a run, `run/<id>`) · change (`/agent-revise` or `/agent-improve`, `revise/…`, `improve/…`).
+names) · resolve (during a run, `run/<id>`) · change (`/agent-revise` or `/agent-improve`, `revise/…`, `improve/…`) ·
+connector (an MCP server in the agent's `.pi/mcp.json`) · skill (a folder in its `.pi/skills/`; not the skill copy).
 The skill is `.pi/skills/agent/`; the planner is Prometheus where it must be told apart from its agents.
 
 ## Architecture
@@ -134,6 +135,21 @@ Doing the work
   + small judgment stage.
 - An agent's packages are in its `pyproject.toml` (`agent_add_package`, user-approved; `uv.lock` committed at
   create/refresh); gates and programs run with `uv run`; no PEP 723 headers.
+- Connectors and skills (2026-10-20, `agent_capabilities.py`) are proposed, never installed by a run: planning or a
+  resolve finds them (`agent_find_capability`: MCP registry, npm pi-packages, GitHub, PyPI by name; results are
+  data), `agent_add_connector` (`.pi/mcp.json`; npx/bunx/uvx pinned, `${NAME}` credentials, no `!cmd`) and
+  `agent_add_skill` (`.pi/skills/<name>/` + `SOURCE.json`; https git at one commit or `npm:<pkg>@<v>` checked against
+  its integrity) preview, ask, then write on a run/change branch (`agent_repo.find_change_blocker`, as packages);
+  the guards block `pi mcp add`, `pi install` and writes there. Both count in `built_from`; a stage's skills in its
+  reuse fingerprint; `share.describe` lists both; the validator wants a subagent's `mcp:`/`skills:` in the agent
+  (only in `~/.pi/agent`: a warning). A file conversion is a package + program, not a skill. A child lacking one
+  writes `{kind, need, why}` to `work/.missing/<stage>.json` (its task's rules) and stops; finish-wave fails the
+  launch on it (kept on the launch, returned as `missing`) and the parent finds, proposes, relaunches
+  (`run-failures.md`); a builtin stage needs `/agent-revise` (the plan's agents are locked in a run). The batcher
+  writes that report itself for a program's `ModuleNotFoundError` (not stdlib, not a module beside it) and marks the
+  failure `MISSING_REPORTED`, so `wave_runner.js` launches no fix child. The registry matches server names only: search
+  by the app's name (several words: word by word); `vendor` (publisher = the verified namespace, named like the app)
+  first. After a yes, `pi mcp list --json` with a temp PI_CODING_AGENT_DIR (that server + mcp-auth.json) lists `tools`.
 - A producer is told who reads its output ("Used next by"), and its reviewer the same.
 - Explicit acceptance on writers and gated stages: `{level, preserveStagedIndex: true, review: {required: false}}`.
 - The same judgment on the same inputs is made once (`reuse_earlier`; fingerprint: items, input contents not places,

@@ -261,6 +261,19 @@ def pi_agent_dir():
     return Path(configured).expanduser() if configured else Path.home() / ".pi" / "agent"
 
 
+def mcp_server_key(name):
+    """An MCP server's name as Pi compares them: `-` and `_` alike (its tools are `mcp__<server>__<tool>`)."""
+    return re.sub(r"[^A-Za-z0-9_]", "_", str(name))
+
+
+def read_mcp_servers(path):
+    """{mcp_server_key: name} of the servers an mcp.json configures (Pi's format: {"mcpServers": {name: entry}});
+    {} when it is missing or unreadable."""
+    config = read_json(path)
+    servers = config.get("mcpServers") if isinstance(config, dict) else None
+    return {mcp_server_key(n): n for n in servers} if isinstance(servers, dict) else {}
+
+
 # a process created this long after the one recorded started is another that reused its pid
 PID_REUSE_SLACK_S = 5
 

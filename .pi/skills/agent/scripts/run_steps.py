@@ -14,7 +14,9 @@ start-wave  records a launch of the active run's next wave (the plan must be rea
           Without --mission-id it looks up the mission that lists the launch (one recorded late).
 finish-wave records how the wave's launch ended, read from pi-subagents' status.json unless
           --result is given. `done` marks its stages done (and the run, after the last wave); any
-          other status puts them back to pending for a relaunch. Saves the return value to
+          other status puts them back to pending for a relaunch. A child that reported a package,
+          connector or skill it needs (work/.missing/<stage>.json) fails the launch: the reports move into
+          the launch's record and the result (`missing`). Saves the return value to
           .compiled/<wave>.json (`result`), commits files the wave wrote on run/<id>, and returns what
           the parent needs next (ends_with, next_wave with what its compile would ask first; at the
           end the review, mission_close and done_when).
@@ -34,7 +36,15 @@ import agent_state
 import pi_records
 import typer
 from plan_validate import validate
-from run_compile import Compiler, after_launch, close_mission, commit, launch_fields
+from run_compile import (
+    MISSING_DIR,
+    MISSING_KINDS,
+    Compiler,
+    after_launch,
+    close_mission,
+    commit,
+    launch_fields,
+)
 from run_folders import (
     RUN_ID_RE,
     RUNS,
@@ -50,6 +60,7 @@ from utils import (
     PLAN_FILE,
     emit,
     process_alive,
+    read_json,
     read_plan,
     refuse,
     stage_kind,
@@ -242,10 +253,31 @@ def finish_wave(
     emit(close_launch(agent_dir, plan, run, entry, status, returned, ended, note))
 
 
+def collect_missing(run, entry):
+    """What the launch's children reported they need and weren't given ({stage, kind, need, why}; run_compile's
+    MISSING_DIR), taken out of work/ so a relaunch starts without them: the launch's record keeps them."""
+    found = []
+    for key in entry.get("stages") or []:
+        path = run.dir / "work" / MISSING_DIR / f"{key}.json"
+        report = read_json(path)
+        path.unlink(missing_ok=True)
+        if isinstance(report, dict):
+            found.append({"stage": key, "kind": report.get("kind") if report.get("kind") in MISSING_KINDS else "unknown",
+                          "need": str(report.get("need") or "")[:300], "why": str(report.get("why") or "")[:500]})
+    return found
+
+
 def close_launch(agent_dir, plan, run, entry, status, returned, ended, note):
     """Record how a launch ended (run_folders.end_launch: its stages done or pending again, its cost and children), then
-    after_launch. `ended`: pi_records.outcome."""
-    end_launch(run.dir, run.state, entry, status.value, returned, ended, **({"note": note} if note else {}))
+    after_launch. `ended`: pi_records.outcome. A stage whose child reported a missing package, connector or skill did
+    not do its work, whatever its child's status: the launch failed."""
+    fields = {"note": note} if note else {}
+    if missing := collect_missing(run, entry):
+        fields["missing"] = missing
+        if status == Status.done:
+            status = Status.failed
+            fields["error"] = "; ".join(f"stage {m['stage']} needs a {m['kind']} it lacks: {m['need']}" for m in missing)
+    end_launch(run.dir, run.state, entry, status.value, returned, ended, **fields)
     run.save()
     return after_launch(agent_dir, plan, run, entry, status.value, returned)
 

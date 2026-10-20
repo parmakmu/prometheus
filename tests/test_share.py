@@ -44,6 +44,17 @@ def test_share_pushes_main_and_releases_and_refuses_what_looks_like_a_secret(wor
         share.share("counter", str(remote))
 
 
+def test_an_agents_connectors_and_skills_are_its_own_code_to_review(world):
+    # an MCP server's command runs and a skill instructs its children: both are reviewed like programs
+    author = world[0]
+    (author / ".pi" / "mcp.json").write_text('{"mcpServers": {"notes": {"command": "npx", "args": ["-y", "notes@1.0.0"]}}}\n')
+    (author / ".pi" / "skills" / "tone").mkdir(parents=True)
+    (author / ".pi" / "skills" / "tone" / "SKILL.md").write_text("---\nname: tone\ndescription: d\n---\nBe brief.\n")
+    commit(author)
+    own = [path for path, _ in share.describe(author)["own_code"]]
+    assert own == [".pi/mcp.json", ".pi/skills/tone/SKILL.md", "scripts/count.py", "scripts/save.py"]  # not the skill copy
+
+
 def test_install_replaces_what_prometheus_owns_and_shows_the_agents_own_code(world):
     author, remote, agents, _ = world
     (author / ".pi" / "extensions" / "agent" / "index.ts").write_text("// a changed extension: runs as soon as pi starts\n")

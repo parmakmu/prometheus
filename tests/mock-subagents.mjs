@@ -1,5 +1,6 @@
 // Mock pi-subagents runtime for compiled workflow scripts.
-// Usage: node harness.mjs <compiled.json> [--fail KEY] [--block KEY]
+// Usage: node harness.mjs <compiled.json> [--fail KEY] [--missing KEY] [--block KEY]
+// (--missing: KEY fails as the batcher fails a program that lacks a package, run_batcher.py's MISSING_MARK)
 // - batcher children run the real run_batcher.py (stdin = task, cwd = item cwd)
 // - other children write placeholder files for every "- id: /abs/path" under "Write:",
 //   plus their `output`; return structuredOutput built from outputSchema
@@ -12,6 +13,7 @@ import { spawnSync } from "node:child_process";
 
 const [, , compiledPath, ...flags] = process.argv;
 const failKey = flags.includes("--fail") ? flags[flags.indexOf("--fail") + 1] : null;
+const missingKey = flags.includes("--missing") ? flags[flags.indexOf("--missing") + 1] : null;
 const blockKey = flags.includes("--block") ? flags[flags.indexOf("--block") + 1] : null;
 const compiled = JSON.parse(fs.readFileSync(compiledPath, "utf8"));
 // mirrors pi-subagents: a `workflow` value containing "/" is a script file path,
@@ -57,6 +59,7 @@ function run(key, opts) {
     throw new Error(`${key}: acceptance must set preserveStagedIndex: true and review.required: false`);
   if (verify.some((v) => v.output === "json") && opts.outputSchema) throw new Error(`${key}: typed verify + outputSchema (pi rejects this)`);
   if (key === failKey) return { key, runId, ok: false, state: "failed", error: "mock failure" };
+  if (key === missingKey) return { key, runId, ok: false, state: "failed", error: "the program needs the Python package that provides 'x' (MISSING_REPORTED)" };
   if (opts.agent === "batcher") {
     const r = spawnSync("python3", ["../../../.pi/skills/agent/scripts/run_batcher.py"], { cwd: opts.cwd, input: "agent text\n" + opts.task, encoding: "utf8" });
     if (r.status !== 0) return { key, runId, ok: false, state: "failed", error: r.stdout + r.stderr };

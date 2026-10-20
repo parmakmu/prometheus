@@ -36,7 +36,7 @@ merge  {"op":"merge","inputs":[PATH,...],"output":PATH,"batches":[PATH,...]?}
        names exactly one item is written to DIR/<key>.json, the reused ones too, so this run's store is whole;
        "items" adds "reused" and "stored".
 
-run    {"op":"run","command":CMD,"gate":CMD?,"gate_json":BOOL?,"timeout":S?,"secrets":[ENV]?,"env_file":PATH?}
+run    {"op":"run","command":CMD,"gate":CMD?,"gate_json":BOOL?,"timeout":S?,"secrets":[ENV]?,"env_file":PATH?,"missing":PATH?}
        Runs a stage's program, then its gate, each through the shell (so
        ${SECRET} variables expand, as in gates). Prints {"program": {...},
        "gate": {...}}; the gate's JSON when gate_json. A failing program or
@@ -47,6 +47,9 @@ run    {"op":"run","command":CMD,"gate":CMD?,"gate_json":BOOL?,"timeout":S?,"sec
        "secrets" names the variables the commands need from "env_file" (the
        agent's .env; the environment wins): only they are added, only to
        these commands. Pi's environment holds no secrets, so no model sees one.
+       "missing" (the stage's work/.missing/<stage>.json): a program that fails importing a module neither the
+       standard library's nor a file beside it lacks a package. Its report goes there ({kind: package, need, why})
+       and the failure carries MISSING_MARK, so the wave launches no fix child: only the user can add a package.
 
 a2a    {"op":"a2a","url":URL,"files":{PARAM:PATH},"params":{...},"approve":[STAGE],"token":"${ENV}"?,"out":DIR,
         "timeout":S?,"gate":CMD?,"secrets":[ENV]?,"env_file":PATH?}
@@ -66,6 +69,7 @@ import io
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -76,6 +80,8 @@ import uuid
 from pathlib import Path
 
 MARKER = "BATCH_TOOL_REQUEST "
+MISSING_MARK = "MISSING_REPORTED"  # wave_runner.js launches no fix child for a failure carrying it
+NO_MODULE_RE = re.compile(r"ModuleNotFoundError: No module named '([A-Za-z_][\w.]*)'")
 
 
 def fail(message):
@@ -368,15 +374,48 @@ def dotenv(path):
 ENV = None  # the environment the commands run with (main sets it: the request's secrets added)
 
 
-def shell(command, timeout, failed):
-    """Run `command` through the shell; on a non-zero exit or a timeout, fail with `failed` and the reason."""
+def shell(command, timeout, failed, explain=None):
+    """Run `command` through the shell; on a non-zero exit or a timeout, fail with `failed` and the reason (or with
+    what `explain(process)` says, when it says something)."""
     try:
         p = subprocess.run(command, shell=True, capture_output=True, text=True, check=False, timeout=timeout, env=ENV)
     except subprocess.TimeoutExpired:
         fail(f"{failed}: no result within {timeout} s (limits.command_timeout_s)")
     if p.returncode != 0:
-        fail(f"{failed} (exit code {p.returncode}): {tail(p.stderr or p.stdout)}")
+        fail((explain and explain(p)) or f"{failed} (exit code {p.returncode}): {tail(p.stderr or p.stdout)}")
     return p
+
+
+def find_missing_module(command, output):
+    """The top-level module a program failed to import, when it is neither the standard library's nor a file or
+    folder beside a .py file the command names (a module of the program's own, misspelt: a bug the fix child repairs);
+    else None."""
+    m = NO_MODULE_RE.search(output)
+    if not m:
+        return None
+    name = m.group(1).split(".")[0]
+    if name in sys.stdlib_module_names:
+        return None
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        words = command.split()
+    folders = {Path(w).parent for w in words if w.endswith(".py")}
+    if any((f / f"{name}.py").exists() or (f / name).is_dir() for f in folders):
+        return None
+    return name
+
+
+def report_missing(req, p):
+    """When the program lacks a package: its report in req["missing"] and the failure's message; else None."""
+    if not req.get("missing") or not (name := find_missing_module(req["command"], f"{p.stderr}\n{p.stdout}")):
+        return None
+    path = Path(req["missing"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"kind": "package", "need": name, "why": f"the stage's program failed: No module named "
+                                f"'{name}' (the import's name: the package's may differ)"}), encoding="utf-8")
+    return (f"the program needs the Python package that provides '{name}', which the agent's pyproject.toml lacks; "
+            f"reported for the agent to propose ({MISSING_MARK})")
 
 
 def gate(req, timeout):
@@ -396,7 +435,7 @@ def run(req):
     if not req.get("command"):
         fail("run needs command")
     timeout = req.get("timeout") or 600
-    p = shell(req["command"], timeout, "the program failed")
+    p = shell(req["command"], timeout, "the program failed", lambda done: report_missing(req, done))
     result = {"program": {"exit": 0, "stdout": tail(p.stdout)}}
     if (g := gate(req, timeout)) is not None:
         result["gate"] = g
